@@ -44,7 +44,12 @@ jobs:
         run: |
           $sha = (git rev-parse HEAD).Trim().ToLowerInvariant()
           if ($sha -notmatch '^[0-9a-f]{40}$') { throw "Invalid exact source SHA: $sha" }
+          if ($sha -ne '${{ github.event.pull_request.head.sha || github.sha }}'.ToLowerInvariant()) {
+            throw "EXACT_HEAD_MISMATCH expected=${{ github.event.pull_request.head.sha || github.sha }} actual=$sha"
+          }
           "sha=$sha" >> $env:GITHUB_OUTPUT
+          New-Item -ItemType Directory -Path artifacts/provenance -Force | Out-Null
+          Set-Content artifacts/provenance/SOURCE_SHA.txt $sha -Encoding ascii
 
       - name: Detect integrated .NET and package source
         id: product
@@ -79,21 +84,23 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Restore, build, and test canonical solution dynamically
+      - name: Restore, build, and test every deterministic project
         shell: pwsh
-        run: ./build/Build.ps1 -Configuration Release
+        run: ./build/Build.ps1 -Configuration Release -RequireProduct
 
       - name: Upload test results
         if: always() && hashFiles('tests/**/*.csproj') != ''
         uses: actions/upload-artifact@v4
         with:
           name: test-results-${{ needs.infrastructure.outputs.source_sha }}
-          path: artifacts/test-results
-          if-no-files-found: error
+          path: |
+            artifacts/test-results
+            artifacts/build/source-sha.txt
+          if-no-files-found: warn
           retention-days: 14
 
   package:
-    name: Build and verify installer
+    name: Build verify and smoke published app
     needs:
       - infrastructure
       - build_test
@@ -134,8 +141,24 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Upload self-contained publish tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: PCCExecutive-${{ needs.infrastructure.outputs.source_sha }}-publish-win-x64
+          path: artifacts/publish/win-x64/**
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload pre-installer launch evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: PCCExecutive-${{ needs.infrastructure.outputs.source_sha }}-preinstall-evidence
+          path: artifacts/release-evidence/**
+          if-no-files-found: error
+          retention-days: 14
+
   installer_smoke:
-    name: Fresh install and uninstall smoke
+    name: Fresh install first-run persistence and uninstall smoke
     needs:
       - infrastructure
       - package
@@ -143,6 +166,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/download-artifact@v4
@@ -154,12 +178,40 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
+          New-Item -ItemType Directory -Path artifacts/install-evidence -Force | Out-Null
           ./tests/installer/Smoke-FreshInstall.ps1 `
             -InstallerPath "artifacts/package/PCCExecutive-$version-Setup-x64.exe" `
-            -ExpectedVersion $version
+            -ExpectedVersion $version `
+            -ExpectedSourceSha "${{ needs.infrastructure.outputs.source_sha }}" `
+            -EvidencePath "artifacts/install-evidence/fresh-install.json"
+
+      - name: First-run durable state smoke
+        shell: pwsh
+        run: |
+          $schema = [int](Get-Content 'src/PCCExecutive.Infrastructure/SCHEMA_VERSION' -Raw).Trim()
+          ./tests/installer/Smoke-FirstRun.ps1 `
+            -InstallRoot "$env:LOCALAPPDATA/PCC Executive Smoke/Fresh" `
+            -ExpectedSchemaVersion $schema `
+            -EvidencePath "artifacts/install-evidence/first-run.json"
+
+      - name: Persistence close and reopen smoke
+        shell: pwsh
+        run: |
+          ./tests/installer/Smoke-Persistence.ps1 `
+            -InstallRoot "$env:LOCALAPPDATA/PCC Executive Smoke/Fresh" `
+            -EvidencePath "artifacts/install-evidence/persistence-reopen.json"
 
       - name: Uninstall preserve-data smoke
         shell: pwsh
         run: |
           ./tests/installer/Smoke-Uninstall.ps1 `
             -InstallRoot "$env:LOCALAPPDATA/PCC Executive Smoke/Fresh"
+
+      - name: Upload install and first-run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PCCExecutive-${{ needs.infrastructure.outputs.source_sha }}-install-smoke-evidence
+          path: artifacts/install-evidence/**
+          if-no-files-found: warn
+          retention-days: 14
