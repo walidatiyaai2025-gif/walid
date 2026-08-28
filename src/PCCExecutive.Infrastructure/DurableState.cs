@@ -143,8 +143,23 @@ public sealed class SqliteStateStore : IDurableStateStore, IBrowserRuntimeRegist
     public async Task<IReadOnlyList<ConversationRecord>> ListBrowserConversationsAsync(CancellationToken cancellationToken = default) =>
         await ListKindAsync<ConversationRecord>("browser-conversation", cancellationToken).ConfigureAwait(false);
 
-    public async Task<IReadOnlyList<BrowserRuntimeRecord>> ListBrowserRuntimesAsync(CancellationToken cancellationToken = default) =>
-        await ListKindAsync<BrowserRuntimeRecord>("browser-runtime", cancellationToken).ConfigureAwait(false);
+    public async Task<IReadOnlyList<BrowserRuntimeRecord>> ListBrowserRuntimesAsync(CancellationToken cancellationToken = default)
+    {
+        var runtimes = await ListKindAsync<BrowserRuntimeRecord>("browser-runtime", cancellationToken).ConfigureAwait(false);
+        var sessions = await ListKindAsync<LogicalAgentSession>("logical-agent", cancellationToken).ConfigureAwait(false);
+        var durableConversationByAgent = sessions
+            .Where(x => x.CurrentConversationId is not null)
+            .ToDictionary(
+                x => (Run: x.ProjectRunId.ToString(), Agent: x.Id.ToString()),
+                x => x.CurrentConversationId!.Value.ToString());
+
+        return runtimes
+            .OrderByDescending(runtime =>
+                durableConversationByAgent.TryGetValue((runtime.ProjectRunId, runtime.LogicalAgentId), out var durableConversation) &&
+                StringComparer.Ordinal.Equals(runtime.ConversationIdentity, durableConversation))
+            .ThenBy(runtime => runtime.RuntimeId, StringComparer.Ordinal)
+            .ToArray();
+    }
 
     Task IBrowserRuntimeRegistry.UpsertAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken) =>
         SaveAsync("browser-runtime", runtime.RuntimeId, runtime.ProjectRunId, runtime, cancellationToken);
