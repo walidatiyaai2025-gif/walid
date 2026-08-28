@@ -35,6 +35,10 @@ jobs:
         shell: pwsh
         run: ./build/Apply-FinalRuntimeClosure.ps1
 
+      - name: Apply final E2E compile reconciliation
+        shell: pwsh
+        run: ./build/Apply-FinalE2ECompileClosure.ps1
+
       - name: Persist intended source patch
         shell: pwsh
         run: |
