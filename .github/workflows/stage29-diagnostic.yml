@@ -16,13 +16,13 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
-      - name: Inject diagnostic assertion in runner only
+      - name: Inject diagnostic trace in runner only
         shell: pwsh
         run: |
           $path = 'tests/PCCExecutive.E2E/ProductionRuntime32StageAcceptanceTests.cs'
           $text = [IO.File]::ReadAllText($path)
           $old = '        Assert.Equal("PAUSED", h.Autopilot);'
-          $new = '        Assert.True(string.Equals("PAUSED", h.Autopilot, StringComparison.Ordinal), "AUTOPILOT=" + h.Autopilot + " | RECOVERY=" + string.Join(" || ", h.Host.Snapshot.RecoveryEvents.Select(x => x.State + ":" + x.Description)));'
+          $new = '        Console.WriteLine("STAGE29_DIAG AUTOPILOT=" + h.Autopilot + " | PAUSED=" + h.SendGate.Snapshot.IsPaused + " | RECOVERY=" + string.Join(" || ", h.Host.Snapshot.RecoveryEvents.Select(x => x.State + ":" + x.Description))); return;'
           if (-not $text.Contains($old)) { throw 'Stage 29 assertion anchor not found.' }
           [IO.File]::WriteAllText($path, $text.Replace($old, $new), [Text.UTF8Encoding]::new($false))
       - name: Run Stage 29 path with detailed output
