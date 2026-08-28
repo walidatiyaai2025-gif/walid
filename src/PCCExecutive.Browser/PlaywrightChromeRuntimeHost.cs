@@ -78,6 +78,17 @@ public sealed class WindowsBrowserWindowVisibilityController : IBrowserWindowVis
 
 public sealed class PlaywrightChromeRuntimeHost : IBrowserRuntimeHost, IPlaywrightPageProvider
 {
+    private const string ProfileEnvironmentVariable = "PCC_EXECUTIVE_CHROME_PROFILE_SOURCE";
+    private static readonly HashSet<string> SkippedProfileDirectories = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Cache", "Code Cache", "GPUCache", "DawnCache", "GrShaderCache", "ShaderCache",
+        "Crashpad", "BrowserMetrics", "component_crx_cache", "Safe Browsing Network"
+    };
+    private static readonly HashSet<string> SkippedProfileFiles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "LOCK", "DevToolsActivePort", "SingletonLock", "SingletonCookie", "SingletonSocket"
+    };
+
     private sealed record Connection(Process Process, IBrowser Browser, IPage Page, string ContextIdentity);
     private readonly string _profileRoot; private readonly IChromeExecutableLocator _chromeLocator; private readonly IBrowserWindowVisibilityController _windows;
     private readonly ConcurrentDictionary<string, Connection> _connections = new(StringComparer.Ordinal); private readonly SemaphoreSlim _playwrightLock = new(1, 1); private IPlaywright? _playwright;
@@ -89,9 +100,15 @@ public sealed class PlaywrightChromeRuntimeHost : IBrowserRuntimeHost, IPlaywrig
     {
         cancellationToken.ThrowIfCancellationRequested(); Directory.CreateDirectory(_profileRoot);
         var runtimeId = request.RuntimeId ?? Guid.NewGuid().ToString("N"); var profilePath = Path.Combine(_profileRoot, SanitizeRuntimeId(runtimeId)); Directory.CreateDirectory(profilePath);
+        var selectedProfileDirectory = ResolveSelectedProfileDirectory();
+        if (selectedProfileDirectory is not null)
+            SeedManagedProfile(profilePath, selectedProfileDirectory, cancellationToken);
+
         var chrome = _chromeLocator.LocateChrome();
         var startInfo = new ProcessStartInfo { FileName = chrome, UseShellExecute = false, CreateNoWindow = false, WorkingDirectory = Path.GetDirectoryName(chrome) ?? Environment.CurrentDirectory };
-        startInfo.ArgumentList.Add("--remote-debugging-address=127.0.0.1"); startInfo.ArgumentList.Add("--remote-debugging-port=0"); startInfo.ArgumentList.Add($"--user-data-dir={profilePath}"); startInfo.ArgumentList.Add("--no-first-run"); startInfo.ArgumentList.Add("--no-default-browser-check"); startInfo.ArgumentList.Add("--disable-background-mode"); startInfo.ArgumentList.Add("--start-minimized"); startInfo.ArgumentList.Add("https://chatgpt.com/");
+        startInfo.ArgumentList.Add("--remote-debugging-address=127.0.0.1"); startInfo.ArgumentList.Add("--remote-debugging-port=0"); startInfo.ArgumentList.Add($"--user-data-dir={profilePath}");
+        if (selectedProfileDirectory is not null) startInfo.ArgumentList.Add($"--profile-directory={selectedProfileDirectory}");
+        startInfo.ArgumentList.Add("--no-first-run"); startInfo.ArgumentList.Add("--no-default-browser-check"); startInfo.ArgumentList.Add("--disable-background-mode"); startInfo.ArgumentList.Add("--start-minimized"); startInfo.ArgumentList.Add("https://chatgpt.com/");
         var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Chrome process failed to start."); var processIdentity = BrowserProcessIdentity.From(process); var ownershipNonce = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
         try
         {
@@ -137,6 +154,103 @@ public sealed class PlaywrightChromeRuntimeHost : IBrowserRuntimeHost, IPlaywrig
 
     public Task<IPage?> GetPageAsync(string runtimeId, CancellationToken cancellationToken = default) { cancellationToken.ThrowIfCancellationRequested(); return Task.FromResult(_connections.TryGetValue(runtimeId, out var connection) ? connection.Page : null); }
     private async Task<IPlaywright> GetPlaywrightAsync(CancellationToken cancellationToken) { if (_playwright is not null) return _playwright; await _playwrightLock.WaitAsync(cancellationToken).ConfigureAwait(false); try { _playwright ??= await Microsoft.Playwright.Playwright.CreateAsync().ConfigureAwait(false); return _playwright; } finally { _playwrightLock.Release(); } }
+
+    private static string? ResolveSelectedProfileDirectory()
+    {
+        var selected = Environment.GetEnvironmentVariable(ProfileEnvironmentVariable)?.Trim();
+        if (string.IsNullOrWhiteSpace(selected)) return null;
+        if (selected.Contains(Path.DirectorySeparatorChar) || selected.Contains(Path.AltDirectorySeparatorChar) || selected.Contains("..", StringComparison.Ordinal))
+            throw new InvalidOperationException("The selected Chrome profile directory is invalid.");
+        return selected;
+    }
+
+    private static void SeedManagedProfile(string managedRoot, string selectedProfileDirectory, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var sourceRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "User Data");
+        var sourceProfile = Path.Combine(sourceRoot, selectedProfileDirectory);
+        if (!Directory.Exists(sourceProfile))
+            throw new InvalidOperationException($"Selected Chrome profile '{selectedProfileDirectory}' no longer exists. Choose another profile in PCC Executive.");
+
+        var destinationProfile = Path.Combine(managedRoot, selectedProfileDirectory);
+        var markerPath = Path.Combine(managedRoot, ".pcc-source-profile");
+        if (File.Exists(markerPath) && Directory.Exists(destinationProfile))
+        {
+            try
+            {
+                var marker = File.ReadAllText(markerPath).Trim();
+                if (string.Equals(marker, selectedProfileDirectory, StringComparison.OrdinalIgnoreCase)) return;
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+
+        // Never attach Playwright/CDP to the user's live profile. We seed an isolated PCC-owned
+        // user-data directory, preserving the ownership/kill safety contract while carrying the
+        // selected profile's sign-in state when Chrome permits those files to be read.
+        Directory.CreateDirectory(managedRoot);
+        CopySharedFile(Path.Combine(sourceRoot, "Local State"), Path.Combine(managedRoot, "Local State"), required: true);
+        CopyProfileDirectory(sourceProfile, destinationProfile, cancellationToken);
+        File.WriteAllText(markerPath, selectedProfileDirectory);
+    }
+
+    private static void CopyProfileDirectory(string source, string destination, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(destination);
+
+        IEnumerable<string> files;
+        try { files = Directory.EnumerateFiles(source).ToArray(); }
+        catch (IOException) { files = Array.Empty<string>(); }
+        catch (UnauthorizedAccessException) { files = Array.Empty<string>(); }
+
+        foreach (var sourceFile in files)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var fileName = Path.GetFileName(sourceFile);
+            if (SkippedProfileFiles.Contains(fileName)) continue;
+            CopySharedFile(sourceFile, Path.Combine(destination, fileName), required: false);
+        }
+
+        IEnumerable<string> directories;
+        try { directories = Directory.EnumerateDirectories(source).ToArray(); }
+        catch (IOException) { directories = Array.Empty<string>(); }
+        catch (UnauthorizedAccessException) { directories = Array.Empty<string>(); }
+
+        foreach (var sourceDirectory in directories)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var directoryName = Path.GetFileName(sourceDirectory);
+            if (SkippedProfileDirectories.Contains(directoryName)) continue;
+            CopyProfileDirectory(sourceDirectory, Path.Combine(destination, directoryName), cancellationToken);
+        }
+    }
+
+    private static void CopySharedFile(string source, string destination, bool required)
+    {
+        if (!File.Exists(source))
+        {
+            if (required) throw new InvalidOperationException($"Required Chrome profile file is missing: {Path.GetFileName(source)}.");
+            return;
+        }
+
+        try
+        {
+            var parent = Path.GetDirectoryName(destination);
+            if (!string.IsNullOrWhiteSpace(parent)) Directory.CreateDirectory(parent);
+            using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None);
+            input.CopyTo(output);
+        }
+        catch (Exception ex) when (!required && ex is IOException or UnauthorizedAccessException)
+        {
+            // Best effort for transient/locked cache and session files. Chrome will rebuild them.
+        }
+        catch (Exception ex) when (required && ex is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidOperationException($"Unable to copy required Chrome profile file '{Path.GetFileName(source)}'. Close Chrome and retry profile connection.", ex);
+        }
+    }
+
     private static async Task<string> WaitForDevToolsEndpointAsync(string profilePath, Process process, CancellationToken cancellationToken)
     {
         var file = Path.Combine(profilePath, "DevToolsActivePort"); var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
