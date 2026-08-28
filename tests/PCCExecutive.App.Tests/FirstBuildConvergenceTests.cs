@@ -10,18 +10,21 @@ namespace PCCExecutive.App.Tests;
 public sealed class FirstBuildConvergenceTests
 {
     [Fact]
-    public void Real_project_resolution_advances_first_run_to_dashboard()
+    public void Real_project_resolution_auto_connects_chrome_and_advances_to_manager()
     {
         var gateway = new ProjectSelectionGateway(resolve: true);
         var vm = new MainViewModel(gateway);
 
-        Assert.Equal(ScreenId.ProjectSelection, vm.SelectedScreen);
+        Assert.Equal(ScreenId.ChromeConnection, vm.SelectedScreen);
+        vm.Navigate(ScreenId.ProjectSelection);
 
         vm.SelectProjectCommand.Execute("PCCEXECUTIVE");
 
-        Assert.Equal(ScreenId.Dashboard, vm.SelectedScreen);
+        Assert.Equal(ScreenId.ManagerWorkspace, vm.SelectedScreen);
         Assert.True(vm.Snapshot.HasActiveRun);
-        Assert.Equal((UiAction.SelectProject, "PCCEXECUTIVE"), gateway.LastExecution);
+        Assert.Contains(gateway.Executions, x => x == (UiAction.SelectProject, "PCCEXECUTIVE"));
+        Assert.Contains(gateway.Executions, x => x.Action == UiAction.ConnectChrome);
+        Assert.Contains(vm.Snapshot.Sessions, x => x.IsPccOwned && string.Equals(x.Role, "Manager", StringComparison.OrdinalIgnoreCase));
         Assert.False(vm.HasUiError);
     }
 
@@ -30,6 +33,7 @@ public sealed class FirstBuildConvergenceTests
     {
         var gateway = new ProjectSelectionGateway(resolve: false);
         var vm = new MainViewModel(gateway);
+        vm.Navigate(ScreenId.ProjectSelection);
 
         vm.SelectProjectCommand.Execute("missing-project");
 
@@ -135,7 +139,9 @@ public sealed class FirstBuildConvergenceTests
                     Assert.True(window.ActualHeight >= window.MinHeight, $"{viewport.Scale} viewport collapsed below minimum height.");
                     Assert.Equal(ScreenId.ChromeConnection, vm.SelectedScreen);
                     Assert.Equal(ScreenId.ChromeConnection, vm.Navigation[0].Id);
+                    Assert.Equal("01  Chrome", vm.Navigation[0].Label);
                     Assert.Equal(ScreenId.ProjectSelection, vm.Navigation[1].Id);
+                    Assert.Equal("02  Projects", vm.Navigation[1].Label);
                     Assert.Equal(ScreenId.Dashboard, vm.Navigation[2].Id);
                     Assert.Equal(16, vm.Navigation.Count);
                     Assert.True(vm.RefreshCommand.CanExecute(null));
@@ -181,10 +187,12 @@ public sealed class FirstBuildConvergenceTests
         public RuntimeSnapshot Snapshot => _snapshot;
         public event EventHandler<RuntimeSnapshot>? SnapshotChanged;
         public (UiAction Action, string? Target)? LastExecution { get; private set; }
+        public List<(UiAction Action, string? Target)> Executions { get; } = [];
 
         public bool CanExecute(UiAction action, string? targetId = null) => action switch
         {
             UiAction.SelectProject or UiAction.Refresh or UiAction.SaveSettings or UiAction.RunVerification or UiAction.StartManager => true,
+            UiAction.ConnectChrome => _snapshot.HasActiveRun,
             UiAction.OpenSession or UiAction.BringSessionToFront or UiAction.HideSession or UiAction.RestartSession or UiAction.KillSession or UiAction.KillAllPccSessions => allowOwnedSessionActions,
             _ => false
         };
@@ -192,6 +200,7 @@ public sealed class FirstBuildConvergenceTests
         public Task ExecuteAsync(UiAction action, string? targetId = null, CancellationToken cancellationToken = default)
         {
             LastExecution = (action, targetId);
+            Executions.Add((action, targetId));
             if (action == UiAction.SelectProject && resolve)
             {
                 _snapshot = _snapshot with
@@ -199,6 +208,27 @@ public sealed class FirstBuildConvergenceTests
                     HasActiveRun = true,
                     RuntimeStatus = "Integrated runtime",
                     CurrentWave = "Manager planning"
+                };
+                SnapshotChanged?.Invoke(this, _snapshot);
+            }
+            else if (action == UiAction.ConnectChrome && _snapshot.HasActiveRun)
+            {
+                _snapshot = _snapshot with
+                {
+                    Sessions =
+                    [
+                        new SessionSummary(
+                            "manager-runtime",
+                            "Manager",
+                            "Manager",
+                            "READY",
+                            SessionVisibility.Hidden,
+                            "New conversation",
+                            DateTimeOffset.UtcNow,
+                            true,
+                            4242,
+                            HealthState.Healthy)
+                    ]
                 };
                 SnapshotChanged?.Invoke(this, _snapshot);
             }
