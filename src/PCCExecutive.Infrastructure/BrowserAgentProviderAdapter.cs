@@ -49,7 +49,7 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
         if (string.IsNullOrWhiteSpace(runtime.TaskId) || string.IsNullOrWhiteSpace(runtime.ConversationIdentity) || string.IsNullOrWhiteSpace(runtime.ProviderConversationIdentity))
             return NotSent(request.DispatchId, $"runtime:{runtime.RuntimeId}", "BROWSER_DISPATCH_BINDING_INCOMPLETE");
 
-        if (!StringComparer.Ordinal.Equals(runtime.ConversationIdentity, request.ConversationId.ToString()))
+        if (!SameConversationIdentity(runtime.ConversationIdentity, request.ConversationId))
             return NotSent(request.DispatchId, $"runtime:{runtime.RuntimeId};conversation:mismatch", "WRONG_CONVERSATION_BINDING");
 
         if (request.TaskId is not null && !StringComparer.Ordinal.Equals(runtime.TaskId, request.TaskId.Value.ToString()))
@@ -133,6 +133,12 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
             BrowserDispatchOutcome.DuplicateBlocked => new(effectiveDispatchId, false, false, false, false, null, evidence, "DUPLICATE_SEND_BLOCKED"),
             _ => new(effectiveDispatchId, false, false, false, false, null, evidence, result.Reason)
         };
+    }
+
+    private static bool SameConversationIdentity(string runtimeIdentity, ConversationId expected)
+    {
+        if (!Guid.TryParse(runtimeIdentity, out var runtimeGuid)) return false;
+        return runtimeGuid == expected.Value;
     }
 
     private static AgentResult NotSent(DispatchId id, string evidence, string error) =>
