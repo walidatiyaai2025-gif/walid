@@ -98,6 +98,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             async p =>
             {
                 LastUiError = null;
+                var correlation = _runtimeInspector?.Collector.BeginCorrelation();
+                RecordDiagnostic(RuntimeDiagnosticKind.UserAction, "PROJECT_SELECTION_INVOKED", "Project selection invoked.", correlation, screen: SelectedScreen.ToString(), command: UiAction.SelectProject.ToString(), target: p?.ToString());
                 await _gateway.ExecuteAsync(UiAction.SelectProject, p?.ToString());
                 if (_gateway.Snapshot.HasActiveRun)
                 {
@@ -149,6 +151,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             async p =>
             {
                 LastUiError = null;
+                var correlation = _runtimeInspector?.Collector.BeginCorrelation();
+                RecordDiagnostic(RuntimeDiagnosticKind.UserAction, "CONVERSATION_HISTORY_INVOKED", "Conversation history requested.", correlation, screen: SelectedScreen.ToString(), command: UiAction.OpenConversationHistory.ToString(), target: p?.ToString());
                 await _gateway.ExecuteAsync(UiAction.OpenConversationHistory, p?.ToString());
                 Navigate(ScreenId.ConversationHistory);
             },
@@ -354,14 +358,25 @@ public sealed class MainViewModel : INotifyPropertyChanged
             async p =>
             {
                 LastUiError = null;
-                if (!_confirmation.Confirm(title, message, confirmLabel)) return;
-                await _gateway.ExecuteAsync(action, target?.Invoke(p));
+                var correlation = _runtimeInspector?.Collector.BeginCorrelation();
+                var destination = target?.Invoke(p);
+                RecordDiagnostic(RuntimeDiagnosticKind.UserAction, "DESTRUCTIVE_COMMAND_REQUESTED", $"Confirmation requested for {action}.", correlation, screen: SelectedScreen.ToString(), command: action.ToString(), target: destination);
+                if (!_confirmation.Confirm(title, message, confirmLabel))
+                {
+                    RecordDiagnostic(RuntimeDiagnosticKind.GuardDecision, "OPERATOR_CONFIRMATION_DENIED", $"Operator declined {action}.", correlation, screen: SelectedScreen.ToString(), command: action.ToString(), target: destination, allowed: false);
+                    return;
+                }
+                await _gateway.ExecuteAsync(action, destination);
+                RecordDiagnostic(RuntimeDiagnosticKind.Command, "CONFIRMED_COMMAND_COMPLETED", $"Confirmed command {action} completed.", correlation, screen: SelectedScreen.ToString(), command: action.ToString(), target: destination, allowed: true);
             },
             p => _gateway.CanExecute(action, target?.Invoke(p)),
             ex => LastUiError = ex.Message);
 
     private void OnSnapshotChanged(object? sender, RuntimeSnapshot snapshot)
     {
+        var before = $"health={Snapshot.GlobalHealth};autopilot={Snapshot.AutopilotState};sessions={Snapshot.Sessions.Count}";
+        var after = $"health={snapshot.GlobalHealth};autopilot={snapshot.AutopilotState};sessions={snapshot.Sessions.Count}";
+        RecordDiagnostic(RuntimeDiagnosticKind.StateTransition, "RUNTIME_SNAPSHOT_CHANGED", "Canonical runtime snapshot changed.", beforeState: before, afterState: after);
         Snapshot = snapshot;
         if (snapshot.ProviderMode == ProviderMode.BrowserWeb || snapshot.ApiConfigured)
             SelectedProviderMode = snapshot.ProviderMode;
