@@ -17,6 +17,7 @@
     </PackageReference>
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="../../src/PCCExecutive.App/PCCExecutive.App.csproj" />
     <ProjectReference Include="../../src/PCCExecutive.Domain/PCCExecutive.Domain.csproj" />
     <ProjectReference Include="../../src/PCCExecutive.Application/PCCExecutive.Application.csproj" />
     <ProjectReference Include="../../src/PCCExecutive.Browser/PCCExecutive.Browser.csproj" />
