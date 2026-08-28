@@ -392,7 +392,7 @@ public sealed class BrowserSessionReconciliationService
     }
 
     private static bool ConversationIdentityMatches(string runtimeIdentity, ConversationId durableIdentity) =>
-        Guid.TryParse(runtimeIdentity, out var runtimeConversation) && runtimeConversation == durableIdentity.Value;
+        StringComparer.Ordinal.Equals(runtimeIdentity, durableIdentity.ToString());
 }
 
 public sealed record RolloverIntent(
