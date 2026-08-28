@@ -29,7 +29,32 @@ public sealed class BrowserRuntimeTests
     public async Task Dead_orphan_recovery_replaces_without_unsafe_kill_and_preserves_logical_identity()
     {
         var root=Root(); var runtime=Runtime(root,"orphan"); var registry=new InMemoryBrowserRuntimeRegistry(); await registry.UpsertAsync(runtime); var markers=new FakeMarkers(); markers.Set(Marker(runtime)); var processes=new FakeProcesses(); processes.Set(runtime.ProcessId!.Value,runtime.ProcessStartIdentity!,false); var host=new FakeHost(root); var controller=new BrowserSessionController(registry,host,new OwnershipProofService(root,markers,processes),markers,processes);
-        var result=await controller.RecoverOrphanAsync(runtime.RuntimeId); Assert.True(result.Succeeded); Assert.Equal("DEAD_ORPHAN_REPLACED_WITH_NEW_PCC_RUNTIME",result.Reason); Assert.Empty(host.Killed); Assert.Equal(runtime.LogicalAgentId,result.Runtime!.LogicalAgentId); Assert.Equal(runtime.ProjectRunId,result.Runtime.ProjectRunId);
+        var result=await controller.RecoverOrphanAsync(runtime.RuntimeId); Assert.True(result.Succeeded); Assert.Equal("STALE_OR_DEAD_ORPHAN_REPLACED_WITH_NEW_PCC_RUNTIME",result.Reason); Assert.Empty(host.Killed); Assert.Equal(runtime.LogicalAgentId,result.Runtime!.LogicalAgentId); Assert.Equal(runtime.ProjectRunId,result.Runtime.ProjectRunId);
+    }
+
+    [Fact]
+    public async Task Live_owned_orphan_with_refused_cdp_endpoint_is_killed_and_replaced_instead_of_throwing()
+    {
+        var root = Root();
+        var runtime = Runtime(root, "stale-live");
+        var registry = new InMemoryBrowserRuntimeRegistry();
+        await registry.UpsertAsync(runtime);
+        var markers = new FakeMarkers();
+        markers.Set(Marker(runtime));
+        var processes = new FakeProcesses();
+        processes.Set(runtime.ProcessId!.Value, runtime.ProcessStartIdentity!, true);
+        var host = new FakeHost(root) { RecoverException = new InvalidOperationException("connect ECONNREFUSED 127.0.0.1:54957") };
+        var controller = new BrowserSessionController(registry, host, new OwnershipProofService(root, markers, processes), markers, processes);
+
+        var result = await controller.RecoverOrphanAsync(runtime.RuntimeId);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal("STALE_OR_DEAD_ORPHAN_REPLACED_WITH_NEW_PCC_RUNTIME", result.Reason);
+        Assert.Contains(runtime.RuntimeId, host.Killed);
+        Assert.NotNull(result.Runtime);
+        Assert.NotEqual(runtime.RuntimeId, result.Runtime!.RuntimeId);
+        Assert.Equal(runtime.LogicalAgentId, result.Runtime.LogicalAgentId);
+        Assert.Equal(runtime.ProjectRunId, result.Runtime.ProjectRunId);
     }
 
     [Fact]
@@ -121,7 +146,19 @@ public sealed class BrowserRuntimeTests
 
     private sealed class FakeMarkers:IOwnershipMarkerStore { private readonly Dictionary<string,OwnershipMarker> _m=new(StringComparer.Ordinal); public void Set(OwnershipMarker m)=>_m[m.ProfilePath]=m; public Task WriteAsync(OwnershipMarker m,CancellationToken c=default){Set(m);return Task.CompletedTask;} public Task<OwnershipMarker?> ReadAsync(string p,CancellationToken c=default)=>Task.FromResult(_m.TryGetValue(p,out var m)?m:null); }
     private sealed class FakeProcesses:IProcessInspector { private readonly Dictionary<int,(string Start,bool Alive)> _p=new(); public void Set(int id,string s,bool a)=>_p[id]=(s,a); public bool IsAlive(int id)=>_p.TryGetValue(id,out var p)&&p.Alive; public string? GetStartIdentity(int id)=>_p.TryGetValue(id,out var p)?p.Start:null; }
-    private sealed class FakeHost:IBrowserRuntimeHost { private readonly string _root; public List<string> Killed{get;}=new(); public FakeHost(string root)=>_root=root; public Task<BrowserRuntimeRecord> LaunchAsync(BrowserSessionRequest r,CancellationToken c=default){var id=r.RuntimeId??Guid.NewGuid().ToString("N"); return Task.FromResult(Runtime(_root,id) with {ProjectRunId=r.ProjectRunId,LogicalAgentId=r.LogicalAgentId,WorkerSlotId=r.WorkerSlotId,TaskId=r.TaskId,ConversationIdentity=r.ConversationIdentity,ProviderConversationIdentity=r.ProviderConversationIdentity});} public Task<bool> RecoverAsync(BrowserRuntimeRecord r,CancellationToken c=default)=>Task.FromResult(true); public Task SetVisibilityAsync(BrowserRuntimeRecord r,BrowserVisibility v,bool b,CancellationToken c=default)=>Task.CompletedTask; public Task KillAsync(BrowserRuntimeRecord r,OwnershipProof p,CancellationToken c=default){Assert.True(p.IsProven);Killed.Add(r.RuntimeId);return Task.CompletedTask;} public Task<BrowserRuntimeTelemetry> GetTelemetryAsync(BrowserRuntimeRecord r,CancellationToken c=default)=>Task.FromResult(new BrowserRuntimeTelemetry(r.RuntimeId,true,1,1,TimeSpan.Zero,r.LastHeartbeatAt,false,r.IsArchived)); }
+    private sealed class FakeHost:IBrowserRuntimeHost
+    {
+        private readonly string _root;
+        public List<string> Killed { get; } = new();
+        public Exception? RecoverException { get; init; }
+        public bool RecoverResult { get; init; } = true;
+        public FakeHost(string root)=>_root=root;
+        public Task<BrowserRuntimeRecord> LaunchAsync(BrowserSessionRequest r,CancellationToken c=default){var id=r.RuntimeId??Guid.NewGuid().ToString("N"); return Task.FromResult(Runtime(_root,id) with {ProjectRunId=r.ProjectRunId,LogicalAgentId=r.LogicalAgentId,WorkerSlotId=r.WorkerSlotId,TaskId=r.TaskId,ConversationIdentity=r.ConversationIdentity,ProviderConversationIdentity=r.ProviderConversationIdentity});}
+        public Task<bool> RecoverAsync(BrowserRuntimeRecord r,CancellationToken c=default){if(RecoverException is not null) throw RecoverException; return Task.FromResult(RecoverResult);}
+        public Task SetVisibilityAsync(BrowserRuntimeRecord r,BrowserVisibility v,bool b,CancellationToken c=default)=>Task.CompletedTask;
+        public Task KillAsync(BrowserRuntimeRecord r,OwnershipProof p,CancellationToken c=default){Assert.True(p.IsProven);Killed.Add(r.RuntimeId);return Task.CompletedTask;}
+        public Task<BrowserRuntimeTelemetry> GetTelemetryAsync(BrowserRuntimeRecord r,CancellationToken c=default)=>Task.FromResult(new BrowserRuntimeTelemetry(r.RuntimeId,true,1,1,TimeSpan.Zero,r.LastHeartbeatAt,false,r.IsArchived));
+    }
     private sealed class FakeAdapter:IChatGptBrowserAdapter { public string AdapterVersion=>"test"; public ChatGptSemanticSnapshot Snapshot{get;init;}=BrowserRuntimeTests.Snapshot(); public AdapterSubmissionResult Submission{get;init;}=new(false,false,false,"not-triggered",Array.Empty<string>()); public string? CurrentConversationIdentity{get;init;} public int SubmitCalls{get;private set;} public Task<ChatGptSemanticSnapshot> InspectAsync(BrowserRuntimeRecord r,BrowserDispatchExpectation e,CancellationToken c=default)=>Task.FromResult(Snapshot); public Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord r,BrowserDispatchExpectation e,string p,CancellationToken c=default){SubmitCalls++;return Task.FromResult(Submission);} public Task<string?> GetCurrentConversationIdentityAsync(BrowserRuntimeRecord r,CancellationToken c=default)=>Task.FromResult(CurrentConversationIdentity); }
     private sealed class FakeCheckpoint:IConversationCheckpointPort { public Task<string> CreateCheckpointAsync(ConversationRecord a,CancellationToken c=default)=>Task.FromResult("checkpoint"); }
     private sealed class FakeCreator:IConversationCreator { public Task<ConversationCreationResult> CreateAsync(ConversationRecord p,CancellationToken c=default)=>Task.FromResult(new ConversationCreationResult("new","https://chatgpt.com/c/new-provider")); }
