@@ -108,7 +108,8 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
             DateTimeOffset.UtcNow);
         await _store.SaveCheckpointAsync(checkpoint, cancellationToken).ConfigureAwait(false);
 
-        var candidateConversationId = Guid.NewGuid().ToString();
+        var candidateConversation = ConversationId.New();
+        var candidateConversationId = candidateConversation.ToString();
         var candidateRuntime = await PccHostConversationAccess.Sessions(_host).CreateAsync(new BrowserSessionRequest(
             predecessor.ProjectRunId,
             predecessor.LogicalAgentId,
@@ -142,17 +143,38 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
         }
 
         var providerIdentity = candidateRuntime.ProviderConversationIdentity ?? "NEW";
-        var logicalConversation = new ConversationId(Guid.Parse(candidate.ConversationId));
+        var logicalConversation = candidateConversation;
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(packet))).ToLowerInvariant();
         var projectRunId = new ProjectRunId(Guid.Parse(predecessor.ProjectRunId));
-        var taskKey = candidateRuntime.TaskId ?? $"rollover:{predecessor.LogicalAgentId}";
-        var taskId = Guid.TryParse(candidateRuntime.TaskId, out var durableTaskGuid)
-            ? new TaskId(durableTaskGuid)
-            : PCCExecutive.Application.CanonicalDispatchIdentity.StableTask(projectRunId, taskKey);
-        var waveId = PCCExecutive.Application.CanonicalDispatchIdentity.StableWave(projectRunId, taskKey);
-        var correlation = new PCCExecutive.Application.DurableDispatchCorrelation(projectRunId, new LogicalAgentId(Guid.Parse(predecessor.LogicalAgentId)), candidateRuntime.WorkerSlotId is null ? null : new WorkerSlotId(int.Parse(candidateRuntime.WorkerSlotId)), taskId, waveId, logicalConversation, providerIdentity, hash);
+        var logicalAgentId = new LogicalAgentId(Guid.Parse(predecessor.LogicalAgentId));
+        WorkerSlotId? workerSlotId = candidateRuntime.WorkerSlotId is null ? null : new WorkerSlotId(int.Parse(candidateRuntime.WorkerSlotId));
+        TaskId taskId;
+        WaveId waveId;
+        if (workerSlotId is not null)
+        {
+            if (!Guid.TryParse(candidateRuntime.TaskId, out var currentTaskGuid))
+            {
+                await RollbackCandidateAsync(predecessor, candidate, candidateRuntime, checkpointId, "ROLLOVER_WORKER_TASK_IDENTITY_INVALID", cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            var currentWave = PccHostRecoveryAccess.CurrentWave(_host);
+            if (currentWave is null)
+            {
+                await RollbackCandidateAsync(predecessor, candidate, candidateRuntime, checkpointId, "ROLLOVER_WORKER_WAVE_IDENTITY_MISSING", cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            taskId = new TaskId(currentTaskGuid);
+            waveId = currentWave.Id;
+        }
+        else
+        {
+            var taskKey = candidateRuntime.TaskId ?? $"rollover:{predecessor.LogicalAgentId}";
+            taskId = PCCExecutive.Application.CanonicalDispatchIdentity.StableTask(projectRunId, taskKey);
+            waveId = PCCExecutive.Application.CanonicalDispatchIdentity.StableWave(projectRunId, taskKey);
+        }
+        var correlation = new PCCExecutive.Application.DurableDispatchCorrelation(projectRunId, logicalAgentId, workerSlotId, taskId, waveId, logicalConversation, providerIdentity, hash);
         var dispatch = await new CanonicalDispatchReservationService(_store).ReserveOrRecoverAsync(correlation, cancellationToken).ConfigureAwait(false);
-        var request = new PCCExecutive.Application.AgentRequest(correlation.ProjectRunId, correlation.LogicalAgentId, logicalConversation, dispatch.Id, packet, hash, correlation.WorkerSlotId, candidateRuntime.WorkerSlotId is null ? null : taskId, candidateRuntime.WorkerSlotId is null ? null : waveId, providerIdentity);
+        var request = new PCCExecutive.Application.AgentRequest(correlation.ProjectRunId, correlation.LogicalAgentId, logicalConversation, dispatch.Id, packet, hash, workerSlotId, workerSlotId is null ? null : taskId, workerSlotId is null ? null : waveId, providerIdentity);
         var result = await PccHostConversationAccess.AgentProvider(_host).SendAsync(request, cancellationToken).ConfigureAwait(false);
         await PccHostRecoveryAccess.NewSendPause(_host).PauseNewSendsAsync($"Conversation rollover for logical agent {predecessor.LogicalAgentId}.", cancellationToken).ConfigureAwait(false);
         if (!result.Accepted)
@@ -431,6 +453,8 @@ internal static class PccHostRecoveryAccess
     internal static extern ref SqliteStateStore Store(PccExecutiveRuntimeHost host);
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_run")]
     internal static extern ref ProjectRun? Run(PccExecutiveRuntimeHost host);
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_currentWave")]
+    internal static extern ref Wave? CurrentWave(PccExecutiveRuntimeHost host);
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_runtimeHealthFault")]
     internal static extern ref string? RuntimeHealthFault(PccExecutiveRuntimeHost host);
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_sendGate")]

@@ -139,8 +139,9 @@ public sealed class ProductionRuntimeSecurityNegativeTests
         var runId = h.Run.Id;
         Assert.Contains("\"paused\":true", (await h.Store.LoadCheckpointAsync($"autopilot-pause:{runId}"))!.Payload, StringComparison.OrdinalIgnoreCase);
 
-        var mismatchedConversation = ConversationId.New();
-        await ((IBrowserRuntimeRegistry)h.Store).UpsertAsync(managerRuntime with { ConversationIdentity = mismatchedConversation.ToString() });
+        var nonCanonicalManagerConversation = correctManagerConversation.Value.ToString("D");
+        Assert.False(StringComparer.Ordinal.Equals(correctManagerConversation.ToString(), nonCanonicalManagerConversation));
+        await ((IBrowserRuntimeRegistry)h.Store).UpsertAsync(managerRuntime with { ConversationIdentity = nonCanonicalManagerConversation });
         await h.ForceInterruptedRestartAsync();
 
         var mismatchedRuntime = await h.RuntimeForAsync(h.ManagerAgentId);

@@ -61,7 +61,13 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         Stage(8);
 
         var managerDispatches = await new AutonomousDispatchJournal(h.Store).ListAsync(runId);
-        Assert.Single(managerDispatches, x => x.LogicalAgentId == h.ManagerAgentId);
+        var managerDispatch = Assert.Single(managerDispatches, x => x.LogicalAgentId == h.ManagerAgentId);
+        var managerLogical = await h.Store.LoadLogicalAgentAsync(h.ManagerAgentId);
+        var managerConversationRecord = await h.ActiveBrowserConversationAsync(h.ManagerAgentId);
+        Assert.NotNull(managerLogical?.CurrentConversationId);
+        Assert.True(StringComparer.Ordinal.Equals(managerRuntime.ConversationIdentity, managerLogical!.CurrentConversationId!.Value.ToString()));
+        Assert.True(StringComparer.Ordinal.Equals(managerRuntime.ConversationIdentity, managerConversationRecord.ConversationId));
+        Assert.True(StringComparer.Ordinal.Equals(managerRuntime.ConversationIdentity, managerDispatch.ConversationId.ToString()));
         Assert.Equal(1, h.Adapter.EnterCount(managerRuntime.RuntimeId));
         Stage(9);
 
@@ -127,6 +133,11 @@ public sealed class ProductionRuntime32StageAcceptanceTests
             var expectedTask = h.Assignments.Single(x => x.Value.Value == slotNumber).Key;
             Assert.Equal(slotNumber.ToString(), runtime.WorkerSlotId);
             Assert.Equal(expectedTask.ToString(), runtime.TaskId);
+            var workerLogical = await h.Store.LoadLogicalAgentAsync(workerIds[slotNumber - 1]);
+            var workerConversationRecord = await h.ActiveBrowserConversationAsync(workerIds[slotNumber - 1]);
+            Assert.NotNull(workerLogical?.CurrentConversationId);
+            Assert.True(StringComparer.Ordinal.Equals(runtime.ConversationIdentity, workerLogical!.CurrentConversationId!.Value.ToString()));
+            Assert.True(StringComparer.Ordinal.Equals(runtime.ConversationIdentity, workerConversationRecord.ConversationId));
             Assert.Equal(1, h.Adapter.EnterCount(runtime.RuntimeId));
         }
         Stage(18);
@@ -207,6 +218,15 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         var preRestartWave = h.CurrentWave!.Id;
         var preRestartAssignment = h.Assignments.Single();
         var preRestartAgents = new[] { h.ManagerAgentId }.Concat(h.WorkerAgentIds).ToArray();
+        var preRestartIdentity = new Dictionary<LogicalAgentId, (string? Slot, string? Task, string Conversation, string? Provider)>();
+        foreach (var agent in preRestartAgents)
+        {
+            var runtime = await h.RuntimeForAsync(agent);
+            var logical = await h.Store.LoadLogicalAgentAsync(agent);
+            Assert.NotNull(logical?.CurrentConversationId);
+            Assert.True(StringComparer.Ordinal.Equals(runtime.ConversationIdentity, logical!.CurrentConversationId!.Value.ToString()));
+            preRestartIdentity[agent] = (runtime.WorkerSlotId, runtime.TaskId, runtime.ConversationIdentity!, runtime.ProviderConversationIdentity);
+        }
         await h.PauseAsync();
         Assert.True(h.SendGate.Snapshot.IsPaused);
         await h.ForceInterruptedRestartAsync();
@@ -216,7 +236,18 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         Assert.Equal("PAUSED", h.Autopilot);
         Assert.True(h.SendGate.Snapshot.IsPaused);
         foreach (var agent in preRestartAgents)
-            Assert.NotNull(await h.Store.LoadLogicalAgentAsync(agent));
+        {
+            var logical = await h.Store.LoadLogicalAgentAsync(agent);
+            var runtime = await h.RuntimeForAsync(agent);
+            Assert.NotNull(logical);
+            var reconciliation = new BrowserSessionReconciliationService().Reconcile(logical!, runtime);
+            Assert.Equal(BrowserReconciliationKind.MATCHED, reconciliation.Outcome);
+            var before = preRestartIdentity[agent];
+            Assert.True(StringComparer.Ordinal.Equals(before.Slot, runtime.WorkerSlotId));
+            Assert.True(StringComparer.Ordinal.Equals(before.Task, runtime.TaskId));
+            Assert.True(StringComparer.Ordinal.Equals(before.Conversation, runtime.ConversationIdentity));
+            Assert.True(StringComparer.Ordinal.Equals(before.Provider, runtime.ProviderConversationIdentity));
+        }
         await h.ResumeAsync();
         Assert.False(h.SendGate.Snapshot.IsPaused);
         Stage(29);
@@ -275,14 +306,16 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         var managerPredecessor = await h.ActiveBrowserConversationAsync(h.ManagerAgentId);
         await h.InvokeGovernedRolloverAsync(managerRuntime, managerPredecessor, "MANAGER_CONTEXT_PRESSURE_ACCEPTANCE");
         var managerLineage = await h.BrowserConversationsAsync(h.ManagerAgentId);
-        Assert.Single(managerLineage, x => x.State == ConversationLifecycleState.Active);
+        var managerSuccessor = Assert.Single(managerLineage, x => x.State == ConversationLifecycleState.Active);
+        Assert.True(StringComparer.Ordinal.Equals(managerSuccessor.ConversationId, new ConversationId(Guid.Parse(managerSuccessor.ConversationId)).ToString()));
         Assert.Contains(managerLineage, x => x.ConversationId == managerPredecessor.ConversationId && x.State == ConversationLifecycleState.Archived);
 
         var workerPredecessor = await h.ActiveBrowserConversationAsync(workerOneAgent);
         secondWorkerRuntime = await h.RuntimeForAsync(workerOneAgent);
         await h.InvokeGovernedRolloverAsync(secondWorkerRuntime, workerPredecessor, "WORKER_CONTEXT_PRESSURE_ACCEPTANCE");
         var workerLineage = await h.BrowserConversationsAsync(workerOneAgent);
-        Assert.Single(workerLineage, x => x.State == ConversationLifecycleState.Active);
+        var workerSuccessor = Assert.Single(workerLineage, x => x.State == ConversationLifecycleState.Active);
+        Assert.True(StringComparer.Ordinal.Equals(workerSuccessor.ConversationId, new ConversationId(Guid.Parse(workerSuccessor.ConversationId)).ToString()));
         Assert.Contains(workerLineage, x => x.ConversationId == workerPredecessor.ConversationId && x.State == ConversationLifecycleState.Archived);
 
         var crashAgent = h.WorkerAgentIds[1];

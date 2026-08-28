@@ -140,11 +140,8 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
         };
     }
 
-    private static bool SameConversationIdentity(string runtimeIdentity, ConversationId expected)
-    {
-        if (!Guid.TryParse(runtimeIdentity, out var runtimeGuid)) return false;
-        return runtimeGuid == expected.Value;
-    }
+    private static bool SameConversationIdentity(string runtimeIdentity, ConversationId expected) =>
+        StringComparer.Ordinal.Equals(runtimeIdentity, expected.ToString());
 
     private static AgentResult NotSent(DispatchId id, string evidence, string error) =>
         new(id, false, false, false, false, null, evidence, error);
