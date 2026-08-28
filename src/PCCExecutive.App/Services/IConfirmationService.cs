@@ -17,7 +17,7 @@ public sealed class WpfConfirmationService : IConfirmationService
     public bool Confirm(string title, string message, string confirmLabel)
     {
         var dialog = new ConfirmationDialog(title, message, confirmLabel);
-        if (Application.Current?.MainWindow is { IsVisible: true } owner)
+        if (System.Windows.Application.Current?.MainWindow is { IsVisible: true } owner)
             dialog.Owner = owner;
         return dialog.ShowDialog() == true;
     }
