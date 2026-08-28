@@ -24,6 +24,8 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     private readonly IChatGptBrowserAdapter _browserAdapter;
     private readonly GlobalBrowserSendGate _sendGate;
     private readonly CrashConsistentOrchestrationStore _orchestrationStore;
+    private readonly ICanonicalDispatchReservationService _dispatchReservations;
+    private AutonomousConversationRolloverRuntime? _rolloverRuntime;
     private readonly HttpClient _pccHttp;
     private readonly HttpClient _githubHttp;
     private readonly List<RecoveryEventSummary> _recovery = [];
@@ -82,6 +84,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         _browserAdapter = browserAdapter;
         _sendGate = sendGate;
         _orchestrationStore = new CrashConsistentOrchestrationStore(store);
+        _dispatchReservations = new CanonicalDispatchReservationService(store);
         _pccHttp = pccHttp;
         _githubHttp = githubHttp;
         _run = run;
@@ -214,6 +217,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                 PersistLogicalAgents(store, run.Id, gateway._managerAgentId!.Value, gateway._workerAgentIds);
             }
             if (run is not null) gateway.RecoverStartupBrowserStateAsync().GetAwaiter().GetResult();
+            gateway._rolloverRuntime = AutonomousConversationRolloverRuntime.Attach(gateway);
             gateway.RefreshLocalSnapshotAsync().GetAwaiter().GetResult();
             if (run is not null && gateway._settings.AutoResume && gateway._autopilot != "PAUSED" && gateway._autopilot != "RECOVERY_REQUIRED") gateway.EnsureAutopilotLoop();
             return gateway;
@@ -511,7 +515,15 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt))).ToLowerInvariant();
         await PersistAgentBindingAsync(managerAgentId, null, null, new ConversationId(Guid.Parse(logicalConversation)), cancellationToken).ConfigureAwait(false);
         await _orchestrationStore.SaveAsync(new OrchestrationRecoverySnapshot(run, _currentWave, _runtimeTasks, _assignments, [], null, OrchestrationPhase.ManagerPlanning, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
-        var request = new AgentRequest(run.Id, managerAgentId, new ConversationId(Guid.Parse(logicalConversation)), DispatchId.New(), prompt, hash);
+        runtime = await _runtimeRegistry.GetAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false) ?? runtime;
+        var managerConversation = new ConversationId(Guid.Parse(logicalConversation));
+        var managerTaskKey = runtime.TaskId ?? $"manager-plan:{run.Id}";
+        var managerTaskId = CanonicalDispatchIdentity.StableTask(run.Id, managerTaskKey);
+        var managerWaveId = CanonicalDispatchIdentity.StableWave(run.Id, managerTaskKey);
+        var managerProviderConversation = runtime.ProviderConversationIdentity ?? "NEW";
+        var managerCorrelation = new DurableDispatchCorrelation(run.Id, managerAgentId, null, managerTaskId, managerWaveId, managerConversation, managerProviderConversation, hash);
+        var managerDispatch = await _dispatchReservations.ReserveOrRecoverAsync(managerCorrelation, cancellationToken).ConfigureAwait(false);
+        var request = new AgentRequest(run.Id, managerAgentId, managerConversation, managerDispatch.Id, prompt, hash, null, null, null, managerProviderConversation);
         var result = await _agentProvider.SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (result.Accepted)
         {
@@ -652,14 +664,14 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
             }
             await PersistAgentBindingAsync(agentId, slot, proposal.Task.Id, conversationId, cancellationToken).ConfigureAwait(false);
             await _store.SaveBrowserConversationAsync(new ConversationRecord { ConversationId = conversationId.ToString(), LogicalAgentId = agentId.ToString(), ProjectRunId = run.Id.ToString(), Sequence = 1, UrlOrProviderIdentity = runtime.ProviderConversationIdentity ?? "NEW", CreatedAt = DateTimeOffset.UtcNow, State = ConversationLifecycleState.Active }, cancellationToken).ConfigureAwait(false);
-            bindings.Add(new WorkerExecutionBinding(slot, agentId, conversationId));
+            bindings.Add(new WorkerExecutionBinding(slot, agentId, conversationId, runtime.ProviderConversationIdentity ?? "NEW"));
         }
 
         _currentWave = wave with { State = WaveState.Dispatching };
         _run = run with { State = ProjectRunState.Dispatching };
         _autopilot = "DISPATCHING";
         await _orchestrationStore.SaveAsync(new OrchestrationRecoverySnapshot(_run, _currentWave, plan.Tasks.Select(x => x.Task).ToArray(), _assignments, [], null, OrchestrationPhase.Dispatching, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
-        var result = await new ManagerWorkerOrchestrator(_agentProvider, baseDispatchInterval: TimeSpan.FromSeconds(_settings.BaseDispatchIntervalSeconds))
+        var result = await new ManagerWorkerOrchestrator(_agentProvider, baseDispatchInterval: TimeSpan.FromSeconds(_settings.BaseDispatchIntervalSeconds), dispatchReservations: _dispatchReservations)
             .DispatchWaveAsync(run.Id, new WavePlan(wave.Id, plan.ManagerEstimate, dispatchProposals.Select(x => x.Task).ToArray(), []), bindings, EmptyCompletedTaskIndex.Instance, cancellationToken).ConfigureAwait(false);
         foreach (var dispatched in result.Dispatches.Where(x => x.Result.Accepted))
         {
@@ -830,7 +842,16 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         await _sessions.BindDispatchTargetAsync(runtime.RuntimeId, $"manager-review:{review.WaveId}", logicalConversation, providerConversation, cancellationToken).ConfigureAwait(false);
         await PersistAgentBindingAsync(managerAgentId, null, null, new ConversationId(Guid.Parse(logicalConversation)), cancellationToken).ConfigureAwait(false);
         var prompt = $"WAVE_REVIEW:\n{JsonSerializer.Serialize(review)}\nReturn the next structured Manager plan JSON only. Use 0..5 tasks and current live evidence.";
-        var request = new AgentRequest(run.Id, managerAgentId, new ConversationId(Guid.Parse(logicalConversation)), DispatchId.New(), prompt, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt))).ToLowerInvariant());
+        var reviewHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt))).ToLowerInvariant();
+        runtime = await _runtimeRegistry.GetAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false) ?? runtime;
+        var reviewConversation = new ConversationId(Guid.Parse(logicalConversation));
+        var reviewTaskKey = runtime.TaskId ?? $"manager-review:{review.WaveId}";
+        var reviewTaskId = CanonicalDispatchIdentity.StableTask(run.Id, reviewTaskKey);
+        var reviewWaveId = CanonicalDispatchIdentity.StableWave(run.Id, reviewTaskKey);
+        var reviewProviderConversation = runtime.ProviderConversationIdentity ?? providerConversation;
+        var reviewCorrelation = new DurableDispatchCorrelation(run.Id, managerAgentId, null, reviewTaskId, reviewWaveId, reviewConversation, reviewProviderConversation, reviewHash);
+        var reviewDispatch = await _dispatchReservations.ReserveOrRecoverAsync(reviewCorrelation, cancellationToken).ConfigureAwait(false);
+        var request = new AgentRequest(run.Id, managerAgentId, reviewConversation, reviewDispatch.Id, prompt, reviewHash, null, null, null, reviewProviderConversation);
         var result = await _agentProvider.SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (!result.Accepted) throw new InvalidOperationException(result.IsUncertain ? "Manager review submission is SUBMITTED_UNKNOWN; no retry is allowed before reconciliation." : $"Manager review send failed: {result.ErrorCode}.");
     }
@@ -1119,6 +1140,8 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     public async ValueTask DisposeAsync()
     {
         _autopilotCancellation.Cancel();
+        if (_rolloverRuntime is not null)
+            await _rolloverRuntime.DisposeAsync().ConfigureAwait(false);
         if (_autopilotTask is not null)
         {
             try { await _autopilotTask.ConfigureAwait(false); }

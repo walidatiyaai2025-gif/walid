@@ -37,14 +37,25 @@ public sealed class AutonomousDispatchJournal
     public async Task<PCCExecutive.Domain.Dispatch?> FindEquivalentAsync(
         ProjectRunId projectRunId,
         LogicalAgentId logicalAgentId,
+        WorkerSlotId? workerSlotId,
         TaskId taskId,
+        WaveId waveId,
         ConversationId conversationId,
+        string providerConversationId,
         string contentHash,
         CancellationToken cancellationToken = default)
     {
         var dispatches = await ListAsync(projectRunId, cancellationToken).ConfigureAwait(false);
         return dispatches
-            .Where(x => x.LogicalAgentId == logicalAgentId && x.TaskId == taskId && x.ConversationId == conversationId && StringComparer.OrdinalIgnoreCase.Equals(x.ContentHash, contentHash))
+            .Where(x => x.LogicalAgentId == logicalAgentId &&
+                        x.TaskId == taskId &&
+                        x.WaveId == waveId &&
+                        x.ConversationId == conversationId &&
+                        (x.WorkerSlotId == workerSlotId || x.WorkerSlotId is null) &&
+                        (string.IsNullOrWhiteSpace(x.ProviderConversationId) ||
+                         StringComparer.Ordinal.Equals(x.ProviderConversationId, providerConversationId) ||
+                         StringComparer.OrdinalIgnoreCase.Equals(x.ProviderConversationId, "NEW")) &&
+                        StringComparer.OrdinalIgnoreCase.Equals(x.ContentHash, contentHash))
             .OrderByDescending(x => x.PreparedAt)
             .FirstOrDefault();
     }

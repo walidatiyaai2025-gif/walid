@@ -4,7 +4,7 @@ using PCCExecutive.Domain;
 
 namespace PCCExecutive.Application;
 
-public sealed record WorkerExecutionBinding(WorkerSlotId SlotId, LogicalAgentId LogicalAgentId, ConversationId ConversationId);
+public sealed record WorkerExecutionBinding(WorkerSlotId SlotId, LogicalAgentId LogicalAgentId, ConversationId ConversationId, string? ProviderConversationId = null);
 public sealed record WorkerDispatchOutcome(WorkerTask Task, WorkerExecutionBinding Binding, AgentResult Result);
 public sealed record WaveDispatchResult(WavePlan Plan, WaveValidationResult Validation, IReadOnlyList<WorkerDispatchOutcome> Dispatches)
 {
@@ -40,17 +40,20 @@ public sealed class ManagerWorkerOrchestrator
     private readonly IAgentProvider _provider;
     private readonly WaveValidator _waveValidator;
     private readonly IWorkerHandoffValidator _handoffValidator;
+    private readonly ICanonicalDispatchReservationService? _dispatchReservations;
     private readonly TimeSpan _baseDispatchInterval;
 
     public ManagerWorkerOrchestrator(
         IAgentProvider provider,
         WaveValidator? waveValidator = null,
         IWorkerHandoffValidator? handoffValidator = null,
-        TimeSpan? baseDispatchInterval = null)
+        TimeSpan? baseDispatchInterval = null,
+        ICanonicalDispatchReservationService? dispatchReservations = null)
     {
         _provider = provider;
         _waveValidator = waveValidator ?? new WaveValidator();
         _handoffValidator = handoffValidator ?? new WorkerHandoffValidator();
+        _dispatchReservations = dispatchReservations;
         _baseDispatchInterval = baseDispatchInterval ?? TimeSpan.FromSeconds(10);
         if (_baseDispatchInterval < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(baseDispatchInterval));
     }
@@ -78,7 +81,12 @@ public sealed class ManagerWorkerOrchestrator
             var binding = bindings[i];
             var content = BuildWorkerPrompt(task, binding);
             var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
-            var request = new AgentRequest(projectRunId, binding.LogicalAgentId, binding.ConversationId, DispatchId.New(), content, hash, binding.SlotId, task.Id, plan.WaveId);
+            var providerConversationId = binding.ProviderConversationId ?? binding.ConversationId.ToString();
+            var correlation = new DurableDispatchCorrelation(projectRunId, binding.LogicalAgentId, binding.SlotId, task.Id, plan.WaveId, binding.ConversationId, providerConversationId, hash);
+            var dispatchId = CanonicalDispatchIdentity.Create(correlation);
+            if (_dispatchReservations is not null)
+                dispatchId = (await _dispatchReservations.ReserveOrRecoverAsync(correlation, cancellationToken).ConfigureAwait(false)).Id;
+            var request = new AgentRequest(projectRunId, binding.LogicalAgentId, binding.ConversationId, dispatchId, content, hash, binding.SlotId, task.Id, plan.WaveId, providerConversationId);
             var result = await _provider.SendAsync(request, cancellationToken).ConfigureAwait(false);
             results.Add(new(task, binding, result));
 

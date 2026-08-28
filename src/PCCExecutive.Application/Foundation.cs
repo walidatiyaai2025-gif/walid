@@ -4,7 +4,38 @@ using PCCExecutive.Domain;
 
 namespace PCCExecutive.Application;
 
-public sealed record AgentRequest(ProjectRunId ProjectRunId, LogicalAgentId LogicalAgentId, ConversationId ConversationId, DispatchId DispatchId, string Content, string ContentHash, WorkerSlotId? WorkerSlotId = null, TaskId? TaskId = null, WaveId? WaveId = null);
+public sealed record AgentRequest(ProjectRunId ProjectRunId, LogicalAgentId LogicalAgentId, ConversationId ConversationId, DispatchId DispatchId, string Content, string ContentHash, WorkerSlotId? WorkerSlotId = null, TaskId? TaskId = null, WaveId? WaveId = null, string? ProviderConversationId = null);
+public sealed record DurableDispatchCorrelation(ProjectRunId ProjectRunId, LogicalAgentId LogicalAgentId, WorkerSlotId? WorkerSlotId, TaskId TaskId, WaveId WaveId, ConversationId LogicalConversationId, string ProviderConversationId, string ContentHash);
+public interface ICanonicalDispatchReservationService
+{
+    Task<Dispatch> ReserveOrRecoverAsync(DurableDispatchCorrelation correlation, CancellationToken cancellationToken = default);
+}
+public static class CanonicalDispatchIdentity
+{
+    public static DispatchId Create(DurableDispatchCorrelation correlation) => new(StableGuid(string.Join("|",
+        "dispatch-v2",
+        correlation.ProjectRunId,
+        correlation.LogicalAgentId,
+        correlation.WorkerSlotId?.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "MANAGER",
+        correlation.TaskId,
+        correlation.WaveId,
+        correlation.LogicalConversationId,
+        Normalize(correlation.ProviderConversationId),
+        Normalize(correlation.ContentHash))));
+
+    public static TaskId StableTask(ProjectRunId runId, string runtimeTaskId) => new(StableGuid($"runtime-task:{runId}:{Normalize(runtimeTaskId)}"));
+    public static WaveId StableWave(ProjectRunId runId, string runtimeTaskId) => new(StableGuid($"runtime-wave:{runId}:{Normalize(runtimeTaskId)}"));
+
+    private static string Normalize(string value) => string.IsNullOrWhiteSpace(value) ? "UNKNOWN" : value.Trim();
+    private static Guid StableGuid(string value)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        var guid = bytes[..16];
+        guid[6] = (byte)((guid[6] & 0x0f) | 0x50);
+        guid[8] = (byte)((guid[8] & 0x3f) | 0x80);
+        return new Guid(guid);
+    }
+}
 public sealed record AgentResult(DispatchId DispatchId, bool Accepted, bool IsGenerating, bool IsComplete, bool IsUncertain, string? Response, string? ProviderEvidence, string? ErrorCode);
 public sealed record ProviderHealth(bool IsAvailable, bool IsAuthenticated, bool RequiresAttention, string? State, string? Evidence);
 public interface IAgentProvider

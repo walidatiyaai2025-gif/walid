@@ -71,47 +71,28 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
         var effectiveDispatchId = request.DispatchId;
         PCCExecutive.Domain.Dispatch? domainDispatch = null;
         AutonomousDispatchJournal? journal = null;
-        Func<CancellationToken, Task>? beforeSubmit = null;
         if (_durableStore is not null)
         {
-            journal = new AutonomousDispatchJournal(_durableStore);
-            var taskId = request.TaskId ?? new TaskId(StableGuid($"runtime-task:{request.ProjectRunId}:{runtime.TaskId}"));
-            var waveId = request.WaveId ?? new WaveId(StableGuid($"runtime-wave:{request.ProjectRunId}:{runtime.TaskId}"));
-            var existing = await journal.FindEquivalentAsync(request.ProjectRunId, request.LogicalAgentId, taskId, request.ConversationId, request.ContentHash, cancellationToken).ConfigureAwait(false);
-            if (existing is not null)
-            {
-                var reconciled = await journal.ReconcileAsync(existing, cancellationToken).ConfigureAwait(false);
-                domainDispatch = reconciled.Dispatch;
-                effectiveDispatchId = domainDispatch.Id;
-                if (reconciled.IsUncertain)
-                    return new(effectiveDispatchId, false, false, false, true, null, reconciled.Evidence, "SUBMITTED_UNKNOWN");
-                if (reconciled.AlreadyAccepted)
-                    return new(effectiveDispatchId, true, domainDispatch.State == PCCExecutive.Domain.DispatchState.GENERATING, domainDispatch.State == PCCExecutive.Domain.DispatchState.COMPLETED, false, null, reconciled.Evidence, null);
-                if (!reconciled.SafeToSubmit)
-                    return NotSent(effectiveDispatchId, reconciled.Evidence, $"DURABLE_DISPATCH_{domainDispatch.State}");
-            }
-            else
-            {
-                domainDispatch = new PCCExecutive.Domain.Dispatch(
-                    effectiveDispatchId,
-                    request.ProjectRunId,
-                    waveId,
-                    taskId,
-                    request.LogicalAgentId,
-                    request.ConversationId,
-                    request.ContentHash,
-                    DateTimeOffset.UtcNow,
-                    PCCExecutive.Domain.DispatchState.PREPARED,
-                    null,
-                    null,
-                    null,
-                    null,
-                    $"runtime-task:{runtime.TaskId};worker-slot:{expectedSlot ?? "MANAGER"}");
-                var prepared = domainDispatch;
-                beforeSubmit = ct => journal.SaveAsync(prepared, ct);
-            }
-        }
+            var taskId = request.TaskId ?? CanonicalDispatchIdentity.StableTask(request.ProjectRunId, runtime.TaskId!);
+            var waveId = request.WaveId ?? CanonicalDispatchIdentity.StableWave(request.ProjectRunId, runtime.TaskId!);
+            var providerConversationId = request.ProviderConversationId ?? runtime.ProviderConversationIdentity!;
+            if (!StringComparer.Ordinal.Equals(runtime.ProviderConversationIdentity, providerConversationId) &&
+                !StringComparer.OrdinalIgnoreCase.Equals(providerConversationId, "NEW"))
+                return NotSent(request.DispatchId, $"runtime:{runtime.RuntimeId};provider-conversation:mismatch", "WRONG_PROVIDER_CONVERSATION_BINDING");
 
+            var correlation = new DurableDispatchCorrelation(request.ProjectRunId, request.LogicalAgentId, request.WorkerSlotId, taskId, waveId, request.ConversationId, providerConversationId, request.ContentHash);
+            domainDispatch = await new CanonicalDispatchReservationService(_durableStore).ReserveOrRecoverAsync(correlation, cancellationToken).ConfigureAwait(false);
+            effectiveDispatchId = domainDispatch.Id;
+            journal = new AutonomousDispatchJournal(_durableStore);
+            var reconciled = await journal.ReconcileAsync(domainDispatch, cancellationToken).ConfigureAwait(false);
+            domainDispatch = reconciled.Dispatch;
+            if (reconciled.IsUncertain)
+                return new(effectiveDispatchId, false, false, false, true, null, reconciled.Evidence, "SUBMITTED_UNKNOWN");
+            if (reconciled.AlreadyAccepted)
+                return new(effectiveDispatchId, true, domainDispatch.State == PCCExecutive.Domain.DispatchState.GENERATING, domainDispatch.State == PCCExecutive.Domain.DispatchState.COMPLETED, false, null, reconciled.Evidence, null);
+            if (!reconciled.SafeToSubmit)
+                return NotSent(effectiveDispatchId, reconciled.Evidence, $"DURABLE_DISPATCH_{domainDispatch.State}");
+        }
         var browserRequest = new BrowserDispatchRequest(
             effectiveDispatchId.ToString(),
             request.ProjectRunId.ToString(),
@@ -123,7 +104,7 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
             request.ContentHash,
             expectedSlot);
 
-        var result = await _provider.SendAsync(runtime.RuntimeId, browserRequest, cancellationToken, beforeSubmit).ConfigureAwait(false);
+        var result = await _provider.SendAsync(runtime.RuntimeId, browserRequest, cancellationToken).ConfigureAwait(false);
         var evidence = string.Join(";", result.Evidence.Prepend(result.Reason));
 
         if (journal is not null && domainDispatch is not null)
