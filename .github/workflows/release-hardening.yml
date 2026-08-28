@@ -35,6 +35,10 @@ jobs:
         shell: pwsh
         run: ./build/Test-ReleaseHardening.ps1
 
+      - name: Run deterministic update-integrity tests
+        shell: pwsh
+        run: ./build/Test-UpdateIntegrity.ps1
+
       - name: Generate dependency and tool provenance
         shell: pwsh
         run: ./build/New-Sbom.ps1 -OutputPath artifacts/release/sbom-preflight.json
