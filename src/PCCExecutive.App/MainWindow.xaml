@@ -99,8 +99,8 @@
                                 <TextBlock Text="{Binding Snapshot.OperatorMessage}" FontWeight="SemiBold"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                <Button Content="Pause AI" Margin="0,0,8,0" Command="{Binding PauseAiCommand}" ToolTip="Checkpoints state and stops new dispatches; no session is destroyed."/>
-                                <Button Content="Resume" Command="{Binding ResumeAiCommand}"/>
+                                <Button Content="Pause AI" Margin="0,0,8,0" Command="{Binding PauseAiCommand}" ToolTip="Disabled in this first test build: canonical pause/checkpoint orchestration is not integrated, so PCC Executive will not simulate a pause." ToolTipService.ShowOnDisabled="True"/>
+                                <Button Content="Resume" Command="{Binding ResumeAiCommand}" ToolTip="Disabled in this first test build: canonical resume orchestration is not integrated, so PCC Executive will not simulate a resume." ToolTipService.ShowOnDisabled="True"/>
                             </StackPanel>
                         </Grid>
                     </Border>
