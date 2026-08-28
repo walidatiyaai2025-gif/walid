@@ -1,5 +1,5 @@
 name: PCC Executive final runtime closure
-# phase: fail-closed-ownership-compatibility
+# phase: full-deterministic-runtime-gate
 
 on:
   push:
@@ -32,9 +32,9 @@ jobs:
         run: |
           git config user.name "pcc-runtime-closure-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add src tests build/Apply-FinalRuntimeClosure.ps1 .gitignore .github/workflows/final-runtime-closure.yml
+          git add src tests build .gitignore .github/workflows/final-runtime-closure.yml
           if (-not (git diff --cached --quiet)) {
-            git commit -m "fix: keep production browser ownership fail closed"
+            git commit -m "fix: finalize durable runtime safety and acceptance"
             git push origin HEAD:worker/pcc-final-runtime-e2e-closure
           }
 
@@ -51,7 +51,9 @@ jobs:
             'tests/PCCExecutive.App.Tests/PCCExecutive.App.Tests.csproj',
             'tests/PCCExecutive.Browser.Tests/PCCExecutive.Browser.Tests.csproj',
             'tests/PCCExecutive.Browser.Acceptance/PCCExecutive.Browser.Acceptance.csproj',
-            'tests/PCCExecutive.Infrastructure.Tests/PCCExecutive.Infrastructure.Tests.csproj'
+            'tests/PCCExecutive.Infrastructure.Tests/PCCExecutive.Infrastructure.Tests.csproj',
+            'tests/PCCExecutive.Integration/PCCExecutive.Integration.csproj',
+            'tests/PCCExecutive.E2E/PCCExecutive.E2E.csproj'
           )
           foreach ($project in $projects) {
             dotnet build $project -c Release
@@ -67,7 +69,9 @@ jobs:
             'tests/PCCExecutive.App.Tests/PCCExecutive.App.Tests.csproj',
             'tests/PCCExecutive.Browser.Tests/PCCExecutive.Browser.Tests.csproj',
             'tests/PCCExecutive.Browser.Acceptance/PCCExecutive.Browser.Acceptance.csproj',
-            'tests/PCCExecutive.Infrastructure.Tests/PCCExecutive.Infrastructure.Tests.csproj'
+            'tests/PCCExecutive.Infrastructure.Tests/PCCExecutive.Infrastructure.Tests.csproj',
+            'tests/PCCExecutive.Integration/PCCExecutive.Integration.csproj',
+            'tests/PCCExecutive.E2E/PCCExecutive.E2E.csproj'
           )
           foreach ($project in $projects) {
             dotnet test $project -c Release --no-build --no-restore
@@ -81,4 +85,8 @@ jobs:
           if ($tracked) {
             $tracked | ForEach-Object { Write-Error "Tracked generated output: $_" }
             exit 1
+          }
+          if (Test-Path './build/Test-GeneratedOutputHygiene.ps1') {
+            ./build/Test-GeneratedOutputHygiene.ps1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
