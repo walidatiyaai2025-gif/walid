@@ -46,10 +46,12 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
-    public void Project_selection_is_initial_screen_without_active_run()
+    public void Chrome_connection_is_initial_screen_without_active_run()
     {
         var vm = new MainViewModel(new FakeGateway(TestSnapshots.Healthy with { HasActiveRun = false }));
-        Assert.Equal(ScreenId.ProjectSelection, vm.SelectedScreen);
+        Assert.Equal(ScreenId.ChromeConnection, vm.SelectedScreen);
+        Assert.Equal(ScreenId.ChromeConnection, vm.Navigation[0].Id);
+        Assert.Equal("01  Chrome", vm.Navigation[0].Label);
     }
 
     [Fact]
@@ -161,37 +163,5 @@ public sealed class MainViewModelTests
             _snapshot = snapshot;
             SnapshotChanged?.Invoke(this, snapshot);
         }
-    }
-
-    private static class TestSnapshots
-    {
-        public static RuntimeSnapshot Healthy => new(
-            GatewayBound: true,
-            HasActiveRun: true,
-            RuntimeStatus: "Integrated runtime",
-            GlobalHealth: HealthState.Unknown,
-            AutopilotState: "READY",
-            CurrentWave: "Manager planning",
-            VerifiedCompletion: 0,
-            ManagerEstimate: 0,
-            CompletionMode: CompletionMode.Running,
-            ActiveWorkers: 0,
-            P0Count: 0,
-            P1Count: 0,
-            BlockerCount: 0,
-            LoopGuardState: "NORMAL",
-            LatestManagerHandoff: "Awaiting",
-            CurrentExecutionFlow: "Project → Manager",
-            ApiConfigured: false,
-            ProviderMode: ProviderMode.BrowserWeb,
-            DispatchSettings: DispatchSettingsSummary.ProductDefaults,
-            Update: new UpdateSummary("0.1.0", null, "ready", "ready", "ready", "ready", false),
-            Projects: [],
-            Sessions: [],
-            Workers: [],
-            Tasks: [],
-            EvidenceGates: [],
-            AttentionItems: [],
-            RecoveryEvents: []);
     }
 }
