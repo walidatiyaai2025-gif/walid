@@ -11,6 +11,77 @@ function Require-Text([string]$Path, [string]$Needle) {
     return $text
 }
 
+# Reconcile PR #34's automatic rollover composition with the CURRENT canonical
+# lifecycle/store API instead of introducing a parallel rollover implementation.
+$rolloverPath = Join-Path $root 'src/PCCExecutive.App/Presentation/AutonomousConversationRolloverRuntime.cs'
+$rolloverText = [IO.File]::ReadAllText($rolloverPath)
+$rolloverText = $rolloverText.Replace('    private readonly ConversationLifecycleManager _lifecycle;' + [Environment]::NewLine, '')
+$rolloverText = $rolloverText.Replace('        _lifecycle = new ConversationLifecycleManager(_store);' + [Environment]::NewLine, '')
+$oldObserve = @'
+    private async Task<ConversationGrowthObservation> ObserveAsync(BrowserRuntimeRecord runtime, ConversationRecord active, CancellationToken cancellationToken)
+    {
+        var messages = 0;
+        long characters = 0;
+        var waveCount = 0;
+        var slowOrStuck = 0;
+        var contextLimit = false;
+        var longComposerFailure = false;
+
+        var checkpoints = await _store.ListCheckpointsAsync(active.ProjectRunId, cancellationToken).ConfigureAwait(false);
+        foreach (var checkpoint in checkpoints.Where(x => StringComparer.Ordinal.Equals(x.ProjectRunId, active.ProjectRunId)))
+        {
+            if (checkpoint.Kind.Contains("manager", StringComparison.OrdinalIgnoreCase) || checkpoint.Kind.Contains("worker", StringComparison.OrdinalIgnoreCase))
+            {
+                messages++;
+                characters += checkpoint.Payload?.Length ?? 0;
+            }
+            if (checkpoint.Kind.Contains("wave", StringComparison.OrdinalIgnoreCase)) waveCount++;
+        }
+
+        var runtimeCheckpoints = await _store.ListCheckpointsAsync(active.ProjectRunId, cancellationToken).ConfigureAwait(false);
+        foreach (var checkpoint in runtimeCheckpoints.Where(x => x.Payload?.Contains(runtime.RuntimeId, StringComparison.Ordinal) == true))
+        {
+            if (checkpoint.Payload!.Contains("SLOW", StringComparison.OrdinalIgnoreCase) || checkpoint.Payload.Contains("STUCK", StringComparison.OrdinalIgnoreCase)) slowOrStuck++;
+            if (checkpoint.Payload.Contains("CONTEXT_LIMIT", StringComparison.OrdinalIgnoreCase)) contextLimit = true;
+            if (checkpoint.Payload.Contains("LONG_CONVERSATION_COMPOSER", StringComparison.OrdinalIgnoreCase)) longComposerFailure = true;
+        }
+
+        return new ConversationGrowthObservation(messages, characters, waveCount, DateTimeOffset.UtcNow - active.CreatedAt, slowOrStuck, contextLimit, longComposerFailure);
+    }
+'@
+$newObserve = @'
+    private async Task<ConversationGrowthObservation> ObserveAsync(BrowserRuntimeRecord runtime, ConversationRecord active, CancellationToken cancellationToken)
+    {
+        var age = DateTimeOffset.UtcNow - active.CreatedAt;
+        if (string.IsNullOrWhiteSpace(runtime.TaskId) || string.IsNullOrWhiteSpace(runtime.ConversationIdentity) || string.IsNullOrWhiteSpace(runtime.ProviderConversationIdentity))
+            return new ConversationGrowthObservation(0, 0, 0, age, runtime.State is BrowserSessionState.Degraded or BrowserSessionState.Recovering ? 1 : 0, false, false);
+
+        var expected = new BrowserDispatchExpectation(runtime.ProjectRunId, runtime.LogicalAgentId, runtime.TaskId!, runtime.ConversationIdentity!, runtime.ProviderConversationIdentity!, runtime.WorkerSlotId);
+        var semantic = await PccHostConversationAccess.BrowserAdapter(_host).InspectAsync(runtime, expected, cancellationToken).ConfigureAwait(false);
+        var evidence = semantic.Input.Evidence
+            .Concat(semantic.Generation.Evidence)
+            .Concat(semantic.Auth.Evidence)
+            .Concat(semantic.Conversation.Evidence)
+            .Concat(semantic.Health.Evidence)
+            .ToArray();
+        var contextLimit = evidence.Any(x => x.Contains("CONTEXT_LIMIT", StringComparison.OrdinalIgnoreCase) || x.Contains("context limit", StringComparison.OrdinalIgnoreCase));
+        var longComposerFailure = evidence.Any(x => x.Contains("LONG_CONVERSATION_COMPOSER", StringComparison.OrdinalIgnoreCase) || x.Contains("conversation too long", StringComparison.OrdinalIgnoreCase));
+        var slowOrStuck = semantic.Health.State is PageHealth.Slow or PageHealth.TempError || semantic.Generation.State == GenerationState.Unknown ? 1 : 0;
+        var capturedCharacters = semantic.CapturedResponseText?.Length ?? 0;
+        return new ConversationGrowthObservation(semantic.AssistantMessageCount, capturedCharacters, 0, age, slowOrStuck, contextLimit, longComposerFailure);
+    }
+'@
+if ($rolloverText.Contains($oldObserve.TrimEnd())) {
+    $rolloverText = $rolloverText.Replace($oldObserve.TrimEnd(), $newObserve.TrimEnd())
+}
+elseif (-not $rolloverText.Contains('var semantic = await PccHostConversationAccess.BrowserAdapter(_host).InspectAsync(runtime, expected, cancellationToken)')) {
+    throw 'PR34 rollover observation anchor no longer matches current source.'
+}
+$rolloverText = $rolloverText.Replace('        await _lifecycle.CommitRolloverAsync(archived, successor, checkpointId, cancellationToken).ConfigureAwait(false);', '        await _store.CommitRolloverAsync(archived, successor, checkpointId, cancellationToken).ConfigureAwait(false);')
+if ($rolloverText.Contains('_lifecycle')) { throw 'Obsolete ConversationLifecycleManager direct usage remains in PR34 runtime adapter.' }
+if ($rolloverText.Contains('ListCheckpointsAsync')) { throw 'Obsolete checkpoint-list API remains in PR34 runtime adapter.' }
+[IO.File]::WriteAllText($rolloverPath, $rolloverText, [Text.UTF8Encoding]::new($false))
+
 $browser = Require-Text 'src/PCCExecutive.Browser/DispatchAndResilience.cs' 'var proof = await _ownership.ProveAsync'
 $proofIndex = $browser.IndexOf('var proof = await _ownership.ProveAsync', [StringComparison]::Ordinal)
 $submitIndex = $browser.IndexOf('_adapter.SubmitAsync', [StringComparison]::Ordinal)
@@ -32,7 +103,8 @@ if ($adapter.Contains('beforeSubmit = ct => journal.SaveAsync(prepared, ct);')) 
 $rollover = Require-Text 'src/PCCExecutive.App/Presentation/AutonomousConversationRolloverRuntime.cs' 'RepairInterruptedRolloversAsync'
 if ($rollover.Contains('RecoveryCompletionPresentationGateway')) { throw 'Automatic rollover still depends on the obsolete recovery wrapper.' }
 [void](Require-Text 'src/PCCExecutive.App/Presentation/AutonomousConversationRolloverRuntime.cs' 'NormalizeActiveConversationTruthAsync')
-[void](Require-Text 'src/PCCExecutive.App/Presentation/AutonomousConversationRolloverRuntime.cs' 'ConversationLifecycleManager')
+[void](Require-Text 'src/PCCExecutive.App/Presentation/AutonomousConversationRolloverRuntime.cs' 'PreventiveRolloverPolicy')
+[void](Require-Text 'src/PCCExecutive.App/Presentation/AutonomousConversationRolloverRuntime.cs' '_store.CommitRolloverAsync')
 
 $acceptance = Require-Text 'tests/PCCExecutive.Browser.Acceptance/AcceptanceHarness.cs' 'AcceptanceOwnershipProofService'
 $ownershipLine = 'public IOwnershipProofService Ownership => _ownership;'
@@ -76,4 +148,4 @@ public sealed class ProductionRuntimeHostCompositionTests
 }
 [void](Require-Text 'tests/PCCExecutive.E2E/PCCExecutive.E2E.csproj' '../../src/PCCExecutive.App/PCCExecutive.App.csproj')
 
-Write-Host 'Canonical durable dispatch, automatic rollover, recovery, ownership, Browser.Acceptance, and production-host E2E invariants verified.'
+Write-Host 'Canonical durable dispatch, current-API automatic rollover, recovery, ownership, Browser.Acceptance, and production-host E2E invariants verified.'
