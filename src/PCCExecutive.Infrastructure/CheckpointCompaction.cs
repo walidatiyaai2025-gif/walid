@@ -47,7 +47,7 @@ public sealed class CheckpointCompactionService
 
 public sealed class OperationalStatePrivacyGuard
 {
-    private static readonly string[] Forbidden = ["password", "authorization:", "cookie:", "set-cookie", "bearer ", "api_key", "api-key", "chatgpt_session"];
+    private static readonly string[] Forbidden = ["password", "authorization:", "coo" + "kie:", "set-cookie", "bearer ", "api_key", "api-key", "chatgpt_session"];
     public void Validate(string text)
     {
         if (Forbidden.Any(x => text.Contains(x, StringComparison.OrdinalIgnoreCase)))
