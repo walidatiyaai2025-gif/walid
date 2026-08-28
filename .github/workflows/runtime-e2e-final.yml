@@ -46,19 +46,20 @@ jobs:
       - name: Apply and persist canonical conversation identity closure
         shell: pwsh
         run: |
-          ./build/Apply-CanonicalConversationIdentityClosureV5.ps1
+          ./build/Apply-CanonicalConversationIdentityClosureV6.ps1
           git config user.name "pcc-runtime-e2e-closure"
           git config user.email "actions@users.noreply.github.com"
-          git checkout 3909910f509c7b71784434588becf252d2bb1f5e -- .github/workflows/runtime-e2e-final.yml
-          git rm build/Apply-CanonicalConversationIdentityClosure.ps1
-          git rm build/Apply-CanonicalConversationIdentityClosureV2.ps1
-          git rm build/Apply-CanonicalConversationIdentityClosureV3.ps1
-          git rm build/Apply-CanonicalConversationIdentityClosureV4.ps1
-          git rm build/Apply-CanonicalConversationIdentityClosureV5.ps1
-          git add src tests .github/workflows/runtime-e2e-final.yml
+          git rm -f build/Apply-CanonicalConversationIdentityClosure.ps1
+          git rm -f build/Apply-CanonicalConversationIdentityClosureV2.ps1
+          git rm -f build/Apply-CanonicalConversationIdentityClosureV3.ps1
+          git rm -f build/Apply-CanonicalConversationIdentityClosureV4.ps1
+          git rm -f build/Apply-CanonicalConversationIdentityClosureV5.ps1
+          git rm -f build/Apply-CanonicalConversationIdentityClosureV6.ps1
+          git add src tests
           if (git diff --cached --quiet) { throw 'CANONICAL_IDENTITY_PATCH_PRODUCED_NO_SOURCE_CHANGE' }
           git commit -m "fix: canonicalize logical conversation identity"
           git push origin HEAD:worker/pcc-runtime-e2e-final
+          if ($LASTEXITCODE -ne 0) { throw 'SOURCE_PUSH_FAILED' }
           Write-Host "PATCHED_SOURCE_HEAD=$((git rev-parse HEAD).Trim())"
 
       - name: Domain Application App Browser Acceptance Infrastructure Integration E2E
