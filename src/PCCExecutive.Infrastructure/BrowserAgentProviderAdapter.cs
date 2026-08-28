@@ -39,12 +39,17 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
     public async Task<AgentResult> SendAsync(AgentRequest request, CancellationToken cancellationToken = default)
     {
         var runtimes = await _runtimes.ListAsync(cancellationToken).ConfigureAwait(false);
-        var runtime = runtimes
+        var agentRuntimes = runtimes
             .Where(x => !x.IsArchived && x.State is not BrowserSessionState.Killed and not BrowserSessionState.Archived)
-            .FirstOrDefault(x => StringComparer.Ordinal.Equals(x.ProjectRunId, request.ProjectRunId.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, request.LogicalAgentId.ToString()));
+            .Where(x => StringComparer.Ordinal.Equals(x.ProjectRunId, request.ProjectRunId.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, request.LogicalAgentId.ToString()))
+            .ToArray();
+        var runtime = agentRuntimes.FirstOrDefault(x =>
+            !string.IsNullOrWhiteSpace(x.ConversationIdentity) && SameConversationIdentity(x.ConversationIdentity, request.ConversationId));
 
         if (runtime is null)
-            return NotSent(request.DispatchId, "owned-runtime:not-found", "BROWSER_RUNTIME_NOT_BOUND");
+            return agentRuntimes.Length == 0
+                ? NotSent(request.DispatchId, "owned-runtime:not-found", "BROWSER_RUNTIME_NOT_BOUND")
+                : NotSent(request.DispatchId, $"agent-runtime-count:{agentRuntimes.Length};conversation:mismatch", "WRONG_CONVERSATION_BINDING");
 
         if (string.IsNullOrWhiteSpace(runtime.TaskId) || string.IsNullOrWhiteSpace(runtime.ConversationIdentity) || string.IsNullOrWhiteSpace(runtime.ProviderConversationIdentity))
             return NotSent(request.DispatchId, $"runtime:{runtime.RuntimeId}", "BROWSER_DISPATCH_BINDING_INCOMPLETE");
