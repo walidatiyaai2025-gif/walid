@@ -35,6 +35,10 @@ public partial class App : System.Windows.Application
                 window.Dispatcher.Invoke(window.UpdateLayout);
                 if (!window.IsLoaded || !window.IsVisible)
                     throw new InvalidOperationException("PCC Executive WPF startup smoke did not create and render the main window.");
+
+                // Give the external package smoke probe a deterministic window in which
+                // MainWindowHandle is observable, then close through the normal WPF path.
+                System.Threading.Thread.Sleep(1000);
                 window.AllowCloseAndClose();
                 Shutdown(0);
                 return;
