@@ -1,3 +1,4 @@
+using PCCExecutive.Browser;
 using System.IO;
 using Xunit;
 
@@ -40,8 +41,11 @@ public sealed class ProductionRecoveryWiringContractTests
             "_sendGate.Apply(new ResilienceDecision",
             "AutonomousConversationRolloverRuntime.Attach(gateway)",
             "gateway.EnsureAutopilotLoop()");
-        Assert.Contains("ChatGptResilienceState.RateLimited", source, StringComparison.Ordinal);
-        Assert.Contains("ChatGptResilienceState.Offline", source, StringComparison.Ordinal);
+        Assert.Contains("Enum.TryParse<ChatGptResilienceState>", source, StringComparison.Ordinal);
+        Assert.True(Enum.TryParse<ChatGptResilienceState>("RATELIMITED", true, out var rateLimited));
+        Assert.Equal(ChatGptResilienceState.RateLimited, rateLimited);
+        Assert.True(Enum.TryParse<ChatGptResilienceState>("OFFLINE", true, out var offline));
+        Assert.Equal(ChatGptResilienceState.Offline, offline);
     }
 
     [Fact]
