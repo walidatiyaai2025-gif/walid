@@ -1,282 +1,212 @@
 # PCC Executive 0.1.0 — Final Convergence Preflight
 
-**Authority:** Issue #1  
-**Canonical task:** `PCCEXECUTIVE-T0001`  
-**Scope:** composition/conflict/release-proof planning only. No production implementation is owned by this branch and no PASS below is inferred from mergeability.
+Authority: Issue #1  
+Canonical task: `PCCEXECUTIVE-T0001`  
+Scope: evidence/planning only. No production feature implementation is owned here and no release PASS is fabricated.
 
-## 1. Final live snapshot used by this preflight
+## Live heads inspected
 
-| Stream | Live head | Relationship / disposition |
+| Stream | Live head | Preflight disposition |
 |---|---|---|
-| Runtime closure | `7b5d8f975baf7e4a56681e3cc538ea552c7c5d59` | canonical composition base |
-| Browser / PR #36 | `6d19aecca2787b9152d8b116b4aaa58df25f22a2` | 4 commits ahead of runtime; accepted Browser candidate |
-| Recovery / PR #37 | `db775f43fbd335694f1efac6158e36992db77d45` | 15 commits ahead of runtime; accepted Recovery candidate |
-| E2E / PR #38 | `6bc3b852beab5f386905130a66a88a8a41667fb9` | 30 commits ahead of runtime; **already composes Browser + Recovery + E2E** |
-| UI / PR #32 | `991d7c120ae0982bee08fad1a285d9c387241f00` | stale ancestry: 2 commits ahead / 62 behind runtime merge-base `cce6fa7575dc71270dc12362edcc5930b153e7a1`; replay last |
+| Runtime closure | `7b5d8f975baf7e4a56681e3cc538ea552c7c5d59` | canonical base |
+| Browser / PR #36 | `6d19aecca2787b9152d8b116b4aaa58df25f22a2` | accepted Browser candidate |
+| Recovery / PR #37 | `db775f43fbd335694f1efac6158e36992db77d45` | accepted Recovery candidate |
+| E2E / PR #38 | `6bc3b852beab5f386905130a66a88a8a41667fb9` | consolidated Browser + Recovery + E2E candidate |
+| UI / PR #32 | `991d7c120ae0982bee08fad1a285d9c387241f00` | stale ancestry; replay/rebase last |
 
-The E2E head `6bc3b852...` is an octopus composition commit whose parents are the prior E2E head `987b1d79...`, Browser `6d19aecc...`, and Recovery `db775f43...`. Therefore Browser and Recovery must **not** be merged again independently and then re-applied as duplicate implementation. For final convergence, treat `6bc3b852...` as the consolidated B+C+D candidate after verifying its exact-head CI.
+The latest E2E head is an octopus composition commit with parents `987b1d79...` (prior E2E), `6d19aecc...` (Browser), and `db775f43...` (Recovery). A final convergence worker must therefore not merge #36 and #37 separately and then replay the same composed E2E head. Treat `6bc3b852...` as the current consolidated B+C+D unit.
 
-PR #32 is stale only by ancestry: runtime's 62 commits since its merge-base do not touch the ten UI paths changed by PR #32. Rebase/replay its UI delta last; do not merge its old checkpoint ancestry wholesale.
+PR #32 is 2 commits ahead / 62 behind the current runtime from merge-base `cce6fa7575dc71270dc12362edcc5930b153e7a1`, but the intervening runtime commits do not touch its ten UI paths. Its problem is stale ancestry, not a production-file merge conflict.
 
-## 2. PR state matrix
+## PR state matrix
 
-| PR | State | Mergeable | Preflight classification |
+| PR | State | Mergeable | Classification |
 |---|---|---:|---|
-| #32 UI truth | OPEN, unmerged | true | ACCEPT UI DELTA; replay last |
-| #33 historical runtime closure | CLOSED, unmerged, draft | n/a | STALE / DO NOT MERGE |
-| #34 recovery/completion wrapper | OPEN, unmerged | false | **SUPERSEDED / DO NOT MERGE** |
-| #35 dispatch/final-enter v2 | OPEN, unmerged | false | **SUPERSEDED / DO NOT MERGE** |
-| #36 Browser safety | OPEN, unmerged | true | ACCEPTED INTO LATEST E2E COMPOSED HEAD |
-| #37 Recovery/rollover | OPEN, unmerged | true | ACCEPTED INTO LATEST E2E COMPOSED HEAD |
-| #38 E2E green-gate | OPEN, unmerged | true | CONSOLIDATED B+C+D CANDIDATE; exact-head gates still running at snapshot |
+| #32 | OPEN, unmerged | true | ACCEPT UI DELTA; replay last |
+| #33 | CLOSED, unmerged, draft | n/a | STALE / DO NOT MERGE |
+| #34 | OPEN, unmerged | false | SUPERSEDED / DO NOT MERGE |
+| #35 | OPEN, unmerged | false | SUPERSEDED / DO NOT MERGE |
+| #36 | OPEN, unmerged | true | accepted and already included in `6bc3b852...` |
+| #37 | OPEN, unmerged | true | accepted and already included in `6bc3b852...` |
+| #38 | OPEN, unmerged | true | consolidated B+C+D candidate; mandatory gates still red |
 
-### CI facts at snapshot
+## Exact-head CI status
 
-- Browser #36 focused Browser suites were green in its inspected run; its older full Windows result was red because then-current E2E assertions were red.
-- Recovery #37 at `db775f43...` is independently green for **Release Hardening, Durability Convergence, and Windows CI**.
-- Previous E2E head `987b1d79...` built with 0 compiler warnings/errors and passed App/Application/Browser/Domain suites, but E2E remained red (12 failed / 4 passed) because the acceptance harness released a process-wide `ProjectRunLock` mutex from a non-owner context, then leaked the lock into subsequent tests.
-- Latest composed E2E head `6bc3b852...`: Release Hardening was green; E2E Final Acceptance, Durability Convergence and Windows CI were still **in progress** at the final snapshot used to write this document. This preflight therefore records no final PASS for that head.
-- PR #38 also reports a production-owner blocker discovered by E2E: logical conversation identity formatting differs (`D` vs canonical `N`) and can fail closed in `BrowserAgentProviderAdapter` with `WRONG_CONVERSATION_BINDING` before physical Enter. This must be resolved/verified by the owning runtime/recovery stream, not by this preflight branch.
+Recovery `db775f43...` is independently green for Release Hardening, Durability Convergence, and Windows CI.
 
-## 3. Changed-path ownership and composition
+Consolidated E2E `6bc3b852...` completed:
 
-### Browser #36
+- Release Hardening: SUCCESS
+- Durability Convergence: SUCCESS
+- PCC Runtime E2E Final Acceptance: FAILURE
+- PCC Executive Windows CI: FAILURE
+- build/compiler: 0 warnings, 0 errors before test failure
+- App.Tests: 40/40
+- Application.Tests: 108/108
+- Browser.Acceptance: 30/30
+- Browser.Tests: 39/39
+- Domain.Tests: 11/11
+- E2E: 12 failed / 4 passed / 0 skipped
 
-- `src/PCCExecutive.Browser/DispatchAndResilience.cs`
-- `src/PCCExecutive.Infrastructure/BrowserAgentProviderAdapter.cs`
-- `tests/PCCExecutive.Browser.Acceptance/FinalBrowserSafetyAcceptanceTests.cs`
-- `tests/PCCExecutive.Browser.Tests/FinalBrowserSendBoundaryTests.cs`
+The first current E2E failure is deterministic acceptance-harness cleanup: the production-host harness disposes the process-wide project lock from a context that does not own its mutex, causing `ReleaseMutex` to fail. The process lock then remains held and later tests fail with the existing-project-control guard. Correct action: repair E2E lock ownership/isolation; do not weaken production singleton locking.
 
-### Recovery #37
+PR #38 also reports a separate production-owner correlation blocker: logical conversation identity formatting can differ between runtime binding and canonical `ConversationId` representation, causing a fail-closed `WRONG_CONVERSATION_BINDING` before Enter. This must be resolved or disproved by the runtime/recovery owner; preflight must not implement a parallel fix.
 
-- `src/PCCExecutive.App/Presentation/AutonomousConversationRolloverRuntime.cs`
-- `src/PCCExecutive.App/Presentation/ConversationRecoveryInvariantPlanner.cs`
-- `src/PCCExecutive.App/Presentation/DurableProviderAttentionPolicy.cs`
-- `src/PCCExecutive.App/Presentation/RecoveryRolloverLifecycleBridge.cs`
-- Recovery/App/Application/Infrastructure acceptance tests
-- `tests/PCCExecutive.E2E/Final32StageE2ETests.cs`
+## Composition rehearsal
 
-### E2E #38
+Direct repository cloning was unavailable in the execution container because outbound DNS was unavailable. The rehearsal therefore used exact live Git ancestry, changed-file sets and patches fetched through the GitHub connector, created a temporary local Git topology, and performed real local merges. The sole shared Recovery/E2E hunk was additionally replayed with exact patch content.
 
-Latest head contains Browser + Recovery plus:
+Logical order rehearsed before E2E composed the streams:
 
-- `.github/workflows/runtime-e2e-final.yml`
-- `tests/PCCExecutive.E2E/AssemblyInfo.cs`
-- `tests/PCCExecutive.E2E/Final32StageE2ETests.cs`
-- `tests/PCCExecutive.E2E/FinalRuntimeSourceSafetyTests.cs`
-- `tests/PCCExecutive.E2E/ProductionRuntime32StageAcceptanceTests.cs`
-- `tests/PCCExecutive.E2E/ProductionRuntimeAcceptanceHarness.cs`
-- `tests/PCCExecutive.E2E/ProductionRuntimeSecurityNegativeTests.cs`
-
-### UI #32
-
-Ten App/UI paths only: App/MainWindow XAML, presentation/view-model truth projection, visible-control override XAML files, screens 04–09/13–15 and `VisibleControlTruthTests.cs`. No Browser, Infrastructure, orchestration, recovery or completion authority file is changed.
-
-## 4. Composition rehearsal result
-
-The execution container could not clone GitHub directly because outbound DNS was unavailable. The rehearsal therefore used live Git ancestry/changed-path/patch data fetched through the GitHub connector, constructed a temporary local Git topology, and performed real local merges. The single shared Recovery↔E2E hunk was additionally rehearsed with its exact patch content.
-
-Logical rehearsal order before E2E composed the streams:
-
-1. Runtime `7b5d8f...`
-2. Browser `6d19aec...`
-3. Recovery `db775f4...`
-4. E2E acceptance
-5. UI `991d7c1...`
+1. Runtime
+2. Browser
+3. Recovery
+4. E2E
+5. UI
 
 Result:
 
 ```text
-Browser -> CLEAN
-Recovery -> CLEAN
-Recovery/E2E shared Final32StageE2ETests hunk -> CLEAN
-UI -> CLEAN
+Browser=CLEAN
+Recovery=CLEAN
+Recovery/E2E shared Final32StageE2ETests hunk=CLEAN
+UI=CLEAN
 ACTUAL_TEXT_CONFLICTS=0
 ```
 
-The only accepted-stream overlap was `tests/PCCExecutive.E2E/Final32StageE2ETests.cs`: Recovery and E2E both changed the canonical completion expectation from `99 / ClosureMode` to `98.99 / Active`; E2E adds explanatory comments. The exact hunk merged with zero unmerged entries. Classification: **TRIVIAL**, E2E version wins because semantics are identical plus comments.
+The only accepted-stream overlap is `tests/PCCExecutive.E2E/Final32StageE2ETests.cs`. Recovery and E2E apply the same completion expectation (`98.99 / Active`); E2E adds explanatory comments. Exact-hunk rehearsal had zero unmerged entries. Classification: TRIVIAL; use the E2E version.
 
-The latest E2E head subsequently composed Browser and Recovery itself. Thus the safest current integration unit is now:
+Because the latest E2E head now already contains Browser and Recovery, the current safest integration order is:
 
 1. runtime `7b5d8f...`
-2. **consolidated E2E head `6bc3b852...`** (contains Browser + Recovery + E2E)
-3. UI delta `991d7c1...` replayed/rebased last
+2. consolidated Browser+Recovery+E2E `6bc3b852...`
+3. replay/rebase UI `991d7c1...` last
 
-Do not separately merge #36/#37 again after taking `6bc3b852...`.
+## Conflict map and resolution rules
 
-## 5. Ownership conflict audit
+Accepted candidate surfaces:
 
-### Accepted candidate surfaces
-
-| Surface | Classification | Correct resolution |
+| Surface | Class | Resolution |
 |---|---|---|
-| `IntegratedPresentationGateway.cs` / `PccExecutiveRuntimeHost` | CLEAN | runtime remains production composition authority |
-| `App.xaml.cs` | CLEAN | keep `PccExecutiveRuntimeHost.Create()` |
-| `BrowserChatProvider` / `DispatchAndResilience.cs` | CLEAN | latest Browser #36 implementation already in E2E head |
-| `BrowserAgentProviderAdapter.cs` | CLEAN | latest Browser #36 implementation; re-prove conversation-format correlation |
-| `ChatGptBrowserAdapter.cs` | CLEAN | keep current physical submit contract |
-| `ResilienceHardening` | CLEAN | no accepted stream replaces it |
-| conversation lifecycle | CLEAN | keep current lifecycle primitives + Recovery lifecycle bridge |
-| `AutonomousConversationRolloverRuntime.cs` | CLEAN | latest Recovery #37 implementation already in E2E head |
-| startup recovery | CLEAN | preserve runtime `BeginStartup/Reconstruct` ordering |
-| Loop Guard | CLEAN | preserve durable runtime state + Recovery restart acceptance |
-| completion authority | CLEAN | preserve integrated evidence-only completion path |
-| E2E production-host composition | CLEAN mechanically / NOT YET GREEN | repair acceptance isolation or real owner defects only; do not add test-only orchestration |
-| workflows | CLEAN | E2E workflow is unique; no historical workflow replay |
-| UI truth | CLEAN mechanically | replay #32 last and rerun full matrix |
+| `IntegratedPresentationGateway.cs` / `PccExecutiveRuntimeHost` | CLEAN | runtime remains composition authority |
+| `App.xaml.cs` | CLEAN | retain `PccExecutiveRuntimeHost.Create()` |
+| Browser send boundary | CLEAN | use #36 version already in consolidated head |
+| `BrowserAgentProviderAdapter` | CLEAN, correlation verification pending | keep #36 code; prove exact task/slot/conversation correlation |
+| `ChatGptBrowserAdapter` | CLEAN | keep current physical-submit contract |
+| resilience/global gates | CLEAN | no historical replacement |
+| conversation lifecycle | CLEAN | current lifecycle primitives + #37 bridge |
+| rollover | CLEAN | use latest #37 implementation |
+| startup recovery | CLEAN | preserve BeginStartup/Reconstruct before AutoResume |
+| Loop Guard | CLEAN | preserve durable state/history |
+| completion authority | CLEAN | preserve one evidence-only authority |
+| E2E production-host composition | CLEAN mechanically / RED functionally | fix acceptance isolation or owner-proven defects only |
+| workflow files | CLEAN | no #33 replay |
+| UI truth | CLEAN mechanically | replay #32 last and rerun everything |
 
-### Historical conflict map: 8 overlaps
+Historical/overlapping streams contain 8 contract overlaps:
 
-**DANGEROUS (4)**
+### DANGEROUS (4)
 
-1. **PR #34 composition root:** replaces App startup with `RecoveryCompletionPresentationGateway`. Resolution: keep `PccExecutiveRuntimeHost.Create()`; never add the parallel wrapper.
-2. **PR #34 rollover:** older wrapper-coupled rollover conflicts with current Recovery #37. Resolution: #37 wins.
-3. **PR #34 completion authority:** adds a second `AuthoritativeCompletionAuthority`. Resolution: keep the single integrated runtime authority; no second route to 100.
-4. **PR #35 final-enter contract:** adds parallel `IFinalEnterAuthorizationAdapter`/`FinalEnterAuthorization`. Resolution: keep current `IPhysicalSubmitAuthorizationAdapter` plus #36's fresh post-Fill semantic/runtime/ownership revalidation immediately before Enter.
+1. PR #34 replaces the production root with `RecoveryCompletionPresentationGateway`. Keep `PccExecutiveRuntimeHost.Create()` and do not add a parallel composition wrapper.
+2. PR #34 carries older wrapper-coupled rollover. Latest #37 rollover wins.
+3. PR #34 adds a second completion authority. Keep the single integrated runtime authority; no second route to 100.
+4. PR #35 adds a parallel final-enter authorization contract. Keep current `IPhysicalSubmitAuthorizationAdapter` plus #36's fresh post-Fill semantic/runtime/ownership authorization immediately before Enter.
 
-**SEMANTIC (3)**
+### SEMANTIC (3)
 
-1. PR #34 Loop Guard/health wrapper duplicates durable runtime/recovery state. Keep one durable source of truth.
-2. PR #35 `DispatchAndResilience.cs` overlaps #36's final-send boundary. #36 wins.
-3. PR #35 `AutonomousDispatchSafety.cs` duplicates current canonical dispatch reservation/crash-fence/reconciliation. Keep current stable DispatchId path only.
+1. PR #34 duplicates Loop Guard/health projection state. Keep one durable runtime/recovery source of truth.
+2. PR #35 overlaps `DispatchAndResilience`; #36 wins.
+3. PR #35 duplicates stable DispatchId/crash-fence/reconciliation. Keep current canonical durable dispatch path only.
 
-**TRIVIAL historical duplicate (1)**
+### TRIVIAL historical duplicate (1)
 
-- PR #35 `BrowserAgentProviderAdapter.cs` maps Browser Prepared/SafeRetry to domain PREPARED identically to #36. Take #36 only.
+PR #35's `BrowserAgentProviderAdapter` state mapping duplicates #36. Take #36 only.
 
-### Historical stream decisions
+Therefore:
 
-- **PR #34 = SUPERSEDED.** No unique production hunk is required.
-- **PR #35 = SUPERSEDED.** No unique production hunk is required.
-- **PR #33 = STALE/CLOSED.** Do not reopen/replay.
+- PR #34 = SUPERSEDED. No unique production hunk required.
+- PR #35 = SUPERSEDED. No unique production hunk required.
+- PR #33 = STALE/CLOSED. Do not reopen/replay.
 
-## 6. P0 invariant audit
+## P0 invariant audit
 
-These are composition-preservation findings, not final execution PASS claims.
+These are preservation findings, not final PASS claims.
 
-| Invariant | Preflight finding | Mandatory final proof |
+| Invariant | Finding | Required final proof |
 |---|---|---|
-| SEC-P0-001 stable durable DispatchId / `SUBMITTED_UNKNOWN` / zero duplicate submit | PRESERVED BY CONTRACT | exact-head uncertain-send restart, duplicate block, SafeRetry only after proven absence |
-| SEC-P0-002 Manager CLOSE <=99; fresh authoritative evidence only grants 100 | PRESERVED BY CONTRACT | all stale/failing/missing-test/stale-HEAD negatives + fresh exact-head all-green 100 |
-| SEC-P0-003 authorization after Fill immediately before Enter | PRESERVED / STRENGTHENED BY #36 | zero Enter for identity/ownership tamper; one Enter only after final fresh authorization |
-| SEC-P0-004 BeginStartup/Reconstruct before AutoResume; SafeShutdown on normal shutdown | PRESERVED BY RUNTIME HOST | real crash/dispose/reconstruct/resume and normal shutdown proof |
+| SEC-P0-001 stable durable DispatchId, uncertain reconciliation, zero duplicate submit | PRESERVED | restart with same uncertain identity; no retry until proven absence/SafeRetry |
+| SEC-P0-002 Manager CLOSE <=99; fresh authority only grants 100 | PRESERVED | stale/failing/missing-test/stale-head negatives plus fresh exact-head all-green 100 |
+| SEC-P0-003 fresh authorization after Fill immediately before Enter | PRESERVED/STRENGTHENED | zero Enter for mismatch/tamper/ownership failure; one Enter only after final authorization |
+| SEC-P0-004 startup reconstruct before AutoResume; safe normal shutdown | PRESERVED | real crash/reconstruct/resume and normal-shutdown evidence |
 
-Also re-prove WorkerSlot/task/logical/provider conversation correlation, wrong-chat guard, rate-limit/offline/login/challenge global gates, Manager and Worker rollover, exactly-one-active recovery, Loop Guard durability, retired conversation zero-send and UI truthfulness.
+Also re-prove WorkerSlot/task/logical/provider conversation correlation, wrong-chat guard, rate-limit/offline/login/challenge global gates, Manager and Worker rollover, exactly-one-active recovery, Loop Guard durability, retired-conversation zero-send, and UI truthfulness.
 
-## 7. Generated-file and package hygiene
+## Generated-file hygiene
 
-Runtime-tree audit found zero tracked `bin/**`, `obj/**`, `*.dll`, `*.pdb`, `*.trx`, or `TestResults/**`. Accepted streams add source/test/workflow/UI content only.
+Current runtime-tree audit found zero tracked `bin/**`, `obj/**`, `*.dll`, `*.pdb`, `*.trx`, or `TestResults/**`. Final convergence must run the existing generated-output hygiene script and an explicit tracked-TRX check. The release payload scanner must reject `*.db-wal`, `*.db-shm`, `*.sqlite-wal`, `*.sqlite-shm` plus development/test/auth/profile contamination.
 
-Final repository gate:
+## Required final test sequence
 
-```powershell
-pwsh ./build/Test-GeneratedOutputHygiene.ps1
-$bad = @(git ls-files | Select-String -Pattern '(^|/)(bin|obj|TestResults)/|\.(dll|pdb|trx)$')
-if ($bad.Count -ne 0) { throw "TRACKED_GENERATED_OUTPUT_REJECTED: $($bad -join ', ')" }
-```
+Freeze one exact composed SHA. Build with warnings as errors, then run in this exact family order:
 
-The existing release payload scanner rejects SQLite transient sidecars including `*.db-wal`, `*.db-shm`, `*.sqlite-wal`, `*.sqlite-shm`, plus source/development/auth/profile contamination. Execute it on the exact final publish/package payload; no package PASS is claimed by this document.
+1. `PCCExecutive.Domain.Tests`
+2. `PCCExecutive.Application.Tests`
+3. `PCCExecutive.App.Tests`
+4. `PCCExecutive.Browser.Tests`
+5. `PCCExecutive.Browser.Acceptance`
+6. `PCCExecutive.Infrastructure.Tests`
+7. `PCCExecutive.Integration`
+8. `PCCExecutive.E2E`
+9. explicit `ProductionRuntime32StageAcceptanceTests` + `ProductionRuntimeSecurityNegativeTests`
+10. `build/Test-GeneratedOutputHygiene.ps1` plus `git ls-files '*.trx'` must return zero
+11. `build/Build.ps1 -Configuration Release -RequireProduct`
 
-## 8. Exact final convergence test sequence
+Mandatory result: 0 failed, 0 mandatory skipped, 0 build errors, 0 compiler warnings.
 
-Refetch heads first. Freeze one composed SHA and run all commands against that same SHA.
+Then require exact-head GitHub workflows, all on the same SHA:
 
-### Build
+1. PCC Executive Release Hardening
+2. PCC Executive Durability Convergence
+3. PCC Runtime E2E Final Acceptance
+4. PCC Executive Windows CI
 
-```powershell
-$ErrorActionPreference = 'Stop'
-$sha = (git rev-parse HEAD).Trim().ToLowerInvariant()
-if (git status --porcelain) { throw 'FINAL_CANDIDATE_WORKTREE_NOT_CLEAN' }
-dotnet restore PCCExecutive.sln
-dotnet build PCCExecutive.sln -c Release --no-restore -warnaserror
-```
+No older-SHA green evidence may substitute for a current failure.
 
-Mandatory: 0 build errors, 0 compiler warnings.
+## Final Setup / package acceptance sequence
 
-### Test families in exact order
+Only after the source/test gates are green on one SHA. Current schema target is v2.
 
-```powershell
-$filter='Category!=LiveBrowser'
-$results='artifacts/final-convergence/test-results'
-New-Item -ItemType Directory -Force $results | Out-Null
+Run, in order:
 
-dotnet test tests/PCCExecutive.Domain.Tests/PCCExecutive.Domain.Tests.csproj -c Release --no-build --filter $filter --logger 'trx;LogFileName=Domain.Tests.trx' --results-directory $results
-dotnet test tests/PCCExecutive.Application.Tests/PCCExecutive.Application.Tests.csproj -c Release --no-build --filter $filter --logger 'trx;LogFileName=Application.Tests.trx' --results-directory $results
-dotnet test tests/PCCExecutive.App.Tests/PCCExecutive.App.Tests.csproj -c Release --no-build --filter $filter --logger 'trx;LogFileName=App.Tests.trx' --results-directory $results
-dotnet test tests/PCCExecutive.Browser.Tests/PCCExecutive.Browser.Tests.csproj -c Release --no-build --filter $filter --logger 'trx;LogFileName=Browser.Tests.trx' --results-directory $results
-dotnet test tests/PCCExecutive.Browser.Acceptance/PCCExecutive.Browser.Acceptance.csproj -c Release --no-build --filter $filter --logger 'trx;LogFileName=Browser.Acceptance.trx' --results-directory $results
-dotnet test tests/PCCExecutive.Infrastructure.Tests/PCCExecutive.Infrastructure.Tests.csproj -c Release --no-build --filter $filter --logger 'trx;LogFileName=Infrastructure.Tests.trx' --results-directory $results
-dotnet test tests/PCCExecutive.Integration/PCCExecutive.Integration.csproj -c Release --no-build --filter $filter --logger 'trx;LogFileName=Integration.trx' --results-directory $results
-dotnet test tests/PCCExecutive.E2E/PCCExecutive.E2E.csproj -c Release --no-build --filter $filter --logger 'trx;LogFileName=E2E.trx' --results-directory $results
-```
+1. `build/Publish-Windows.ps1 -Configuration Release -Runtime win-x64 -OutputRoot artifacts/publish/win-x64`
+2. `build/Test-ReleasePayload.ps1 -PayloadRoot artifacts/publish/win-x64`
+3. published-app smoke
+4. `build/Package.ps1 -Configuration Release -Runtime win-x64`
+5. re-run release-payload scanner
+6. verify Setup EXE source provenance and hashes
+7. verify SBOM and release/update manifests
+8. `tests/installer/Test-Package.ps1` against exact source SHA
+9. `Smoke-FreshInstall.ps1`
+10. installed application launch
+11. `Smoke-FirstRun.ps1` with expected schema version 2
+12. `Smoke-Persistence.ps1` after close/reopen
+13. `Smoke-Uninstall.ps1`
+14. verify uninstall preserves user data by contract
+15. re-assert zero development/test/SQLite-sidecar contamination
 
-Then explicit final acceptance:
+## Unresolved blockers
 
-```powershell
-dotnet test tests/PCCExecutive.E2E/PCCExecutive.E2E.csproj -c Release --no-build --filter "FullyQualifiedName~ProductionRuntime32StageAcceptanceTests|FullyQualifiedName~ProductionRuntimeSecurityNegativeTests" --logger 'trx;LogFileName=32-stage-security.trx' --results-directory $results
-pwsh ./build/Test-GeneratedOutputHygiene.ps1
-pwsh ./build/Build.ps1 -Configuration Release -RequireProduct
-```
+1. Latest consolidated `6bc3b852...` is RED: E2E Final Acceptance and Windows CI failed, despite Release Hardening and Durability Convergence succeeding.
+2. Current deterministic E2E blocker is project-lock mutex ownership/cleanup in the acceptance harness; it leaks the singleton lock into subsequent tests. Fix test isolation, not runtime singleton semantics.
+3. PR #38 reports logical-conversation identity-format correlation failure before Enter; production owner must resolve/verify it.
+4. UI #32 must be replayed/rebased last and the complete matrix rerun.
+5. No final Setup/install lifecycle PASS exists for consolidated E2E + UI on one immutable SHA.
+6. PR #34 and #35 remain open but are superseded; do not merge them.
 
-Required: 0 failures, 0 mandatory skips.
+## Final convergence recommendation
 
-### Exact-head GitHub workflow gates
+**Runtime `7b5d8f...` -> consolidated Browser+Recovery+E2E `6bc3b852...` -> replayed UI `991d7c1...`.**
 
-On the exact same SHA require, in this order:
+If any live head moves, refetch ancestry and patches before integration. Preserve one runtime root, one final-enter authority, one stable dispatch/reconciliation path, one recovery/rollover authority, and one completion authority.
 
-1. **PCC Executive Release Hardening**
-2. **PCC Executive Durability Convergence**
-3. **PCC Executive Windows CI**
-
-Additionally require the E2E branch's **PCC Runtime E2E Final Acceptance** when present. No green evidence from an older SHA may be substituted.
-
-## 9. Setup / release acceptance sequence
-
-Only after all source/test gates are green on the same SHA. Current schema target is **v2**.
-
-### Self-contained win-x64 publish and payload scan
-
-```powershell
-pwsh ./build/Publish-Windows.ps1 -Configuration Release -Runtime win-x64 -OutputRoot artifacts/publish/win-x64
-pwsh ./build/Test-ReleasePayload.ps1 -PayloadRoot artifacts/publish/win-x64
-```
-
-### Setup EXE + provenance + SBOM + manifest
-
-```powershell
-pwsh ./build/Package.ps1 -Configuration Release -Runtime win-x64
-pwsh ./build/Test-ReleasePayload.ps1 -PayloadRoot artifacts/publish/win-x64
-```
-
-`Package.ps1` is the canonical package orchestration: release build/tests, self-contained publish, published-app smoke, Setup EXE, exact-source provenance, hashes, SBOM, release/update manifests and package verification. Any failure blocks release acceptance.
-
-### Fresh install / first run / persistence / uninstall
-
-```powershell
-$version=(Get-Content VERSION -Raw).Trim()
-$installer="artifacts/package/PCCExecutive-$version-Setup-x64.exe"
-$manifest="artifacts/package/PCCExecutive-$version-Setup-x64.manifest.json"
-
-pwsh ./tests/installer/Test-Package.ps1 -InstallerPath $installer -ManifestPath $manifest -ExpectedSourceSha $sha
-pwsh ./tests/installer/Smoke-FreshInstall.ps1 -InstallerPath $installer -ExpectedVersion $version -ExpectedSourceSha $sha -EvidencePath artifacts/install-evidence/fresh-install.json
-pwsh ./tests/installer/Smoke-FirstRun.ps1 -InstallRoot "$env:LOCALAPPDATA/PCC Executive Smoke/Fresh" -ExpectedSchemaVersion 2 -EvidencePath artifacts/install-evidence/first-run.json
-pwsh ./tests/installer/Smoke-Persistence.ps1 -InstallRoot "$env:LOCALAPPDATA/PCC Executive Smoke/Fresh" -EvidencePath artifacts/install-evidence/persistence-reopen.json
-pwsh ./tests/installer/Smoke-Uninstall.ps1 -InstallRoot "$env:LOCALAPPDATA/PCC Executive Smoke/Fresh"
-```
-
-Acceptance requires installed launch, schema-v2 first run, persistence after reopen, uninstall preserving user data by contract, exact SHA/version provenance, valid SBOM/manifests/hashes, and zero development/test/SQLite-sidecar contamination.
-
-## 10. Unresolved blockers / stop conditions
-
-1. Latest consolidated E2E head `6bc3b852...` had only Release Hardening completed at snapshot; E2E Final Acceptance, Durability Convergence and Windows CI were still running. Do not call it accepted until all required exact-head gates are green.
-2. Previous E2E head exposed a deterministic ProjectRunLock harness disposal defect (`ReleaseMutex` from an unsynchronized/non-owner context) followed by lock leakage. Latest head must prove that this is resolved; do not weaken the production singleton lock.
-3. PR #38 reports a production logical-conversation formatting mismatch (`D` vs `N`) that can yield `WRONG_CONVERSATION_BINDING` before Enter. The owning production worker must resolve/verify it; this preflight must not implement a parallel fix.
-4. UI #32 must be replayed/rebased onto the final consolidated production/E2E head and the entire matrix rerun.
-5. No full Setup/install lifecycle has been executed on the final `6bc3b852... + UI` composition by this preflight worker. Package acceptance remains pending.
-6. PR #34/#35 remain open but are superseded and must not be merged merely because they are open.
-
-## 11. Final convergence handoff
-
-Current safest order is **Runtime -> consolidated E2E(Browser+Recovery+E2E) -> UI**, not Runtime -> Browser -> Recovery -> the same consolidated E2E head, because that would replay already-composed streams. If any live head moves, refetch ancestry, compare changed paths, and repeat the overlap rehearsal before integrating.
-
-**Preflight result:** source/patch composition is mechanically clean with **0 actual text conflicts**, one accepted TRIVIAL test overlap already resolved cleanly, and all historical dangerous/semantic overlaps have explicit resolution rules. The test/package plan is ready. **READY_FOR_FINAL_CONVERGENCE remains NO until the latest consolidated exact-head workflows and the reported runtime correlation blocker are green/resolved, then UI is replayed and the full matrix + Setup lifecycle passes on one immutable SHA.**
+**Preflight result:** composition mechanics are CLEAN with 0 actual text conflicts and one TRIVIAL accepted test overlap rehearsed cleanly. Historical PR #34/#35 conflicts are fully fenced. Final test and Setup plans are ready. **READY_FOR_FINAL_CONVERGENCE = NO** until current E2E/Windows failures and the reported correlation blocker are resolved, UI is replayed, and all source/package/install gates pass on one exact SHA.
