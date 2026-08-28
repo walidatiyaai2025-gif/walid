@@ -130,6 +130,12 @@ public sealed class OwnershipProofService : IOwnershipProofService
     }
 
     public async Task<OwnershipProof> ProveAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default)
+        => await ProveCoreAsync(runtime, requireLiveProcess: true, cancellationToken).ConfigureAwait(false);
+
+    public async Task<OwnershipProof> ProveRecordedOwnershipAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default)
+        => await ProveCoreAsync(runtime, requireLiveProcess: false, cancellationToken).ConfigureAwait(false);
+
+    private async Task<OwnershipProof> ProveCoreAsync(BrowserRuntimeRecord runtime, bool requireLiveProcess, CancellationToken cancellationToken)
     {
         if (!runtime.CreatedByPcc && !runtime.AdoptedExplicitly)
             return OwnershipProof.Denied(runtime.RuntimeId, "NO_PCC_OWNERSHIP_FLAG");
@@ -150,11 +156,11 @@ public sealed class OwnershipProofService : IOwnershipProofService
         if (!MarkerMatches(runtime, marker))
             return OwnershipProof.Denied(runtime.RuntimeId, "OWNERSHIP_MARKER_MISMATCH");
 
-        if (!_processes.IsAlive(runtime.ProcessId.Value))
+        if (requireLiveProcess && !_processes.IsAlive(runtime.ProcessId.Value))
             return OwnershipProof.Denied(runtime.RuntimeId, "PROCESS_NOT_ALIVE");
 
         var currentStartIdentity = _processes.GetStartIdentity(runtime.ProcessId.Value);
-        if (!StringComparer.Ordinal.Equals(currentStartIdentity, runtime.ProcessStartIdentity))
+        if (_processes.IsAlive(runtime.ProcessId.Value) && !StringComparer.Ordinal.Equals(currentStartIdentity, runtime.ProcessStartIdentity))
             return OwnershipProof.Denied(runtime.RuntimeId, "PROCESS_START_IDENTITY_MISMATCH");
 
         return OwnershipProof.Proven(runtime.RuntimeId);
@@ -195,19 +201,22 @@ public sealed class BrowserSessionController
     private readonly IOwnershipProofService _ownership;
     private readonly IOwnershipMarkerStore _markers;
     private readonly IProcessInspector _processes;
+    private readonly IBrowserRecoveryTelemetrySink _recoveryTelemetry;
 
     public BrowserSessionController(
         IBrowserRuntimeRegistry registry,
         IBrowserRuntimeHost host,
         IOwnershipProofService ownership,
         IOwnershipMarkerStore markers,
-        IProcessInspector processes)
+        IProcessInspector processes,
+        IBrowserRecoveryTelemetrySink? recoveryTelemetry = null)
     {
         _registry = registry;
         _host = host;
         _ownership = ownership;
         _markers = markers;
         _processes = processes;
+        _recoveryTelemetry = recoveryTelemetry ?? NullBrowserRecoveryTelemetrySink.Instance;
     }
 
     public async Task<BrowserRuntimeRecord> CreateAsync(BrowserSessionRequest request, CancellationToken cancellationToken = default)
@@ -339,9 +348,17 @@ public sealed class BrowserSessionController
         if (runtime is null)
             return new(false, runtimeId, "RUNTIME_NOT_FOUND");
 
-        if (runtime.ProcessId is > 0 && _processes.IsAlive(runtime.ProcessId.Value))
+        var correlationId = Guid.NewGuid();
+        await EmitRecoveryAsync(correlationId, BrowserRecoveryPhase.Detect, "PERSISTED_RUNTIME_DETECTED", runtime, true, cancellationToken).ConfigureAwait(false);
+        Exception? endpointFailure = null;
+        var processAlive = runtime.ProcessId is > 0 && _processes.IsAlive(runtime.ProcessId.Value);
+        await EmitRecoveryAsync(correlationId, BrowserRecoveryPhase.Classify,
+            processAlive ? "PROCESS_ALIVE_ENDPOINT_REQUIRES_PROBE" : "PROCESS_DEAD_ENDPOINT_STALE", runtime, true, cancellationToken).ConfigureAwait(false);
+
+        if (processAlive)
         {
             var proof = await _ownership.ProveAsync(runtime, cancellationToken).ConfigureAwait(false);
+            await EmitRecoveryAsync(correlationId, BrowserRecoveryPhase.ProveOwnership, proof.Reason, runtime, proof.IsProven, cancellationToken).ConfigureAwait(false);
             if (!proof.IsProven)
                 return new(false, runtimeId, proof.Reason, runtime);
 
@@ -353,6 +370,10 @@ public sealed class BrowserSessionController
                     var now = DateTimeOffset.UtcNow;
                     var updated = runtime with { State = BrowserSessionState.Ready, LastHeartbeatAt = now, LastActivityAt = now };
                     await _registry.UpsertAsync(updated, cancellationToken).ConfigureAwait(false);
+                    await EmitRecoveryAsync(correlationId, BrowserRecoveryPhase.Recover, "OWNED_ENDPOINT_RECONNECTED", updated, true, cancellationToken).ConfigureAwait(false);
+                    await EmitRecoveryAsync(correlationId, BrowserRecoveryPhase.Reconcile, "PERSISTED_RUNTIME_REFRESHED", updated, true, cancellationToken).ConfigureAwait(false);
+                    await EmitRecoveryAsync(correlationId, BrowserRecoveryPhase.Verify, "RUNTIME_READY_VERIFIED", updated, true, cancellationToken).ConfigureAwait(false);
+                    await EmitRecoveryAsync(correlationId, BrowserRecoveryPhase.Resume, "OWNED_PROCESS_RECOVERED", updated, true, cancellationToken).ConfigureAwait(false);
                     return new(true, runtimeId, "OWNED_PROCESS_RECOVERED", updated);
                 }
             }
@@ -360,11 +381,19 @@ public sealed class BrowserSessionController
             {
                 throw;
             }
-            catch
+            catch (Exception ex)
             {
-                // A stale DevToolsActivePort / refused CDP endpoint is a recoverable browser-runtime
-                // condition. Never let it escape into WPF startup and terminate the application.
+                endpointFailure = ex;
             }
+
+            if (endpointFailure is not null && !BrowserEndpointFailureClassifier.IsRecoverableStaleEndpoint(endpointFailure))
+            {
+                await EmitRecoveryAsync(correlationId, BrowserRecoveryPhase.Recover, "RECOVERY_FAILED_UNCLASSIFIED", runtime, false, cancellationToken).ConfigureAwait(false);
+                return new(false, runtimeId, $"OWNED_PROCESS_RECOVERY_FAILED:{endpointFailure.GetType().Name}", runtime);
+            }
+
+            var endpointKind = endpointFailure is null ? BrowserEndpointFailureKind.Unknown : BrowserEndpointFailureClassifier.Classify(endpointFailure);
+            await EmitRecoveryAsync(correlationId, BrowserRecoveryPhase.Classify, $"ENDPOINT_{endpointKind.ToString().ToUpperInvariant()}", runtime, true, cancellationToken).ConfigureAwait(false);
 
             try
             {
@@ -381,9 +410,17 @@ public sealed class BrowserSessionController
                 return new(false, runtimeId, $"OWNED_PROCESS_RECOVERY_FAILED:{ex.GetType().Name}", runtime);
             }
         }
+        else
+        {
+            var recordedProof = await _ownership.ProveRecordedOwnershipAsync(runtime, cancellationToken).ConfigureAwait(false);
+            await EmitRecoveryAsync(correlationId, BrowserRecoveryPhase.ProveOwnership, recordedProof.Reason, runtime, recordedProof.IsProven, cancellationToken).ConfigureAwait(false);
+            if (!recordedProof.IsProven)
+                return new(false, runtimeId, recordedProof.Reason, runtime);
+        }
 
         var archived = runtime with { State = BrowserSessionState.Archived, IsArchived = true, LastActivityAt = DateTimeOffset.UtcNow };
         await _registry.UpsertAsync(archived, cancellationToken).ConfigureAwait(false);
+        await EmitRecoveryAsync(correlationId, BrowserRecoveryPhase.Recover, "PCC_RUNTIME_REPLACEMENT_STARTED", archived, true, cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -396,6 +433,9 @@ public sealed class BrowserSessionController
                 runtime.ProviderConversationIdentity,
                 runtime.Visibility), cancellationToken).ConfigureAwait(false);
 
+            await EmitRecoveryAsync(correlationId, BrowserRecoveryPhase.Reconcile, "ENDPOINT_AND_PROCESS_METADATA_REPLACED", archived, true, cancellationToken, replacement.RuntimeId).ConfigureAwait(false);
+            await EmitRecoveryAsync(correlationId, BrowserRecoveryPhase.Verify, "REPLACEMENT_RUNTIME_READY_VERIFIED", replacement, true, cancellationToken, replacement.RuntimeId).ConfigureAwait(false);
+            await EmitRecoveryAsync(correlationId, BrowserRecoveryPhase.Resume, "LOGICAL_AGENT_RESUMED", replacement, true, cancellationToken, replacement.RuntimeId).ConfigureAwait(false);
             return new(true, replacement.RuntimeId, "STALE_OR_DEAD_ORPHAN_REPLACED_WITH_NEW_PCC_RUNTIME", replacement);
         }
         catch (OperationCanceledException)
@@ -409,6 +449,11 @@ public sealed class BrowserSessionController
             return new(false, runtimeId, $"PCC_RUNTIME_REPLACEMENT_FAILED:{ex.GetType().Name}", archived);
         }
     }
+
+    private Task EmitRecoveryAsync(Guid correlationId, BrowserRecoveryPhase phase, string reason, BrowserRuntimeRecord runtime,
+        bool succeeded, CancellationToken cancellationToken, string? replacementRuntimeId = null) =>
+        _recoveryTelemetry.EmitAsync(new BrowserRecoveryTelemetryEvent(correlationId, DateTimeOffset.UtcNow, phase, reason,
+            runtime.RuntimeId, runtime.LogicalAgentId, runtime.ProjectRunId, succeeded, replacementRuntimeId), cancellationToken);
 
     public async Task<ResourceGovernorSnapshot> CaptureResourceSnapshotAsync(CancellationToken cancellationToken = default)
     {

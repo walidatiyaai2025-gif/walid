@@ -42,6 +42,22 @@ public sealed class PersistentChromeProfileTests
         Assert.Equal("__GPTDESKTOP__", PlaywrightChromeRuntimeHost.GptDesktopProfileSource);
     }
 
+    [Fact]
+    public void Launch_preparation_retires_only_runtime_endpoint_metadata_and_preserves_profile_state()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "pcc-persistent-profile-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var endpoint = Path.Combine(root, "DevToolsActivePort");
+        var cookieState = Path.Combine(root, "Cookies");
+        File.WriteAllText(endpoint, "58760");
+        File.WriteAllText(cookieState, "persistent-auth-state");
+
+        PlaywrightChromeRuntimeHost.ClearStaleEndpointMetadata(root);
+
+        Assert.False(File.Exists(endpoint));
+        Assert.Equal("persistent-auth-state", File.ReadAllText(cookieState));
+    }
+
     private sealed class NoopChromeLocator : IChromeExecutableLocator
     {
         public string LocateChrome() => throw new NotSupportedException("This regression test never launches Chrome.");
