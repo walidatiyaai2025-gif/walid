@@ -24,7 +24,7 @@ public sealed class GuidedExecutionEvaluator
     public GuidedExecutionEvaluation Evaluate(GuidedRuntimeState runtime)
     {
         var chrome = EvaluateChrome(runtime);
-        var project = EvaluateProject(runtime);
+        var project = EvaluateProject(runtime, chrome);
         var manager = EvaluateManager(runtime, chrome, project);
         var orchestration = EvaluateOrchestration(runtime, manager);
 
@@ -62,11 +62,13 @@ public sealed class GuidedExecutionEvaluator
         };
     }
 
-    private static PrerequisiteEvaluation EvaluateProject(GuidedRuntimeState runtime)
+    private static PrerequisiteEvaluation EvaluateProject(GuidedRuntimeState runtime, PrerequisiteEvaluation chrome)
     {
         var complete = runtime.ProjectResolved && runtime.ProjectIdentityKnown && runtime.ProjectRunValid;
         if (complete)
             return Step(GuidedStepId.Project, true, GuidedStepState.Completed, "PROJECT_READY", "Canonical PCC project identity and run state are valid.");
+        if (!chrome.Satisfied)
+            return Step(GuidedStepId.Project, false, GuidedStepState.Pending, "PROJECT_AWAITS_CHROME", "Project selection follows proven Chrome readiness.", GuidedStepId.Chrome, chrome.RequiredControl, chrome.AutomaticallyRecoverable);
         return Step(GuidedStepId.Project, false, GuidedStepState.Current, "PROJECT_REQUIRED", "A live PCC-routed project with a valid run is required.", GuidedStepId.Project, "Open Project");
     }
 

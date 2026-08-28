@@ -15,6 +15,8 @@ public sealed class GuidedExecutionTests
         Assert.Equal(GuidedStepState.Current, result[GuidedStepId.Chrome].State);
         Assert.Equal(GuidedStepState.Blocked, result[GuidedStepId.Manager].State);
         Assert.Contains("01 Chrome", result.NextAction.Instruction);
+        Assert.Equal(GuidedStepState.Pending, result[GuidedStepId.Project].State);
+        AssertSinglePrimary(result);
     }
 
     [Fact]
@@ -24,6 +26,7 @@ public sealed class GuidedExecutionTests
         Assert.Equal(GuidedStepState.Completed, result[GuidedStepId.Chrome].State);
         Assert.Equal(GuidedStepState.Current, result[GuidedStepId.Project].State);
         Assert.Equal(GuidedStepId.Project, result.NextAction.Step);
+        AssertSinglePrimary(result);
     }
 
     [Fact]
@@ -34,6 +37,7 @@ public sealed class GuidedExecutionTests
         Assert.Equal(GuidedStepState.Completed, result[GuidedStepId.Project].State);
         Assert.Equal(GuidedStepState.Blocked, result[GuidedStepId.Manager].State);
         Assert.Equal(GuidedActionKind.Automatic, result.NextAction.Kind);
+        AssertSinglePrimary(result);
     }
 
     [Fact]
@@ -56,4 +60,12 @@ public sealed class GuidedExecutionTests
         ManagerRuntimeAvailable: false,
         ManagerPlanningValid: false,
         DispatchReady: false);
+
+    private static void AssertSinglePrimary(GuidedExecutionEvaluation result)
+    {
+        var primary = result.Steps.Values.Count(x => x.State is GuidedStepState.Current or GuidedStepState.Recovering or GuidedStepState.AttentionRequired);
+        Assert.Equal(1, primary);
+        Assert.Equal(result.NextAction.Step, result.Steps.Values.Single(x => x.State is GuidedStepState.Current or GuidedStepState.Recovering or GuidedStepState.AttentionRequired).RequiredStep ??
+            result.Steps.Values.Single(x => x.State is GuidedStepState.Current or GuidedStepState.Recovering or GuidedStepState.AttentionRequired).Step);
+    }
 }

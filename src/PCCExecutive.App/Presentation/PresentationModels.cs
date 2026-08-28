@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using PCCExecutive.Application;
 
 namespace PCCExecutive.App.Presentation;
 
@@ -45,7 +46,58 @@ public enum ProviderMode { BrowserWeb, OpenAiApi, Hybrid }
 public enum DispatchMode { Manual, Assisted, AutomaticStaged }
 public enum CompletionMode { Unknown, Running, ClosureMode, Verified, Blocked }
 
-public sealed record NavigationItem(ScreenId Id, string Label, string Glyph);
+public sealed class NavigationItem : System.ComponentModel.INotifyPropertyChanged
+{
+    private GuidedStepState _state = GuidedStepState.Pending;
+    private string _statusText = string.Empty;
+    private string _statusGlyph = string.Empty;
+    private string _statusBrush = "#8B5CF6";
+    private string? _reason;
+
+    public NavigationItem(ScreenId id, string label, string glyph)
+    {
+        Id = id;
+        Label = label;
+        Glyph = glyph;
+    }
+
+    public ScreenId Id { get; }
+    public string Label { get; }
+    public string Glyph { get; }
+    public GuidedStepState State { get => _state; private set => Set(ref _state, value); }
+    public string StatusText { get => _statusText; private set => Set(ref _statusText, value); }
+    public string StatusGlyph { get => _statusGlyph; private set => Set(ref _statusGlyph, value); }
+    public string StatusBrush { get => _statusBrush; private set => Set(ref _statusBrush, value); }
+    public string? Reason { get => _reason; private set => Set(ref _reason, value); }
+    public bool IsGuidedStep { get; private set; }
+
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+
+    public void Apply(PrerequisiteEvaluation evaluation)
+    {
+        IsGuidedStep = true;
+        State = evaluation.State;
+        Reason = evaluation.Reason;
+        (StatusText, StatusGlyph, StatusBrush) = evaluation.State switch
+        {
+            GuidedStepState.Completed => ("COMPLETED", "✓", "#34D399"),
+            GuidedStepState.Current => ("CURRENT", "▶", "#A78BFA"),
+            GuidedStepState.Blocked => ("BLOCKED", "⊘", "#FB7185"),
+            GuidedStepState.Failed => ("FAILED", "×", "#FB7185"),
+            GuidedStepState.Recovering => ("RECOVERING", "↻", "#FBBF24"),
+            GuidedStepState.AttentionRequired => ("ATTENTION REQUIRED", "!", "#FBBF24"),
+            _ => ("PENDING", "○", "#64748B"),
+        };
+        PropertyChanged?.Invoke(this, new(nameof(IsGuidedStep)));
+    }
+
+    private void Set<T>(ref T field, T value, [System.Runtime.CompilerServices.CallerMemberName] string? name = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value)) return;
+        field = value;
+        PropertyChanged?.Invoke(this, new(name));
+    }
+}
 
 public sealed record ProjectSummary(
     string Id,

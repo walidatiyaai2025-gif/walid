@@ -1,6 +1,7 @@
 using PCCExecutive.App.Presentation;
 using PCCExecutive.App.ViewModels;
 using Xunit;
+using PCCExecutive.Application;
 
 namespace PCCExecutive.App.Tests;
 
@@ -55,10 +56,11 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
-    public void Dashboard_is_initial_screen_with_active_run()
+    public void Active_run_with_unproven_live_Chrome_reconciles_to_Chrome_instead_of_inventing_completion()
     {
         var vm = new MainViewModel(new FakeGateway(TestSnapshots.Healthy with { HasActiveRun = true }));
-        Assert.Equal(ScreenId.Dashboard, vm.SelectedScreen);
+        Assert.Equal(ScreenId.ChromeConnection, vm.SelectedScreen);
+        Assert.NotEqual(GuidedStepState.Completed, vm.Navigation[0].State);
     }
 
     [Fact]
@@ -133,6 +135,95 @@ public sealed class MainViewModelTests
         var gateway = new FakeGateway(TestSnapshots.Healthy with { ProviderMode = ProviderMode.BrowserWeb });
         var vm = new MainViewModel(gateway);
         Assert.Equal(ProviderMode.BrowserWeb, vm.SelectedProviderMode);
+    }
+
+    [Fact]
+    public void Wrong_path_Manager_navigation_is_blocked_with_exact_redirect()
+    {
+        var vm = new MainViewModel(new FakeGateway(TestSnapshots.Healthy with { HasActiveRun = false, GlobalHealth = HealthState.Healthy }));
+        var before = vm.SelectedScreen;
+
+        vm.Navigate(ScreenId.ManagerWorkspace);
+
+        Assert.Equal(before, vm.SelectedScreen);
+        Assert.True(vm.HasBlockedNavigation);
+        Assert.Contains("04 Manager", vm.BlockedActionTitle);
+        Assert.Contains("02 Project", vm.BlockedActionDetail);
+        Assert.Contains("Open Project", vm.BlockedActionDetail);
+    }
+
+    [Fact]
+    public void Go_to_required_step_navigates_to_safe_exact_screen()
+    {
+        var vm = new MainViewModel(new FakeGateway(TestSnapshots.Healthy with { HasActiveRun = true, GlobalHealth = HealthState.Healthy, Sessions = [] }));
+        vm.Navigate(ScreenId.WorkersDispatch);
+
+        vm.GoToRequiredStepCommand.Execute(null);
+
+        Assert.Equal(ScreenId.ManagerWorkspace, vm.SelectedScreen);
+        Assert.False(vm.HasBlockedNavigation);
+    }
+
+    [Fact]
+    public void Command_guard_uses_same_Manager_prerequisite_as_navigation()
+    {
+        var vm = new MainViewModel(new FakeGateway(TestSnapshots.Healthy with { HasActiveRun = true, GlobalHealth = HealthState.Healthy, Sessions = [] }));
+
+        Assert.True(vm.StartManagerCommand.CanExecute(null));
+        Assert.False(vm.StartDispatchCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void Navigation_projection_has_non_color_semantic_cues_and_canonical_banner()
+    {
+        var vm = new MainViewModel(new FakeGateway(TestSnapshots.Healthy with { HasActiveRun = false, GlobalHealth = HealthState.Healthy }));
+        var chrome = vm.Navigation.Single(x => x.Id == ScreenId.ChromeConnection);
+        var project = vm.Navigation.Single(x => x.Id == ScreenId.ProjectSelection);
+
+        Assert.Equal("COMPLETED", chrome.StatusText);
+        Assert.Equal("✓", chrome.StatusGlyph);
+        Assert.Equal("CURRENT", project.StatusText);
+        Assert.Equal("▶", project.StatusGlyph);
+        Assert.Contains("02 Project", vm.NextAction.Instruction);
+    }
+
+    [Fact]
+    public void Recovery_atomically_updates_step_and_NextAction_without_contradiction()
+    {
+        var gateway = new FakeGateway(TestSnapshots.Healthy with { GlobalHealth = HealthState.Healthy });
+        var vm = new MainViewModel(gateway);
+
+        gateway.Push(TestSnapshots.Healthy with { GlobalHealth = HealthState.Recovering });
+
+        var chrome = vm.Navigation.Single(x => x.Id == ScreenId.ChromeConnection);
+        Assert.Equal(GuidedStepState.Recovering, chrome.State);
+        Assert.Equal(GuidedActionKind.Automatic, vm.NextAction.Kind);
+        Assert.Equal(GuidedStepId.Chrome, vm.NextAction.Step);
+    }
+
+    [Fact]
+    public void Read_only_diagnostic_screens_remain_reachable_when_execution_is_blocked()
+    {
+        var vm = new MainViewModel(new FakeGateway(RuntimeSnapshot.Unbound));
+        vm.Navigate(ScreenId.SessionMonitor);
+        Assert.Equal(ScreenId.SessionMonitor, vm.SelectedScreen);
+        vm.Navigate(ScreenId.AttentionCenter);
+        Assert.Equal(ScreenId.AttentionCenter, vm.SelectedScreen);
+    }
+
+    [Fact]
+    public void Blocked_navigation_emits_structured_diagnostic_event()
+    {
+        var vm = new MainViewModel(new FakeGateway(TestSnapshots.Healthy with { HasActiveRun = false, GlobalHealth = HealthState.Healthy }));
+        RuntimeDiagnosticEvent? emitted = null;
+        vm.RuntimeDiagnosticEmitted += (_, e) => emitted = e;
+
+        vm.Navigate(ScreenId.ManagerWorkspace);
+
+        Assert.NotNull(emitted);
+        Assert.Equal(RuntimeDiagnosticKind.GuardDecision, emitted.Kind);
+        Assert.False(emitted.Allowed);
+        Assert.Equal("ManagerWorkspace", emitted.Target);
     }
 
     private sealed class RecordingConfirmationService(bool result) : Services.IConfirmationService

@@ -64,10 +64,16 @@
                                     <DataTemplate>
                                         <Button Command="{Binding DataContext.NavigateCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                 CommandParameter="{Binding}" HorizontalContentAlignment="Stretch" Margin="0,2" Padding="12,9">
-                                            <Grid>
-                                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                                <TextBlock Text="{Binding Glyph}" Foreground="{StaticResource Brush.Purple}" FontSize="15" HorizontalAlignment="Center"/>
-                                                <TextBlock Grid.Column="1" Text="{Binding Label}" VerticalAlignment="Center"/>
+                                            <Grid ToolTip="{Binding Reason}">
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Glyph}" Foreground="{Binding StatusBrush}" FontSize="15" HorizontalAlignment="Center"/>
+                                                <StackPanel Grid.Column="1">
+                                                    <TextBlock Text="{Binding Label}" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="{Binding StatusText}" Foreground="{Binding StatusBrush}" FontSize="9" FontWeight="Bold"
+                                                               Visibility="{Binding IsGuidedStep, Converter={StaticResource BoolToVisibility}}"/>
+                                                </StackPanel>
+                                                <TextBlock Grid.Column="2" Text="{Binding StatusGlyph}" Foreground="{Binding StatusBrush}" FontSize="14" VerticalAlignment="Center" Margin="6,0,0,0"
+                                                           Visibility="{Binding IsGuidedStep, Converter={StaticResource BoolToVisibility}}"/>
                                             </Grid>
                                         </Button>
                                     </DataTemplate>
@@ -99,7 +105,7 @@
                                 <Border Style="{StaticResource PurpleChip}" Margin="0,0,10,0" VerticalAlignment="Center">
                                     <TextBlock Text="NEXT ACTION" FontSize="10" Foreground="#D8C7FF" FontWeight="SemiBold"/>
                                 </Border>
-                                <TextBlock Grid.Column="1" Text="{Binding Snapshot.OperatorMessage}" FontWeight="SemiBold"
+                                <TextBlock Grid.Column="1" Text="{Binding NextAction.Instruction}" FontWeight="SemiBold"
                                            TextWrapping="Wrap" VerticalAlignment="Center"/>
                             </Grid>
                             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
@@ -115,7 +121,12 @@
 
                     <Border Grid.RowSpan="2" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="18" Padding="12,8" Background="#34121C" BorderBrush="#7F1D32" BorderThickness="1" CornerRadius="8"
                             Visibility="{Binding HasUiError, Converter={StaticResource BoolToVisibility}}">
-                        <TextBlock Text="{Binding LastUiError}" Foreground="#FFD6DE" MaxWidth="520"/>
+                        <StackPanel MaxWidth="560">
+                            <TextBlock Text="{Binding BlockedActionTitle}" Foreground="#FFD6DE" FontWeight="Bold"/>
+                            <TextBlock Text="{Binding LastUiError}" Foreground="#FFD6DE" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                            <Button Content="Go to Required Step" Command="{Binding GoToRequiredStepCommand}" Margin="0,8,0,0" HorizontalAlignment="Left"
+                                    Visibility="{Binding HasBlockedNavigation, Converter={StaticResource BoolToVisibility}}"/>
+                        </StackPanel>
                     </Border>
                 </Grid>
             </Grid>
