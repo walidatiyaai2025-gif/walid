@@ -4,87 +4,171 @@ param(
     [string]$ConfigPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path 'release\integration-rehearsal.json'),
     [string]$OutputRoot = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path 'artifacts\rehearsal\combined')
 )
+
 Set-StrictMode -Version Latest
-$ErrorActionPreference='Stop'
-$repo=(Resolve-Path $RepositoryRoot).Path
-$config=Get-Content (Resolve-Path $ConfigPath) -Raw|ConvertFrom-Json
-New-Item -ItemType Directory -Path $OutputRoot -Force|Out-Null
-$worktree=Join-Path ([IO.Path]::GetTempPath()) ('pcc-integrated-'+[Guid]::NewGuid().ToString('N'))
-$phase='CHECKOUT';$command='git worktree add';$project='repository';$failures=@()
-function Add-Failure([string]$owner,[string]$file,[string]$cmd,[string]$error,[string]$cause,[string]$fix){
-    $script:failures += [pscustomobject]@{OWNER=$owner;'FILE/PROJECT'=$file;COMMAND=$cmd;ERROR=$error;SOURCE_SHA=(& git -C $script:repo rev-parse HEAD).Trim().ToLowerInvariant();LIKELY_CAUSE=$cause;REQUIRED_FIX=$fix}
+$ErrorActionPreference = 'Stop'
+$repo = (Resolve-Path $RepositoryRoot).Path
+$config = Get-Content (Resolve-Path $ConfigPath) -Raw | ConvertFrom-Json
+$controllerSha = (& git -C $repo rev-parse HEAD).Trim().ToLowerInvariant()
+if ($controllerSha -notmatch '^[0-9a-f]{40}$') { throw "EXACT_CONTROLLER_SHA_REQUIRED: $controllerSha" }
+$canonicalSha = [string]$config.canonical.sha
+if ($canonicalSha -notmatch '^[0-9a-f]{40}$') { throw "EXACT_CANONICAL_SHA_REQUIRED: $canonicalSha" }
+
+New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
+$worktree = Join-Path ([IO.Path]::GetTempPath()) ('pcc-terminal-' + [Guid]::NewGuid().ToString('N'))
+$log = Join-Path $OutputRoot 'combined-build.log'
+$failures = [System.Collections.Generic.List[object]]::new()
+
+function Add-Failure([string]$owner,[string]$phase,[string]$file,[string]$error,[string]$fix) {
+    $script:failures.Add([ordered]@{
+        OWNER=$owner; PHASE=$phase; 'FILE/PROJECT'=$file; ERROR=$error;
+        SOURCE_SHA=$script:controllerSha; REQUIRED_FIX=$fix
+    })
 }
-try{
-    $baseline=[string]$config.canonical.sha
-    & git -C $repo worktree add --detach $worktree $baseline
-    if($LASTEXITCODE -ne 0){throw 'Unable to create temporary convergence checkout.'}
-    & git -C $worktree config user.name 'PCC Executive Rehearsal'
-    & git -C $worktree config user.email 'pcc-executive-rehearsal@invalid.local'
-    $included=@()
-    foreach($chain in @($config.chains|Where-Object {$_.includeInPartialCandidate})){
-        $head=[string]$chain.head;$phase='MERGE';$command="git merge --no-ff --no-edit $head";$project=[string]$chain.owner
-        & git -C $worktree merge --no-ff --no-edit $head
-        if($LASTEXITCODE -ne 0){throw "Temporary convergence merge failed for $($chain.owner) at $head"}
-        $included += [ordered]@{Owner=$chain.owner;Head=$head}
-    }
-    $convergenceSha=(& git -C $worktree rev-parse HEAD).Trim().ToLowerInvariant()
-    (& dotnet --info|Out-String)|Set-Content (Join-Path $OutputRoot 'dotnet-info.txt') -Encoding UTF8
 
-    $log=Join-Path $OutputRoot 'combined-build.log'
-    $projects=@(Get-ChildItem (Join-Path $worktree 'src') -Recurse -File -Filter '*.csproj' -ErrorAction SilentlyContinue|Sort-Object FullName)
-    foreach($p in $projects){$project=$p.FullName;$phase='RESTORE';$command="dotnet restore $($p.FullName)";& dotnet restore $p.FullName 2>&1|Tee-Object -FilePath $log -Append;if($LASTEXITCODE -ne 0){throw "Combined restore failed: $($p.FullName)"};$phase='BUILD';$command="dotnet build $($p.FullName)";& dotnet build $p.FullName --configuration Release --no-restore -p:ContinuousIntegrationBuild=true 2>&1|Tee-Object -FilePath $log -Append;if($LASTEXITCODE -ne 0){throw "Combined build failed: $($p.FullName)"}}
+$restore='BLOCKED_DEPENDENCY'; $build='BLOCKED_DEPENDENCY'; $tests='BLOCKED_DEPENDENCY'
+$releaseHardening='BLOCKED_DEPENDENCY'; $publish='BLOCKED_DEPENDENCY'; $installer='BLOCKED_DEPENDENCY'
+$installSmoke='BLOCKED_DEPENDENCY'; $firstRun='BLOCKED_DEPENDENCY'; $dbSmoke='BLOCKED_DEPENDENCY'
+$persistenceSmoke='BLOCKED_DEPENDENCY'; $uninstallSmoke='BLOCKED_DEPENDENCY'
+$installReason='Not executed.'; $firstRunReason='Not executed.'; $dbReason='Not executed.'
 
-    $tests=@(Get-ChildItem (Join-Path $worktree 'tests') -Recurse -File -Filter '*.csproj' -ErrorAction SilentlyContinue|Sort-Object FullName)
-    $trx=Join-Path $OutputRoot 'trx';New-Item -ItemType Directory -Path $trx -Force|Out-Null
-    foreach($p in $tests){$project=$p.FullName;$phase='TESTS';$command="dotnet test $($p.FullName)";& dotnet test $p.FullName --configuration Release --logger trx --results-directory $trx -p:ContinuousIntegrationBuild=true 2>&1|Tee-Object -FilePath $log -Append;if($LASTEXITCODE -ne 0){throw "Combined tests failed: $($p.FullName)"}}
+try {
+    & git -C $repo worktree add --detach $worktree $controllerSha | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to create exact convergence worktree.' }
+    $actual = (& git -C $worktree rev-parse HEAD).Trim().ToLowerInvariant()
+    if ($actual -ne $controllerSha) { throw "EXACT_HEAD_MISMATCH expected=$controllerSha actual=$actual" }
+    Set-Content (Join-Path $OutputRoot 'SOURCE_SHA.txt') $controllerSha -Encoding ascii
+    Set-Content (Join-Path $OutputRoot 'CANONICAL_SHA.txt') $canonicalSha -Encoding ascii
+    (& dotnet --info | Out-String) | Set-Content (Join-Path $OutputRoot 'dotnet-info.txt') -Encoding UTF8
 
-    foreach($script in @('build/Test-ReleaseHardening.ps1','build/Test-UpdateIntegrity.ps1')){if(Test-Path (Join-Path $worktree $script)){$phase='RELEASE_TESTS';$project=$script;$command=$script;& (Join-Path $worktree $script) 2>&1|Tee-Object -FilePath $log -Append;if($LASTEXITCODE -ne 0){throw "Combined release test failed: $script"}}}
-
-    $app=Join-Path $worktree 'src\PCCExecutive.App\PCCExecutive.App.csproj';$infra=Join-Path $worktree 'src\PCCExecutive.Infrastructure\PCCExecutive.Infrastructure.csproj'
-    $publishState='BLOCKED_DEPENDENCY';$installerState='BLOCKED_DEPENDENCY';$installSmoke='BLOCKED_DEPENDENCY';$firstRun='BLOCKED_DEPENDENCY';$dbSmoke='BLOCKED_DEPENDENCY';$uninstallSmoke='BLOCKED_DEPENDENCY'
-    $firstRunReason='Required App or Infrastructure module is absent.';$installReason='Required App or Infrastructure module is absent.';$dbReason='Infrastructure is absent.'
-    if((Test-Path $app) -and (Test-Path $infra)){
-        if([string]$config.databaseSchemaTarget -eq 'UNRESOLVED'){throw 'BLOCKED_DEPENDENCY: all product modules exist but databaseSchemaTarget remains UNRESOLVED.'}
-        $env:PCCEXECUTIVE_DB_SCHEMA_TARGET=[string]$config.databaseSchemaTarget;$env:PCCEXECUTIVE_MINIMUM_UPGRADE_VERSION=[string]$config.minimumUpgradeVersion
-        $phase='PACKAGING';$project='build/Package.ps1';$command='Package.ps1'
-        try{
-            Push-Location $worktree;try{& .\build\Package.ps1;if($LASTEXITCODE -ne 0){throw 'Installer package build failed.'}}finally{Pop-Location}
-            $publishState='PASS';$installerState='PASS'
-        }catch{
-            $publishState='FAIL';$installerState='FAIL';$installReason=$_.Exception.Message
-            Add-Failure 'WORKER_5' $project $command $_.Exception.Message 'PACKAGING' 'Repair publish/installer convergence without changing feature architecture.'
+    Push-Location $worktree
+    try {
+        try {
+            & .\build\Build.ps1 -Configuration Release -RequireProduct 2>&1 | Tee-Object -FilePath $log -Append
+            if ($LASTEXITCODE -ne 0) { throw 'Build.ps1 returned non-zero.' }
+            $restore='PASS'; $build='PASS'; $tests='PASS'
+        }
+        catch {
+            $message=$_.Exception.Message
+            $restore = if ($message -match '(?i)restore') {'FAIL'} else {'PASS'}
+            if ($message -match '(?i)test') { $build='PASS'; $tests='FAIL' } else { $build='FAIL'; $tests='BLOCKED_DEPENDENCY' }
+            $owner = if ($log -and (Test-Path $log) -and (Get-Content $log -Raw) -match 'PCCExecutive\.Browser') {'WORKER_3_BROWSER'} elseif ((Test-Path $log) -and (Get-Content $log -Raw) -match 'PCCExecutive\.App') {'WORKER_4_UI'} else {'CROSS_WORKER_INTERFACE'}
+            Add-Failure $owner 'BUILD_TEST' 'build/Build.ps1' $message 'Repair the smallest owning compile/test defect and rerun this exact convergence head.'
         }
 
-        if($installerState -eq 'PASS'){
-            $v=(Get-Content (Join-Path $worktree 'VERSION') -Raw).Trim();$setup=Join-Path $worktree "artifacts\package\PCCExecutive-$v-Setup-x64.exe";$installRoot=Join-Path $env:LOCALAPPDATA 'PCC Executive Smoke\Fresh'
-            $phase='INSTALL_SMOKE';$project='tests/installer/Smoke-FreshInstall.ps1';$command='Smoke-FreshInstall.ps1'
-            try{& (Join-Path $worktree 'tests\installer\Smoke-FreshInstall.ps1') -InstallerPath $setup -ExpectedVersion $v -InstallRoot $installRoot;if($LASTEXITCODE -ne 0){throw 'Fresh install/launch smoke failed.'};$installSmoke='PASS';$installReason='Installer completed and PCCExecutive.exe launched.'}catch{$installSmoke='FAIL';$installReason=$_.Exception.Message;Add-Failure 'WORKER_5' $project $command $_.Exception.Message 'INSTALL_SMOKE' 'Repair installer/install-launch behavior.'}
+        if ($build -eq 'PASS' -and $tests -eq 'PASS') {
+            try {
+                & .\build\Test-ReleaseHardening.ps1 2>&1 | Tee-Object -FilePath $log -Append
+                if ($LASTEXITCODE -ne 0) { throw 'Release hardening failed.' }
+                if (Test-Path '.\build\Test-UpdateIntegrity.ps1') {
+                    & .\build\Test-UpdateIntegrity.ps1 2>&1 | Tee-Object -FilePath $log -Append
+                    if ($LASTEXITCODE -ne 0) { throw 'Update integrity failed.' }
+                }
+                $releaseHardening='PASS'
+            }
+            catch {
+                $releaseHardening='FAIL'
+                Add-Failure 'WORKER_5_RELEASE' 'RELEASE_HARDENING' 'build/Test-ReleaseHardening.ps1' $_.Exception.Message 'Repair deterministic release/security compatibility without weakening the gates.'
+            }
+        }
 
-            if($installSmoke -eq 'PASS'){
-                $phase='FIRST_RUN';$project='tests/installer/Smoke-FirstRun.ps1';$command='Smoke-FirstRun.ps1'
-                try{& (Join-Path $worktree 'tests\installer\Smoke-FirstRun.ps1') -InstallRoot $installRoot -ExpectedSchemaVersion ([int]$config.databaseSchemaTarget);if($LASTEXITCODE -ne 0){throw 'First-run smoke failed.'};$firstRun='PASS';$firstRunReason='Installed app initialized durable state on first launch.'}catch{$firstRun='FAIL';$firstRunReason=$_.Exception.Message;Add-Failure 'CROSS_WORKER_INTERFACE' $project $command $_.Exception.Message 'FIRST_RUN_RUNTIME_WIRING' 'Wire WPF App startup to Infrastructure/settings initialization; do not fake the database artifact.'}
+        if ($build -eq 'PASS' -and $tests -eq 'PASS' -and $releaseHardening -eq 'PASS') {
+            $env:PCCEXECUTIVE_DB_SCHEMA_TARGET=[string]$config.databaseSchemaTarget
+            $env:PCCEXECUTIVE_MINIMUM_UPGRADE_VERSION=[string]$config.minimumUpgradeVersion
+            try {
+                & .\build\Package.ps1 2>&1 | Tee-Object -FilePath $log -Append
+                if ($LASTEXITCODE -ne 0) { throw 'Package.ps1 returned non-zero.' }
+                $publish='PASS'; $installer='PASS'
+            }
+            catch {
+                $publish='FAIL'; $installer='FAIL'
+                Add-Failure 'WORKER_5_RELEASE' 'PUBLISH_INSTALLER' 'build/Package.ps1' $_.Exception.Message 'Repair exact-head publish/package behavior; never generate a placeholder installer.'
+            }
+        }
+
+        if ($installer -eq 'PASS') {
+            $version=(Get-Content VERSION -Raw).Trim()
+            $setup=Join-Path $worktree "artifacts\package\PCCExecutive-$version-Setup-x64.exe"
+            $installRoot=Join-Path $env:LOCALAPPDATA 'PCC Executive Smoke\Fresh'
+            $installEvidence=Join-Path $worktree 'artifacts\install-evidence'
+            New-Item -ItemType Directory -Path $installEvidence -Force | Out-Null
+            try {
+                & .\tests\installer\Smoke-FreshInstall.ps1 -InstallerPath $setup -ExpectedVersion $version -ExpectedSourceSha $controllerSha -InstallRoot $installRoot -EvidencePath (Join-Path $installEvidence 'fresh-install.json')
+                if ($LASTEXITCODE -ne 0) { throw 'Fresh install smoke returned non-zero.' }
+                $installSmoke='PASS'; $installReason='Setup installed exact-head files, Start Menu shortcut was present, and a WPF top-level window was observed.'
+            }
+            catch {
+                $installSmoke='FAIL'; $installReason=$_.Exception.Message
+                Add-Failure 'WORKER_5_RELEASE' 'INSTALL_SMOKE' 'tests/installer/Smoke-FreshInstall.ps1' $installReason 'Repair installer/install-launch behavior while preserving the standard GUI wizard.'
             }
 
-            $phase='UNINSTALL_SMOKE';$project='tests/installer/Smoke-Uninstall.ps1';$command='Smoke-Uninstall.ps1'
-            try{& (Join-Path $worktree 'tests\installer\Smoke-Uninstall.ps1') -InstallRoot $installRoot;if($LASTEXITCODE -ne 0){throw 'Uninstall smoke failed.'};$uninstallSmoke='PASS'}catch{$uninstallSmoke='FAIL';Add-Failure 'WORKER_5' $project $command $_.Exception.Message 'UNINSTALL_SMOKE' 'Repair uninstall behavior while preserving default durable data.'}
+            if ($installSmoke -eq 'PASS') {
+                try {
+                    & .\tests\installer\Smoke-FirstRun.ps1 -InstallRoot $installRoot -ExpectedSchemaVersion ([int]$config.databaseSchemaTarget) -EvidencePath (Join-Path $installEvidence 'first-run.json')
+                    if ($LASTEXITCODE -ne 0) { throw 'First-run smoke returned non-zero.' }
+                    $firstRun='PASS'; $firstRunReason='Installed app completed integrated startup and initialized non-empty durable SQLite state.'
+                }
+                catch {
+                    $firstRun='FAIL'; $firstRunReason=$_.Exception.Message
+                    Add-Failure 'CROSS_WORKER_INTERFACE' 'FIRST_RUN' 'tests/installer/Smoke-FirstRun.ps1' $firstRunReason 'Repair WPF-to-Infrastructure startup wiring; do not fake the database.'
+                }
+
+                try {
+                    & .\tests\installer\Smoke-Persistence.ps1 -InstallRoot $installRoot -EvidencePath (Join-Path $installEvidence 'persistence-reopen.json')
+                    if ($LASTEXITCODE -ne 0) { throw 'Persistence reopen smoke returned non-zero.' }
+                    $persistenceSmoke='PASS'
+                }
+                catch {
+                    $persistenceSmoke='FAIL'
+                    Add-Failure 'WORKER_2_PERSISTENCE' 'PERSISTENCE_SMOKE' 'tests/installer/Smoke-Persistence.ps1' $_.Exception.Message 'Repair durable restart behavior or the integrated persistence seam.'
+                }
+            }
+
+            try {
+                & .\build\Smoke-Database.ps1 -ExpectedSchemaVersion ([int]$config.databaseSchemaTarget) -OutputRoot (Join-Path $worktree 'artifacts\db-smoke')
+                if ($LASTEXITCODE -ne 0) { throw 'Database smoke returned non-zero.' }
+                $dbSmoke='PASS'; $dbReason='Fresh SQLite migration/reopen and deterministic persistence smoke passed.'
+            }
+            catch {
+                $dbSmoke='FAIL'; $dbReason=$_.Exception.Message
+                Add-Failure 'WORKER_2_PERSISTENCE' 'DB_SMOKE' 'build/Smoke-Database.ps1' $dbReason 'Repair persistence implementation or deterministic schema smoke.'
+            }
+
+            try {
+                & .\tests\installer\Smoke-Uninstall.ps1 -InstallRoot $installRoot
+                if ($LASTEXITCODE -ne 0) { throw 'Uninstall smoke returned non-zero.' }
+                $uninstallSmoke='PASS'
+            }
+            catch {
+                $uninstallSmoke='FAIL'
+                Add-Failure 'WORKER_5_RELEASE' 'UNINSTALL' 'tests/installer/Smoke-Uninstall.ps1' $_.Exception.Message 'Repair uninstall while preserving durable user data by default.'
+            }
         }
-
-        $phase='DB_SMOKE';$project='build/Smoke-Database.ps1';$command='Smoke-Database.ps1'
-        try{& (Join-Path $worktree 'build\Smoke-Database.ps1') -ExpectedSchemaVersion ([int]$config.databaseSchemaTarget) -OutputRoot (Join-Path $OutputRoot 'db-smoke');if($LASTEXITCODE -ne 0){throw 'Database smoke failed.'};$dbSmoke='PASS';$dbReason='Fresh SQLite migration, reopen, settings and core-state persistence test passed.'}catch{$dbSmoke='FAIL';$dbReason=$_.Exception.Message;Add-Failure 'WORKER_2_PERSISTENCE' $project $command $_.Exception.Message 'DB_SMOKE' 'Repair persistence implementation or its deterministic smoke contract.'}
-
-        if(Test-Path (Join-Path $worktree 'artifacts')){Copy-Item (Join-Path $worktree 'artifacts\*') $OutputRoot -Recurse -Force -ErrorAction SilentlyContinue}
     }
+    finally { Pop-Location }
 
-    if($failures.Count -gt 0){$failures|ConvertTo-Json -Depth 6|Set-Content (Join-Path $OutputRoot 'failure-ownership.json') -Encoding UTF8}
-    $states=@($publishState,$installerState,$installSmoke,$firstRun,$dbSmoke,$uninstallSmoke)
-    $overall=if('FAIL' -in $states){'FAIL'}elseif('BLOCKED_DEPENDENCY' -in $states){'BLOCKED_DEPENDENCY'}else{'PASS'}
-    $result=[ordered]@{Scope='TEMPORARY_REHEARSAL_NOT_CANONICAL';ControllerSourceSha=(& git -C $repo rev-parse HEAD).Trim().ToLowerInvariant();CanonicalSourceSha=$baseline;ConvergenceSha=$convergenceSha;IncludedHeads=$included;Restore='PASS';Build='PASS';Tests='PASS';ReleaseHardening='PASS';Publish=$publishState;Installer=$installerState;InstallSmoke=$installSmoke;InstallReason=$installReason;FirstRun=$firstRun;FirstRunReason=$firstRunReason;DbSmoke=$dbSmoke;DbReason=$dbReason;UninstallSmoke=$uninstallSmoke;Failures=$failures;Overall=$overall}
-    $result|ConvertTo-Json -Depth 10|Set-Content (Join-Path $OutputRoot 'result.json') -Encoding UTF8
-    $result|ConvertTo-Json -Depth 10
+    if (Test-Path (Join-Path $worktree 'artifacts')) {
+        $copyRoot=Join-Path $OutputRoot 'product-artifacts'
+        New-Item -ItemType Directory -Path $copyRoot -Force | Out-Null
+        Copy-Item (Join-Path $worktree 'artifacts\*') $copyRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
-catch{
-    Add-Failure (if($project -match 'Browser'){'WORKER_3_BROWSER'}elseif($project -match 'Infrastructure'){'WORKER_2_PERSISTENCE'}elseif($project -match 'App'){'WORKER_4_UI'}elseif($phase -match 'PACKAGING|RELEASE'){'WORKER_5_RELEASE'}else{'CROSS_WORKER_INTERFACE'}) $project $command $_.Exception.Message $phase 'Apply the smallest owning-Worker or build-compatibility repair, then rerun exact-head rehearsal.'
-    $failures|ConvertTo-Json -Depth 6|Set-Content (Join-Path $OutputRoot 'failure-ownership.json') -Encoding UTF8
-    throw
+catch {
+    Add-Failure 'WORKER_5_RELEASE' 'HARNESS' 'build/Invoke-IntegratedRehearsal.ps1' $_.Exception.Message 'Repair the terminal rehearsal harness and rerun exact head.'
 }
-finally{if(Test-Path $worktree){& git -C $repo worktree remove --force $worktree 2>$null|Out-Null}}
+finally {
+    if (Test-Path $worktree) { & git -C $repo worktree remove --force $worktree 2>$null | Out-Null }
+}
+
+if ($failures.Count -gt 0) { $failures | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $OutputRoot 'failure-ownership.json') -Encoding UTF8 }
+$included=@($config.chains | Where-Object {$_.state -eq 'PENDING_PR'} | ForEach-Object {[ordered]@{Owner=[string]$_.owner;Head=[string]$_.head}})
+$states=@($restore,$build,$tests,$releaseHardening,$publish,$installer,$installSmoke,$firstRun,$persistenceSmoke,$dbSmoke,$uninstallSmoke)
+$overall=if('FAIL' -in $states){'FAIL'}elseif('BLOCKED_DEPENDENCY' -in $states){'BLOCKED_DEPENDENCY'}else{'PASS'}
+$result=[ordered]@{
+    Scope='PR12_EXACT_HEAD_CONVERGENCE_NOT_CANONICAL'; ControllerSourceSha=$controllerSha; CanonicalSourceSha=$canonicalSha; ConvergenceSha=$controllerSha; IncludedHeads=$included;
+    Restore=$restore; Build=$build; Tests=$tests; ReleaseHardening=$releaseHardening; Publish=$publish; Installer=$installer;
+    InstallSmoke=$installSmoke; InstallReason=$installReason; FirstRun=$firstRun; FirstRunReason=$firstRunReason; PersistenceSmoke=$persistenceSmoke;
+    DbSmoke=$dbSmoke; DbReason=$dbReason; UninstallSmoke=$uninstallSmoke; Failures=@($failures); Overall=$overall
+}
+$result | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $OutputRoot 'result.json') -Encoding UTF8
+$result | ConvertTo-Json -Depth 12
