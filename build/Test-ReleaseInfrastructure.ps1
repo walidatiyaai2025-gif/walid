@@ -24,6 +24,7 @@ $requiredFiles = @(
     'updater/Invoke-Upgrade.ps1',
     'tests/installer/Test-Package.ps1',
     'tests/installer/Smoke-FreshInstall.ps1',
+    'tests/installer/Smoke-Repair.ps1',
     'tests/installer/Smoke-Upgrade.ps1',
     'tests/installer/Smoke-FailedUpgrade.ps1',
     'tests/installer/Smoke-Uninstall.ps1'
