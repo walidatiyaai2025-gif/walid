@@ -114,6 +114,14 @@ public sealed class FixedConversationProbe(ConversationDispatchEvidence evidence
     }
 }
 
+public sealed class NullConversationProbe : IConversationEvidenceProbe
+{
+    public Task<ConversationDispatchEvidence> InspectDispatchAsync(string runtimeId, string dispatchId, string contentHash, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<ConversationDispatchEvidence>(null!);
+    }
+}
 public sealed class PartialCapturePort : IPartialResponseCapturePort
 {
     public List<PartialResponseCapture> Captures { get; } = [];

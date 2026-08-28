@@ -342,21 +342,35 @@ public sealed class UncertainSendReconciler
     private readonly IConversationEvidenceProbe _probe;
     public UncertainSendReconciler(IConversationEvidenceProbe probe) => _probe = probe;
 
-    public async Task<SendReconciliationResult> ReconcileAsync(string runtimeId, DispatchLedgerEntry dispatch, CancellationToken cancellationToken = default)
+    public async Task<SendReconciliationResult> ReconcileAsync(string runtimeId, DispatchLedgerEntry? dispatch, CancellationToken cancellationToken = default)
     {
+        if (dispatch is null)
+            return new(SendReconciliationState.CannotDetermine, RetrySafety.NotSafe, "DISPATCH_EVIDENCE_MISSING_NO_AUTOMATIC_RESEND", Array.Empty<string>());
         if (dispatch.State != DispatchState.SubmittedUnknown)
             return new(SendReconciliationState.CannotDetermine, RetrySafety.NotSafe, "DISPATCH_NOT_SUBMITTED_UNKNOWN", Array.Empty<string>());
 
-        var evidence = await _probe.InspectDispatchAsync(runtimeId, dispatch.DispatchId, dispatch.ContentHash, cancellationToken).ConfigureAwait(false);
+        ConversationDispatchEvidence? evidence;
+        try
+        {
+            evidence = await _probe.InspectDispatchAsync(runtimeId, dispatch.DispatchId, dispatch.ContentHash, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            return new(SendReconciliationState.CannotDetermine, RetrySafety.NotSafe, "PROBE_FAILED_NO_AUTOMATIC_RESEND", new[] { $"probe-error:{ex.GetType().Name}" });
+        }
+        if (evidence is null)
+            return new(SendReconciliationState.CannotDetermine, RetrySafety.NotSafe, "PROBE_RETURNED_NULL_NO_AUTOMATIC_RESEND", Array.Empty<string>());
+        var semanticEvidence = evidence.Evidence ?? Array.Empty<string>();
         if (evidence.ResponsePresent)
-            return new(SendReconciliationState.ResponsePresent, RetrySafety.NotSafe, "RESPONSE_PRESENT_NO_RETRY", evidence.Evidence);
+            return new(SendReconciliationState.ResponsePresent, RetrySafety.NotSafe, "RESPONSE_PRESENT_NO_RETRY", semanticEvidence);
         if (evidence.GenerationInProgress)
-            return new(SendReconciliationState.GenerationInProgress, RetrySafety.NotSafe, "GENERATION_IN_PROGRESS_NO_RETRY", evidence.Evidence);
+            return new(SendReconciliationState.GenerationInProgress, RetrySafety.NotSafe, "GENERATION_IN_PROGRESS_NO_RETRY", semanticEvidence);
         if (evidence.UserMessagePresent == true)
-            return new(SendReconciliationState.MessagePresent, RetrySafety.NotSafe, "MESSAGE_PRESENT_NO_RETRY", evidence.Evidence);
+            return new(SendReconciliationState.MessagePresent, RetrySafety.NotSafe, "MESSAGE_PRESENT_NO_RETRY", semanticEvidence);
         if (evidence.UserMessagePresent == false && evidence.Confidence >= .90)
-            return new(SendReconciliationState.MessageNotPresent, RetrySafety.SafeRetry, "MESSAGE_ABSENCE_PROVEN_SAFE_RETRY", evidence.Evidence);
-        return new(SendReconciliationState.CannotDetermine, RetrySafety.NotSafe, "CANNOT_DETERMINE_NO_AUTOMATIC_RESEND", evidence.Evidence);
+            return new(SendReconciliationState.MessageNotPresent, RetrySafety.SafeRetry, "MESSAGE_ABSENCE_PROVEN_SAFE_RETRY", semanticEvidence);
+        return new(SendReconciliationState.CannotDetermine, RetrySafety.NotSafe, "CANNOT_DETERMINE_NO_AUTOMATIC_RESEND", semanticEvidence);
     }
 }
 

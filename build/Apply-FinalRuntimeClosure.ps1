@@ -15,18 +15,18 @@ function Write-Text([string]$Path, [string]$Text) {
 function Replace-Exact([string]$Path, [string]$Old, [string]$New, [string]$Marker) {
     $text = Read-Text $Path
     if ($text.Contains($Marker)) { return }
-    if (-not $text.Contains($Old)) { throw "Patch anchor missing in $Path: $Marker" }
+    if (-not $text.Contains($Old)) { throw "Patch anchor missing in ${Path}: $Marker" }
     Write-Text $Path ($text.Replace($Old, $New))
 }
 function Insert-Before([string]$Path, [string]$Anchor, [string]$Block, [string]$Marker) {
     $text = Read-Text $Path
     if ($text.Contains($Marker)) { return }
-    if (-not $text.Contains($Anchor)) { throw "Insert anchor missing in $Path: $Marker" }
+    if (-not $text.Contains($Anchor)) { throw "Insert anchor missing in ${Path}: $Marker" }
     Write-Text $Path ($text.Replace($Anchor, $Block + [Environment]::NewLine + [Environment]::NewLine + $Anchor))
 }
 function Require-Text([string]$Path, [string]$Needle) {
     $text = Read-Text $Path
-    if (-not $text.Contains($Needle)) { throw "Required invariant missing from $Path: $Needle" }
+    if (-not $text.Contains($Needle)) { throw "Required invariant missing from ${Path}: $Needle" }
     return $text
 }
 

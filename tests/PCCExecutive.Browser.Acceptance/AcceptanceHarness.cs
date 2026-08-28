@@ -284,7 +284,7 @@ public sealed class ControlledBrowserAcceptanceHarness
         new(dispatchId, runtime.ProjectRunId, runtime.LogicalAgentId, taskId,
             runtime.ConversationIdentity ?? throw new InvalidOperationException("Conversation identity required."),
             runtime.ProviderConversationIdentity ?? throw new InvalidOperationException("Provider conversation identity required."),
-            prompt);
+            prompt, null, runtime.WorkerSlotId);
 
     public async Task<AcceptanceRestartEnvelope> CaptureRestartAsync(
         IEnumerable<string> dispatchIds,

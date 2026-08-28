@@ -39,6 +39,31 @@ public sealed class InMemoryDispatchLedger : IDispatchLedger
     }
 }
 
+public static class FinalPreEnterAuthorization
+{
+    public static async Task<PreEnterAuthorizationDecision> AuthorizeAsync(
+        IBrowserRuntimeRegistry runtimes,
+        IOwnershipProofService ownership,
+        string runtimeId,
+        BrowserDispatchExpectation expected,
+        CancellationToken cancellationToken = default)
+    {
+        var current = await runtimes.GetAsync(runtimeId, cancellationToken).ConfigureAwait(false);
+        if (current is null) return Deny("FINAL_RUNTIME_NOT_FOUND");
+        if (!StringComparer.Ordinal.Equals(current.ProjectRunId, expected.ProjectRunId)) return Deny("FINAL_PROJECT_RUN_MISMATCH");
+        if (!StringComparer.Ordinal.Equals(current.LogicalAgentId, expected.LogicalAgentId)) return Deny("FINAL_LOGICAL_AGENT_MISMATCH");
+        if (!StringComparer.Ordinal.Equals(current.WorkerSlotId, expected.WorkerSlotId)) return Deny("FINAL_WORKER_SLOT_MISMATCH");
+        if (!StringComparer.Ordinal.Equals(current.TaskId, expected.TaskId)) return Deny("FINAL_TASK_MISMATCH");
+        if (!StringComparer.Ordinal.Equals(current.ConversationIdentity, expected.ConversationIdentity)) return Deny("FINAL_CONVERSATION_MISMATCH");
+        if (!StringComparer.OrdinalIgnoreCase.Equals(current.ProviderConversationIdentity, expected.ProviderConversationIdentity)) return Deny("FINAL_PROVIDER_CONVERSATION_MISMATCH");
+        var proof = await ownership.ProveAsync(current, cancellationToken).ConfigureAwait(false);
+        if (!proof.IsProven) return new(false, "FINAL_PCC_OWNERSHIP_NOT_PROVEN", new[] { proof.Reason });
+        return new(true, "FINAL_PRE_ENTER_AUTHORIZED", new[] { "project-run:match", "logical-agent:match", $"worker-slot:{expected.WorkerSlotId ?? "MANAGER"}", "task:match", "conversation:match", "provider-conversation:match", "ownership:proven" });
+
+        PreEnterAuthorizationDecision Deny(string reason) => new(false, reason, new[] { $"runtime:{runtimeId}" });
+    }
+}
+
 public sealed class BrowserChatProvider
 {
     private readonly IBrowserRuntimeRegistry _runtimes; private readonly IChatGptBrowserAdapter _adapter; private readonly IDispatchLedger _ledger; private readonly WrongChatGuard _wrongChatGuard; private readonly GlobalBrowserSendGate _globalGate; private readonly IOwnershipProofService _ownership; private readonly ConcurrentDictionary<string, SemaphoreSlim> _dispatchGates = new(StringComparer.Ordinal);
@@ -64,8 +89,24 @@ public sealed class BrowserChatProvider
         {
         var reservation = await _ledger.ReserveAsync(request.DispatchId, contentHash, cancellationToken).ConfigureAwait(false);
         if (reservation.Status is DispatchReservationStatus.DuplicateBlocked or DispatchReservationStatus.ContentConflict) return new(request.DispatchId, BrowserDispatchOutcome.DuplicateBlocked, reservation.Entry.State, reservation.Reason, new[] { $"content-hash:{reservation.Entry.ContentHash}" });
-        await _ledger.UpdateAsync(request.DispatchId, DispatchState.Submitting, cancellationToken: cancellationToken).ConfigureAwait(false);
-        var submission = await _adapter.SubmitAsync(runtime, expected, request.Prompt, cancellationToken).ConfigureAwait(false);
+        AdapterSubmissionResult submission;
+        if (_adapter is IPhysicalSubmitAuthorizationAdapter physicalAdapter)
+        {
+            submission = await physicalAdapter.SubmitAuthorizedAsync(runtime, expected, request.Prompt, async ct =>
+            {
+                var authorization = await FinalPreEnterAuthorization.AuthorizeAsync(_runtimes, _ownership, runtimeId, expected, ct).ConfigureAwait(false);
+                if (authorization.Authorized)
+                    await _ledger.UpdateAsync(request.DispatchId, DispatchState.Submitting, "FINAL_PRE_ENTER_AUTHORIZED", ct).ConfigureAwait(false);
+                return authorization;
+            }, cancellationToken).ConfigureAwait(false);
+            if (!submission.Triggered && string.Equals(submission.Reason, "PRE_ENTER_AUTHORIZATION_DENIED", StringComparison.Ordinal))
+                return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, submission.Reason, submission.Evidence);
+        }
+        else
+        {
+            await _ledger.UpdateAsync(request.DispatchId, DispatchState.Submitting, cancellationToken: cancellationToken).ConfigureAwait(false);
+            submission = await _adapter.SubmitAsync(runtime, expected, request.Prompt, cancellationToken).ConfigureAwait(false);
+        }
         if (submission.SubmittedUnknown) { await _ledger.UpdateAsync(request.DispatchId, DispatchState.SubmittedUnknown, string.Join(";", submission.Evidence), cancellationToken).ConfigureAwait(false); return new(request.DispatchId, BrowserDispatchOutcome.SubmittedUnknown, DispatchState.SubmittedUnknown, "SUBMITTED_UNKNOWN", submission.Evidence); }
         if (submission.ProvenSubmitted)
         {

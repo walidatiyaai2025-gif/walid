@@ -124,6 +124,36 @@ public sealed class DeterministicBrowserAcceptanceTests
     }
 
     [Fact]
+    public async Task Worker1_request_targeting_worker2_slot_is_blocked_before_submit()
+    {
+        var harness = new ControlledBrowserAcceptanceHarness();
+        await harness.CreateTopologyAsync(2);
+        var worker1 = await harness.BindTaskAsync(new AcceptanceTask("task-slot-negative", 1, "slot", "scope"));
+        harness.Adapter.SetSnapshot(worker1.RuntimeId, AcceptanceSnapshots.Healthy());
+        harness.Adapter.SetSubmission(worker1.RuntimeId, new(true, true, false, "SHOULD_NOT_RUN", ["wrong-slot"]));
+        var provider = new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate, harness.Ownership);
+        var request = harness.Request(worker1, "task-slot-negative", "dispatch-slot-negative", "slot") with { WorkerSlotId = "2" };
+
+        var result = await provider.SendAsync(worker1.RuntimeId, request);
+
+        Assert.Equal(BrowserDispatchOutcome.NotSent, result.Outcome);
+        Assert.Equal("WORKER_SLOT_MISMATCH", result.Reason);
+        Assert.False(harness.Adapter.SubmitCounts.ContainsKey(worker1.RuntimeId));
+    }
+
+    [Fact]
+    public async Task Null_uncertain_evidence_fails_safe_without_retry_authorization()
+    {
+        var reconciler = new UncertainSendReconciler(new NullConversationProbe());
+        var dispatch = new DispatchLedgerEntry("dispatch-null-evidence", "hash", DispatchState.SubmittedUnknown, DateTimeOffset.UtcNow);
+
+        var result = await reconciler.ReconcileAsync("worker-runtime", dispatch);
+
+        Assert.Equal(SendReconciliationState.CannotDetermine, result.State);
+        Assert.Equal(RetrySafety.NotSafe, result.RetrySafety);
+        Assert.Equal("PROBE_RETURNED_NULL_NO_AUTOMATIC_RESEND", result.Reason);
+    }
+    [Fact]
     public void Slow_worker_is_not_stuck_and_other_worker_can_remain_ready()
     {
         var controller = new ChatGptResilienceController();

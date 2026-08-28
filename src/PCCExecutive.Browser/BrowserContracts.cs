@@ -227,6 +227,18 @@ public interface IChatGptBrowserAdapter
     Task<string?> GetCurrentConversationIdentityAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 }
 
+public sealed record PreEnterAuthorizationDecision(bool Authorized, string Reason, IReadOnlyList<string> Evidence);
+
+public interface IPhysicalSubmitAuthorizationAdapter : IChatGptBrowserAdapter
+{
+    Task<AdapterSubmissionResult> SubmitAuthorizedAsync(
+        BrowserRuntimeRecord runtime,
+        BrowserDispatchExpectation expectation,
+        string prompt,
+        Func<CancellationToken, Task<PreEnterAuthorizationDecision>> authorizeBeforeEnter,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IDispatchLedger
 {
     Task<DispatchReservation> ReserveAsync(string dispatchId, string contentHash, CancellationToken cancellationToken = default);

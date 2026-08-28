@@ -68,7 +68,7 @@ public sealed class ChatGptAdapterDriftGuard
     }
 }
 
-public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter
+public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter
 {
     public const string CurrentAdapterVersion = "chatgpt-web-semantic-v2";
     private const string ComposerSelector = "textarea, [contenteditable='true'][role='textbox'], [contenteditable='true'][data-lexical-editor='true'], [data-testid='composer-text-input']";
@@ -120,7 +120,15 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter
         catch (PlaywrightException ex) { return Unknown($"playwright-inspection-error:{ex.GetType().Name}"); }
     }
 
-    public async Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, string prompt, CancellationToken cancellationToken = default)
+    public Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, string prompt, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new AdapterSubmissionResult(false, false, false, "PRE_ENTER_AUTHORIZATION_REQUIRED", new[] { "submission:not-triggered", "physical-enter:fence-required" }));
+
+    public async Task<AdapterSubmissionResult> SubmitAuthorizedAsync(
+        BrowserRuntimeRecord runtime,
+        BrowserDispatchExpectation expectation,
+        string prompt,
+        Func<CancellationToken, Task<PreEnterAuthorizationDecision>> authorizeBeforeEnter,
+        CancellationToken cancellationToken = default)
     {
         var page = await _pages.GetPageAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
         if (page is null) return new(false, false, false, "BROWSER_PAGE_MISSING", new[] { "submission:not-triggered" });
@@ -136,6 +144,9 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter
             var composer = await VisibleAsync(page, ComposerSelector).ConfigureAwait(false);
             if (composer is null) return new(false, false, false, "COMPOSER_NOT_FOUND", new[] { "submission:not-triggered" });
             await composer.FillAsync(prompt).ConfigureAwait(false);
+            var finalAuthorization = await authorizeBeforeEnter(cancellationToken).ConfigureAwait(false);
+            if (!finalAuthorization.Authorized)
+                return new(false, false, false, "PRE_ENTER_AUTHORIZATION_DENIED", finalAuthorization.Evidence.Prepend(finalAuthorization.Reason).ToArray());
             triggered = true;
             await composer.PressAsync("Enter").ConfigureAwait(false);
             await page.WaitForTimeoutAsync(700).ConfigureAwait(false);

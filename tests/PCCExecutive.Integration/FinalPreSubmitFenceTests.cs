@@ -1,99 +1,102 @@
-using PCCExecutive.Application;
 using PCCExecutive.Browser;
-using PCCExecutive.Domain;
-using PCCExecutive.Infrastructure;
 using Xunit;
 
 namespace PCCExecutive.Integration;
 
-public sealed class FinalPreSubmitFenceTests : IAsyncLifetime
+public sealed class FinalPreSubmitFenceTests
 {
-    private readonly string _root = Path.Combine(Path.GetTempPath(), "pcc-pre-submit-fence", Guid.NewGuid().ToString("N"));
-
-    public Task InitializeAsync()
+    [Fact]
+    public async Task Tamper_after_fill_blocks_press_and_leaves_dispatch_prepared()
     {
-        Directory.CreateDirectory(_root);
-        return Task.CompletedTask;
-    }
+        var registry = new InMemoryBrowserRuntimeRegistry();
+        var ledger = new InMemoryDispatchLedger();
+        var ownership = new AlwaysOwnershipProof();
+        var runtime = Runtime("1");
+        await registry.UpsertAsync(runtime);
+        var adapter = new BoundaryAdapter(registry, runtime.RuntimeId, tamperWorkerSlotAfterFill: true);
+        var provider = new BrowserChatProvider(registry, adapter, ledger, new WrongChatGuard(), new GlobalBrowserSendGate(), ownership);
+        var request = Request(runtime, "1");
 
-    public Task DisposeAsync()
-    {
-        try { Directory.Delete(_root, true); } catch { }
-        return Task.CompletedTask;
+        var result = await provider.SendAsync(runtime.RuntimeId, request);
+        var durable = await ledger.GetAsync(request.DispatchId);
+
+        Assert.Equal(BrowserDispatchOutcome.NotSent, result.Outcome);
+        Assert.Equal("PRE_ENTER_AUTHORIZATION_DENIED", result.Reason);
+        Assert.Equal(1, adapter.FillCalls);
+        Assert.Equal(0, adapter.PressCalls);
+        Assert.Equal(new[] { "Fill", "Authorize" }, adapter.Steps);
+        Assert.NotNull(durable);
+        Assert.Equal(DispatchState.Prepared, durable!.State);
     }
 
     [Fact]
-    public async Task Ownership_tamper_between_preflight_and_final_boundary_has_zero_send_or_durable_advancement()
+    public async Task Fresh_boundary_proof_occurs_after_fill_immediately_before_single_press()
     {
-        var db = Path.Combine(_root, "tamper.db");
-        await using var store = new SqliteStateStore(db);
-        await store.InitializeAsync();
+        var registry = new InMemoryBrowserRuntimeRegistry();
+        var ledger = new InMemoryDispatchLedger();
+        var runtime = Runtime("1");
+        await registry.UpsertAsync(runtime);
+        var adapter = new BoundaryAdapter(registry, runtime.RuntimeId, tamperWorkerSlotAfterFill: false);
+        var provider = new BrowserChatProvider(registry, adapter, ledger, new WrongChatGuard(), new GlobalBrowserSendGate(), new AlwaysOwnershipProof());
 
-        var run = ProjectRunId.New();
-        var agent = LogicalAgentId.New();
-        var task = TaskId.New();
-        var wave = WaveId.New();
-        var conversation = ConversationId.New();
-        var dispatch = DispatchId.New();
-        var runtime = new BrowserRuntimeRecord
-        {
-            RuntimeId = "runtime-final-boundary",
-            ProjectRunId = run.ToString(),
-            LogicalAgentId = agent.ToString(),
-            WorkerSlotId = "1",
-            TaskId = task.ToString(),
-            ProcessId = 1001,
-            ProcessStartIdentity = "pid:1001:start:1",
-            ContextIdentity = "ctx",
-            ProfilePath = Path.Combine(_root, "profile"),
-            CreatedByPcc = true,
-            AdoptedExplicitly = false,
-            ConversationIdentity = conversation.ToString(),
-            ProviderConversationIdentity = "provider-conversation",
-            Visibility = BrowserVisibility.Hidden,
-            State = BrowserSessionState.Hidden,
-            LastHeartbeatAt = DateTimeOffset.UtcNow,
-            LastActivityAt = DateTimeOffset.UtcNow,
-            OwnershipNonce = "nonce"
-        };
-        await store.UpsertAsync(runtime);
+        var result = await provider.SendAsync(runtime.RuntimeId, Request(runtime, "1"));
 
-        var ownership = new SequencedOwnershipProof(true, false);
-        var adapter = new CountingHealthyAdapter();
-        var browser = new BrowserChatProvider(store, adapter, store, new WrongChatGuard(), new GlobalBrowserSendGate(), ownership);
-        var provider = new BrowserAgentProviderAdapter(store, browser, ownership);
-        var request = new AgentRequest(run, agent, conversation, dispatch, "prompt", "content-hash", new WorkerSlotId(1), task, wave);
-
-        var result = await provider.SendAsync(request);
-
-        Assert.False(result.Accepted);
-        Assert.Equal("PCC_OWNERSHIP_NOT_PROVEN", result.Error);
-        Assert.Equal(2, ownership.ProofCalls);
-        Assert.Equal(0, adapter.SubmitCalls);
-        Assert.Null(await store.GetAsync(dispatch.ToString()));
-        Assert.Empty(await new AutonomousDispatchJournal(store).ListAsync(run));
+        Assert.Equal(BrowserDispatchOutcome.Submitted, result.Outcome);
+        Assert.Equal(1, adapter.FillCalls);
+        Assert.Equal(1, adapter.PressCalls);
+        Assert.Equal(new[] { "Fill", "Authorize", "Press" }, adapter.Steps);
     }
 
-    private sealed class SequencedOwnershipProof(params bool[] outcomes) : IOwnershipProofService
+    [Fact]
+    public async Task Playwright_direct_submit_has_no_unguarded_enter_path()
     {
-        private int _index;
-        public int ProofCalls => _index;
+        var runtime = Runtime("1");
+        var adapter = new PlaywrightChatGptBrowserAdapter(new NullPageProvider());
+        var expected = new BrowserDispatchExpectation(runtime.ProjectRunId, runtime.LogicalAgentId, runtime.TaskId!, runtime.ConversationIdentity!, runtime.ProviderConversationIdentity!, runtime.WorkerSlotId);
 
-        public Task<OwnershipProof> ProveAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var index = Interlocked.Increment(ref _index) - 1;
-            var proven = index < outcomes.Length && outcomes[index];
-            return Task.FromResult(proven
-                ? OwnershipProof.Proven(runtime.RuntimeId)
-                : OwnershipProof.Denied(runtime.RuntimeId, "TEST_OWNERSHIP_TAMPER"));
-        }
+        var result = await adapter.SubmitAsync(runtime, expected, "prompt");
+
+        Assert.False(result.Triggered);
+        Assert.Equal("PRE_ENTER_AUTHORIZATION_REQUIRED", result.Reason);
     }
 
-    private sealed class CountingHealthyAdapter : IChatGptBrowserAdapter
+    private static BrowserRuntimeRecord Runtime(string slot) => new()
     {
-        public string AdapterVersion => "final-pre-submit";
-        public int SubmitCalls { get; private set; }
+        RuntimeId = "runtime-final-boundary",
+        ProjectRunId = "project-run",
+        LogicalAgentId = "worker-agent",
+        WorkerSlotId = slot,
+        TaskId = "task",
+        ProfilePath = "profile",
+        CreatedByPcc = true,
+        ConversationIdentity = "conversation",
+        ProviderConversationIdentity = "provider-conversation",
+        State = BrowserSessionState.Ready,
+        LastHeartbeatAt = DateTimeOffset.UtcNow,
+        LastActivityAt = DateTimeOffset.UtcNow,
+        OwnershipNonce = "nonce"
+    };
+
+    private static BrowserDispatchRequest Request(BrowserRuntimeRecord runtime, string slot) =>
+        new("dispatch-final-boundary", runtime.ProjectRunId, runtime.LogicalAgentId, runtime.TaskId!, runtime.ConversationIdentity!, runtime.ProviderConversationIdentity!, "prompt", null, slot);
+
+    private sealed class AlwaysOwnershipProof : IOwnershipProofService
+    {
+        public Task<OwnershipProof> ProveAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default) =>
+            Task.FromResult(OwnershipProof.Proven(runtime.RuntimeId));
+    }
+
+    private sealed class NullPageProvider : IPlaywrightPageProvider
+    {
+        public Task<Microsoft.Playwright.IPage?> GetPageAsync(string runtimeId, CancellationToken cancellationToken = default) => Task.FromResult<Microsoft.Playwright.IPage?>(null);
+    }
+
+    private sealed class BoundaryAdapter(InMemoryBrowserRuntimeRegistry registry, string runtimeId, bool tamperWorkerSlotAfterFill) : IPhysicalSubmitAuthorizationAdapter
+    {
+        public string AdapterVersion => "boundary-test";
+        public int FillCalls { get; private set; }
+        public int PressCalls { get; private set; }
+        public List<string> Steps { get; } = [];
 
         public Task<ChatGptSemanticSnapshot> InspectAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, CancellationToken cancellationToken = default) =>
             Task.FromResult(new ChatGptSemanticSnapshot(
@@ -102,16 +105,27 @@ public sealed class FinalPreSubmitFenceTests : IAsyncLifetime
                 SemanticDetection<AuthState>.Create(AuthState.Authenticated, .99, AdapterVersion, "authenticated"),
                 SemanticDetection<ConversationMatch>.Create(ConversationMatch.Match, .99, AdapterVersion, "conversation-match"),
                 SemanticDetection<PageHealth>.Create(PageHealth.Healthy, .99, AdapterVersion, "healthy"),
-                ResponseCompleteness.None,
-                0,
-                null,
-                DateTimeOffset.UtcNow,
-                AdapterVersion));
+                ResponseCompleteness.None, 0, null, DateTimeOffset.UtcNow, AdapterVersion));
 
-        public Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, string prompt, CancellationToken cancellationToken = default)
+        public Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, string prompt, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new AdapterSubmissionResult(false, false, false, "PRE_ENTER_AUTHORIZATION_REQUIRED", ["physical-enter:fence-required"]));
+
+        public async Task<AdapterSubmissionResult> SubmitAuthorizedAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, string prompt, Func<CancellationToken, Task<PreEnterAuthorizationDecision>> authorizeBeforeEnter, CancellationToken cancellationToken = default)
         {
-            SubmitCalls++;
-            return Task.FromResult(new AdapterSubmissionResult(true, true, false, "submitted", ["submitted"]));
+            FillCalls++;
+            Steps.Add("Fill");
+            if (tamperWorkerSlotAfterFill)
+            {
+                var current = await registry.GetAsync(runtimeId, cancellationToken) ?? throw new InvalidOperationException("runtime missing");
+                await registry.UpsertAsync(current with { WorkerSlotId = "2" }, cancellationToken);
+            }
+            Steps.Add("Authorize");
+            var authorization = await authorizeBeforeEnter(cancellationToken);
+            if (!authorization.Authorized)
+                return new AdapterSubmissionResult(false, false, false, "PRE_ENTER_AUTHORIZATION_DENIED", authorization.Evidence.Prepend(authorization.Reason).ToArray());
+            Steps.Add("Press");
+            PressCalls++;
+            return new AdapterSubmissionResult(true, true, false, "SUBMISSION_PROVEN", ["press:triggered"]);
         }
     }
 }
