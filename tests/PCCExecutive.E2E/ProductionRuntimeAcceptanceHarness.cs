@@ -22,6 +22,7 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
     private readonly string _databasePath;
     private readonly ControlledExternalState _external = new();
     private ProjectRunLock? _restartLock;
+    private int _disposed;
 
     private ProductionRuntimeAcceptanceHarness(string root)
     {
@@ -87,15 +88,16 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
         try
         {
             await Host.DisposeAsync().ConfigureAwait(false);
+            _restartLock = null;
         }
-        finally
+        catch
         {
-            // Acceptance cleanup must never let a shutdown exception retain the process-wide
-            // project singleton and turn later tests into unrelated PROJECT_ALREADY_CONTROLLED failures.
+            // The production host owns the lock. Only use this fallback when shutdown failed
+            // before normal lock release so a failed assertion cannot poison the next test.
             hostLock?.Dispose();
+            _restartLock = null;
+            throw;
         }
-        _restartLock?.Dispose();
-        _restartLock = null;
 
         await using (var markerStore = new SqliteStateStore(_databasePath))
         {
@@ -106,10 +108,24 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
                 JsonSerializer.Serialize(interrupted), DateTimeOffset.UtcNow)).ConfigureAwait(false);
         }
 
-        _restartLock = ProjectRunLock.TryAcquire(identity);
-        if (!_restartLock.IsOwned)
+        var restartLock = ProjectRunLock.TryAcquire(identity);
+        if (!restartLock.IsOwned)
+        {
+            restartLock.Dispose();
             throw new InvalidOperationException("Fresh production host could not reacquire the project singleton lock after disposal.");
-        await ConstructFreshHostAsync(runId, _restartLock).ConfigureAwait(false);
+        }
+
+        _restartLock = restartLock;
+        try
+        {
+            await ConstructFreshHostAsync(runId, restartLock).ConfigureAwait(false);
+        }
+        catch
+        {
+            restartLock.Dispose();
+            _restartLock = null;
+            throw;
+        }
     }
 
     private async Task ConstructFreshHostAsync(ProjectRunId? runId, ProjectRunLock? projectLock)
@@ -319,25 +335,40 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
         Exception? shutdownFailure = null;
-        ProjectRunLock? hostLock = null;
+        ProjectRunLock? fallbackLock = null;
         if (Host is not null)
         {
-            try { hostLock = GetField<ProjectRunLock?>(Host, "_projectLock"); } catch { }
+            try { fallbackLock = GetField<ProjectRunLock?>(Host, "_projectLock"); } catch { }
             try
             {
                 await Host.DisposeAsync().ConfigureAwait(false);
+                _restartLock = null;
             }
             catch (Exception ex)
             {
                 shutdownFailure = ex;
-            }
-            finally
-            {
-                hostLock?.Dispose();
+                try
+                {
+                    // Normal release belongs to the production host. Fallback only when shutdown
+                    // failed before it could release the process-wide project lease.
+                    fallbackLock?.Dispose();
+                }
+                catch (Exception releaseFailure)
+                {
+                    shutdownFailure = new AggregateException(ex, releaseFailure);
+                }
+                _restartLock = null;
             }
         }
-        _restartLock?.Dispose();
+        else
+        {
+            _restartLock?.Dispose();
+            _restartLock = null;
+        }
+
         try { Directory.Delete(_root, true); } catch { }
         if (shutdownFailure is not null)
             throw new InvalidOperationException("Production host disposal failed during E2E acceptance cleanup.", shutdownFailure);
@@ -472,7 +503,7 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
             return Task.CompletedTask;
         }
         public Task<OwnershipMarker?> ReadAsync(string profilePath, CancellationToken cancellationToken = default) =>
-            Task.FromResult(_items.TryGetValue(profilePath, out var value) ? value : null);
+            Task.FromResult(_items.TryGetValue(marker.ProfilePath, out var value) ? value : null);
     }
 
     internal sealed class ControlledOwnershipProof(ControlledExternalState state) : IOwnershipProofService
