@@ -23,15 +23,16 @@ jobs:
           $text = [IO.File]::ReadAllText($path)
           $old = '        Assert.Equal("PAUSED", h.Autopilot);'
           $new = @'
-        Console.WriteLine("STAGE29_DIAG AUTOPILOT=" + h.Autopilot + " | PAUSED=" + h.SendGate.Snapshot.IsPaused + " | RECOVERY=" + string.Join(" || ", h.Host.Snapshot.RecoveryEvents.Select(x => x.State + ":" + x.Description)));
-        var stage29Runtimes = await h.Store.ListBrowserRuntimesAsync();
-        foreach (var stage29Agent in preRestartAgents)
-        {
-            var stage29Logical = await h.Store.LoadLogicalAgentAsync(stage29Agent);
-            var stage29Runtime = stage29Runtimes.FirstOrDefault(x => !x.IsArchived && x.State is not BrowserSessionState.Killed && StringComparer.Ordinal.Equals(x.ProjectRunId, h.Run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, stage29Agent.ToString()));
-            Console.WriteLine("STAGE29_AGENT=" + stage29Agent + " | LOGICAL_CONV=" + (stage29Logical?.CurrentConversationId?.ToString() ?? "NULL") + " | RUNTIME=" + (stage29Runtime?.RuntimeId ?? "NULL") + " | RUNTIME_CONV=" + (stage29Runtime?.ConversationIdentity ?? "NULL") + " | TASK=" + (stage29Runtime?.TaskId ?? "NULL") + " | SLOT=" + (stage29Runtime?.WorkerSlotId ?? "NULL"));
-        }
-'@
+          Console.WriteLine("STAGE29_DIAG AUTOPILOT=" + h.Autopilot + " | PAUSED=" + h.SendGate.Snapshot.IsPaused + " | RECOVERY=" + string.Join(" || ", h.Host.Snapshot.RecoveryEvents.Select(x => x.State + ":" + x.Description)));
+          var stage29Runtimes = await h.Store.ListBrowserRuntimesAsync();
+          foreach (var stage29Agent in preRestartAgents)
+          {
+              var stage29Logical = await h.Store.LoadLogicalAgentAsync(stage29Agent);
+              var stage29Runtime = stage29Runtimes.FirstOrDefault(x => !x.IsArchived && x.State is not BrowserSessionState.Killed && StringComparer.Ordinal.Equals(x.ProjectRunId, h.Run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, stage29Agent.ToString()));
+              Console.WriteLine("STAGE29_AGENT=" + stage29Agent + " | LOGICAL_CONV=" + (stage29Logical?.CurrentConversationId?.ToString() ?? "NULL") + " | RUNTIME=" + (stage29Runtime?.RuntimeId ?? "NULL") + " | RUNTIME_CONV=" + (stage29Runtime?.ConversationIdentity ?? "NULL") + " | TASK=" + (stage29Runtime?.TaskId ?? "NULL") + " | SLOT=" + (stage29Runtime?.WorkerSlotId ?? "NULL"));
+          }
+          Assert.Equal("PAUSED", h.Autopilot);
+          '@
           if (-not $text.Contains($old)) { throw 'Stage 29 assertion anchor not found.' }
           [IO.File]::WriteAllText($path, $text.Replace($old, $new), [Text.UTF8Encoding]::new($false))
       - name: Run Stage 29 path with detailed output
