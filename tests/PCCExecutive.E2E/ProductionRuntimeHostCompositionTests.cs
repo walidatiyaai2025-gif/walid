@@ -10,8 +10,13 @@ public sealed class ProductionRuntimeHostCompositionTests
     {
         await using var host = PccExecutiveRuntimeHost.Create();
         var snapshot = host.Snapshot;
+
         Assert.NotNull(snapshot);
-        Assert.NotNull(snapshot.Project);
-        Assert.NotNull(snapshot.Autopilot);
+        Assert.True(snapshot.GatewayBound);
+        Assert.NotNull(snapshot.Projects);
+        Assert.NotNull(snapshot.Sessions);
+        Assert.NotNull(snapshot.Workers);
+        Assert.NotNull(snapshot.DispatchSettings);
+        Assert.False(string.IsNullOrWhiteSpace(snapshot.AutopilotState));
     }
 }
