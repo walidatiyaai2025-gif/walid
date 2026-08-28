@@ -500,11 +500,15 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         var logicalConversation = runtime.ConversationIdentity;
         if (string.IsNullOrWhiteSpace(logicalConversation))
         {
-            logicalConversation = StableGuid($"conversation:{run.Id}:manager:1").ToString();
+            var createdConversation = new ConversationId(StableGuid($"conversation:{run.Id}:manager:1"));
+            logicalConversation = createdConversation.ToString();
             var bound = await _sessions.BindDispatchTargetAsync(runtime.RuntimeId, $"manager-plan:{run.Id}", logicalConversation, "NEW", cancellationToken).ConfigureAwait(false);
             if (!bound.Succeeded) throw new InvalidOperationException($"Manager conversation binding failed: {bound.Reason}.");
             await _store.SaveBrowserConversationAsync(new ConversationRecord { ConversationId = logicalConversation, LogicalAgentId = managerAgentId.ToString(), ProjectRunId = run.Id.ToString(), Sequence = 1, UrlOrProviderIdentity = "NEW", CreatedAt = DateTimeOffset.UtcNow, State = ConversationLifecycleState.Active }, cancellationToken).ConfigureAwait(false);
         }
+        var managerConversation = new ConversationId(Guid.Parse(logicalConversation));
+        if (!StringComparer.Ordinal.Equals(logicalConversation, managerConversation.ToString()))
+            throw new InvalidOperationException("NON_CANONICAL_LOGICAL_CONVERSATION_IDENTITY: Manager runtime conversation must equal ConversationId.ToString().");
 
         var baseline = await _baseline.BuildAsync(_projectControlId ?? throw new InvalidOperationException("Selected PCC project identity is unavailable."), cancellationToken).ConfigureAwait(false);
         if (!baseline.IsSuccess || baseline.Value is null)
@@ -513,10 +517,9 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         _managerBaseline = baseline.Value;
         await _store.SaveCheckpointAsync(new DurableCheckpoint($"manager-baseline:{run.Id}", run.Id.ToString(), "manager-baseline-v1", JsonSerializer.Serialize(baseline.Value), DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt))).ToLowerInvariant();
-        await PersistAgentBindingAsync(managerAgentId, null, null, new ConversationId(Guid.Parse(logicalConversation)), cancellationToken).ConfigureAwait(false);
+        await PersistAgentBindingAsync(managerAgentId, null, null, managerConversation, cancellationToken).ConfigureAwait(false);
         await _orchestrationStore.SaveAsync(new OrchestrationRecoverySnapshot(run, _currentWave, _runtimeTasks, _assignments, [], null, OrchestrationPhase.ManagerPlanning, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
         runtime = await _runtimeRegistry.GetAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false) ?? runtime;
-        var managerConversation = new ConversationId(Guid.Parse(logicalConversation));
         var managerTaskKey = runtime.TaskId ?? $"manager-plan:{run.Id}";
         var managerTaskId = CanonicalDispatchIdentity.StableTask(run.Id, managerTaskKey);
         var managerWaveId = CanonicalDispatchIdentity.StableWave(run.Id, managerTaskKey);
@@ -836,11 +839,14 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         var managerAgentId = _managerAgentId!.Value;
         var runtime = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false)).First(x => !x.IsArchived && StringComparer.Ordinal.Equals(x.LogicalAgentId, managerAgentId.ToString()));
         var logicalConversation = runtime.ConversationIdentity ?? throw new InvalidOperationException("Manager logical conversation is unavailable.");
+        var managerReviewConversation = new ConversationId(Guid.Parse(logicalConversation));
+        if (!StringComparer.Ordinal.Equals(logicalConversation, managerReviewConversation.ToString()))
+            throw new InvalidOperationException("NON_CANONICAL_LOGICAL_CONVERSATION_IDENTITY: Manager review runtime conversation must equal ConversationId.ToString().");
         var providerConversation = runtime.ProviderConversationIdentity ?? throw new InvalidOperationException("Manager provider conversation is unavailable.");
         var ownership = await _ownership.ProveAsync(runtime, cancellationToken).ConfigureAwait(false);
         if (!ownership.IsProven) throw new InvalidOperationException($"Manager review send refused before binding: {ownership.Reason}.");
         await _sessions.BindDispatchTargetAsync(runtime.RuntimeId, $"manager-review:{review.WaveId}", logicalConversation, providerConversation, cancellationToken).ConfigureAwait(false);
-        await PersistAgentBindingAsync(managerAgentId, null, null, new ConversationId(Guid.Parse(logicalConversation)), cancellationToken).ConfigureAwait(false);
+        await PersistAgentBindingAsync(managerAgentId, null, null, managerReviewConversation, cancellationToken).ConfigureAwait(false);
         var prompt = $"WAVE_REVIEW:\n{JsonSerializer.Serialize(review)}\nReturn the next structured Manager plan JSON only. Use 0..5 tasks and current live evidence.";
         var reviewHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt))).ToLowerInvariant();
         runtime = await _runtimeRegistry.GetAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false) ?? runtime;

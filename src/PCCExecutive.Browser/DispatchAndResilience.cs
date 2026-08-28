@@ -94,10 +94,30 @@ public sealed class BrowserChatProvider
         {
             submission = await physicalAdapter.SubmitAuthorizedAsync(runtime, expected, request.Prompt, async ct =>
             {
-                var authorization = await FinalPreEnterAuthorization.AuthorizeAsync(_runtimes, _ownership, runtimeId, expected, ct).ConfigureAwait(false);
-                if (authorization.Authorized)
-                    await _ledger.UpdateAsync(request.DispatchId, DispatchState.Submitting, "FINAL_PRE_ENTER_AUTHORIZED", ct).ConfigureAwait(false);
-                return authorization;
+                // This callback is invoked by the physical adapter only after composer Fill and
+                // immediately before its Enter-capable operation. Re-read both durable runtime
+                // bindings and the live browser semantics here so a post-Fill wrong-chat race
+                // cannot pass using the earlier preflight snapshot.
+                var current = await _runtimes.GetAsync(runtimeId, ct).ConfigureAwait(false);
+                if (current is null)
+                    return new(false, "FINAL_RUNTIME_NOT_FOUND", new[] { $"runtime:{runtimeId}" });
+
+                var finalSnapshot = await _adapter.InspectAsync(current, expected, ct).ConfigureAwait(false);
+                var finalGuard = _wrongChatGuard.Evaluate(current, expected, finalSnapshot);
+                if (!finalGuard.MaySend)
+                    return new(false, $"FINAL_{finalGuard.Reason}", finalGuard.Evidence.Append("final-enter:semantic-recheck-denied").ToArray());
+
+                var finalProof = await _ownership.ProveAsync(current, ct).ConfigureAwait(false);
+                if (!finalProof.IsProven)
+                    return new(false, "FINAL_PCC_OWNERSHIP_NOT_PROVEN", finalGuard.Evidence.Append(finalProof.Reason).ToArray());
+
+                var finalEvidence = finalGuard.Evidence
+                    .Append(finalProof.Reason)
+                    .Append("final-enter:fresh-runtime-semantic-ownership-proof")
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                await _ledger.UpdateAsync(request.DispatchId, DispatchState.Submitting, string.Join(";", finalEvidence), ct).ConfigureAwait(false);
+                return new(true, "FINAL_PRE_ENTER_AUTHORIZED", finalEvidence);
             }, cancellationToken).ConfigureAwait(false);
             if (!submission.Triggered && string.Equals(submission.Reason, "PRE_ENTER_AUTHORIZATION_DENIED", StringComparison.Ordinal))
                 return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, submission.Reason, submission.Evidence);

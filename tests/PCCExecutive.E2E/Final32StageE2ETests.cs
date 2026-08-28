@@ -241,12 +241,14 @@ public sealed class Final32StageE2ETests : IAsyncLifetime
         Assert.True(await new ConversationInvariantService(new FullDurabilityRecoveryService(store, orchestrationStore)).ExactlyOneActiveAsync(snapshot.ProjectRun.Id, rolloverAgent));
         Mark(31);
 
+        // Authoritative CompletionEngine policy deliberately clamps a mandatory pending gate
+        // below ClosureMode to 98.99. Only fresh all-pass evidence may reach 100/VerifiedComplete.
         var closure = new CompletionGateController().Evaluate(
             new ManagerEstimate(100),
             [Gate(CompletionGateFamily.IMPLEMENTATION, GateState.Pass, 99), Gate(CompletionGateFamily.UI, GateState.Pending, 1)],
             []);
-        Assert.Equal(99m, closure.VerifiedCompletion.Percent);
-        Assert.Equal(ProjectCompletionMode.ClosureMode, closure.Mode);
+        Assert.Equal(98.99m, closure.VerifiedCompletion.Percent);
+        Assert.Equal(ProjectCompletionMode.Active, closure.Mode);
         var verified = new CompletionGateController().Evaluate(
             new ManagerEstimate(100),
             [Gate(CompletionGateFamily.IMPLEMENTATION, GateState.Pass, 99), Gate(CompletionGateFamily.UI, GateState.Pass, 1)],

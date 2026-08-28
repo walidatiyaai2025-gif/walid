@@ -1,7 +1,6 @@
 using PCCExecutive.Browser;
 using PCCExecutive.Domain;
 using PCCExecutive.Infrastructure;
-using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -19,6 +18,7 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Task _loop;
     private readonly string _profileRoot;
+    private int _disposed;
 
     private AutonomousConversationRolloverRuntime(PccExecutiveRuntimeHost host)
     {
@@ -26,6 +26,7 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
         _store = PccHostRecoveryAccess.Store(_host);
         _profileRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PCC Executive", "browser-profiles");
         RecoverInterruptedRolloversAsync().GetAwaiter().GetResult();
+        RecoverDurableAttentionAsync().GetAwaiter().GetResult();
         _loop = MonitorAsync(_shutdown.Token);
     }
 
@@ -41,6 +42,8 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
                 try
                 {
                     await RepairInterruptedRolloversAsync(cancellationToken).ConfigureAwait(false);
+                    await NormalizeActiveConversationTruthAsync(cancellationToken).ConfigureAwait(false);
+                    await RecoverDurableAttentionAsync(cancellationToken).ConfigureAwait(false);
                     var run = PccHostRecoveryAccess.Run(_host);
                     if (run is not null && PccHostRecoveryAccess.RuntimeHealthFault(_host) is null)
                     {
@@ -96,7 +99,6 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
     private async Task GovernedRolloverAsync(BrowserRuntimeRecord runtime, ConversationRecord predecessor, string reason, CancellationToken cancellationToken)
     {
         if (predecessor.State != ConversationLifecycleState.Active) return;
-        await PccHostRecoveryAccess.NewSendPause(_host).PauseNewSendsAsync($"Conversation rollover for logical agent {predecessor.LogicalAgentId}.", cancellationToken).ConfigureAwait(false);
         var checkpointId = $"rollover:{predecessor.LogicalAgentId}:{predecessor.ConversationId}:{DateTimeOffset.UtcNow.UtcTicks}";
         var checkpoint = new DurableCheckpoint(
             checkpointId,
@@ -106,7 +108,8 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
             DateTimeOffset.UtcNow);
         await _store.SaveCheckpointAsync(checkpoint, cancellationToken).ConfigureAwait(false);
 
-        var candidateConversationId = Guid.NewGuid().ToString();
+        var candidateConversation = ConversationId.New();
+        var candidateConversationId = candidateConversation.ToString();
         var candidateRuntime = await PccHostConversationAccess.Sessions(_host).CreateAsync(new BrowserSessionRequest(
             predecessor.ProjectRunId,
             predecessor.LogicalAgentId,
@@ -140,15 +143,40 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
         }
 
         var providerIdentity = candidateRuntime.ProviderConversationIdentity ?? "NEW";
-        var logicalConversation = new ConversationId(Guid.Parse(candidate.ConversationId));
+        var logicalConversation = candidateConversation;
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(packet))).ToLowerInvariant();
-        var taskKey = candidateRuntime.TaskId ?? $"rollover:{predecessor.LogicalAgentId}";
-        var taskId = PCCExecutive.Application.CanonicalDispatchIdentity.StableTask(new ProjectRunId(Guid.Parse(predecessor.ProjectRunId)), taskKey);
-        var waveId = PCCExecutive.Application.CanonicalDispatchIdentity.StableWave(new ProjectRunId(Guid.Parse(predecessor.ProjectRunId)), taskKey);
-        var correlation = new PCCExecutive.Application.DurableDispatchCorrelation(new ProjectRunId(Guid.Parse(predecessor.ProjectRunId)), new LogicalAgentId(Guid.Parse(predecessor.LogicalAgentId)), candidateRuntime.WorkerSlotId is null ? null : new WorkerSlotId(int.Parse(candidateRuntime.WorkerSlotId)), taskId, waveId, logicalConversation, providerIdentity, hash);
+        var projectRunId = new ProjectRunId(Guid.Parse(predecessor.ProjectRunId));
+        var logicalAgentId = new LogicalAgentId(Guid.Parse(predecessor.LogicalAgentId));
+        WorkerSlotId? workerSlotId = candidateRuntime.WorkerSlotId is null ? null : new WorkerSlotId(int.Parse(candidateRuntime.WorkerSlotId));
+        TaskId taskId;
+        WaveId waveId;
+        if (workerSlotId is not null)
+        {
+            if (!Guid.TryParse(candidateRuntime.TaskId, out var currentTaskGuid))
+            {
+                await RollbackCandidateAsync(predecessor, candidate, candidateRuntime, checkpointId, "ROLLOVER_WORKER_TASK_IDENTITY_INVALID", cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            var currentWave = PccHostRecoveryAccess.CurrentWave(_host);
+            if (currentWave is null)
+            {
+                await RollbackCandidateAsync(predecessor, candidate, candidateRuntime, checkpointId, "ROLLOVER_WORKER_WAVE_IDENTITY_MISSING", cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            taskId = new TaskId(currentTaskGuid);
+            waveId = currentWave.Id;
+        }
+        else
+        {
+            var taskKey = candidateRuntime.TaskId ?? $"rollover:{predecessor.LogicalAgentId}";
+            taskId = PCCExecutive.Application.CanonicalDispatchIdentity.StableTask(projectRunId, taskKey);
+            waveId = PCCExecutive.Application.CanonicalDispatchIdentity.StableWave(projectRunId, taskKey);
+        }
+        var correlation = new PCCExecutive.Application.DurableDispatchCorrelation(projectRunId, logicalAgentId, workerSlotId, taskId, waveId, logicalConversation, providerIdentity, hash);
         var dispatch = await new CanonicalDispatchReservationService(_store).ReserveOrRecoverAsync(correlation, cancellationToken).ConfigureAwait(false);
-        var request = new PCCExecutive.Application.AgentRequest(correlation.ProjectRunId, correlation.LogicalAgentId, logicalConversation, dispatch.Id, packet, hash, correlation.WorkerSlotId, candidateRuntime.WorkerSlotId is null ? null : taskId, candidateRuntime.WorkerSlotId is null ? null : waveId, providerIdentity);
+        var request = new PCCExecutive.Application.AgentRequest(correlation.ProjectRunId, correlation.LogicalAgentId, logicalConversation, dispatch.Id, packet, hash, workerSlotId, workerSlotId is null ? null : taskId, workerSlotId is null ? null : waveId, providerIdentity);
         var result = await PccHostConversationAccess.AgentProvider(_host).SendAsync(request, cancellationToken).ConfigureAwait(false);
+        await PccHostRecoveryAccess.NewSendPause(_host).PauseNewSendsAsync($"Conversation rollover for logical agent {predecessor.LogicalAgentId}.", cancellationToken).ConfigureAwait(false);
         if (!result.Accepted)
         {
             await SaveJournalAsync(predecessor, candidate, checkpointId, result.IsUncertain ? "CONTINUATION_SUBMITTED_UNKNOWN" : "CONTINUATION_SEND_FAILED", result.ErrorCode ?? reason, cancellationToken).ConfigureAwait(false);
@@ -157,7 +185,12 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
         }
 
         candidateRuntime = await PccHostConversationAccess.RuntimeRegistry(_host).GetAsync(candidateRuntime.RuntimeId, cancellationToken).ConfigureAwait(false) ?? candidateRuntime;
-        var expected = new BrowserDispatchExpectation(predecessor.ProjectRunId, predecessor.LogicalAgentId, candidateRuntime.TaskId!, candidate.ConversationId, candidateRuntime.ProviderConversationIdentity!, candidateRuntime.WorkerSlotId);
+        if (string.IsNullOrWhiteSpace(candidateRuntime.TaskId) || string.IsNullOrWhiteSpace(candidateRuntime.ProviderConversationIdentity))
+        {
+            await SaveJournalAsync(predecessor, candidate, checkpointId, "CONTINUATION_NOT_YET_PROVEN", "Successor runtime binding is incomplete.", cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        var expected = new BrowserDispatchExpectation(predecessor.ProjectRunId, predecessor.LogicalAgentId, candidateRuntime.TaskId, candidate.ConversationId, candidateRuntime.ProviderConversationIdentity, candidateRuntime.WorkerSlotId);
         var semantic = await PccHostConversationAccess.BrowserAdapter(_host).InspectAsync(candidateRuntime, expected, cancellationToken).ConfigureAwait(false);
         if (semantic.Auth.State != AuthState.Authenticated || semantic.Health.State != PageHealth.Healthy || semantic.Generation.State == GenerationState.Generating)
         {
@@ -206,7 +239,7 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
     private async Task FinishBrowserCommitAfterCrashAsync(ConversationRecord predecessor, ConversationRecord candidate, BrowserRuntimeRecord runtime, RolloverJournalEntry journal, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(runtime.ProviderConversationIdentity) || string.IsNullOrWhiteSpace(runtime.TaskId)) return;
-        var expected = new BrowserDispatchExpectation(predecessor.ProjectRunId, predecessor.LogicalAgentId, runtime.TaskId!, candidate.ConversationId, runtime.ProviderConversationIdentity!, runtime.WorkerSlotId);
+        var expected = new BrowserDispatchExpectation(predecessor.ProjectRunId, predecessor.LogicalAgentId, runtime.TaskId, candidate.ConversationId, runtime.ProviderConversationIdentity, runtime.WorkerSlotId);
         var semantic = await PccHostConversationAccess.BrowserAdapter(_host).InspectAsync(runtime, expected, cancellationToken).ConfigureAwait(false);
         if (semantic.Auth.State == AuthState.Authenticated && semantic.Health.State == PageHealth.Healthy && semantic.Generation.State != GenerationState.Generating)
             await CommitSuccessorAsync(predecessor, candidate, runtime, journal.LifecycleCheckpointId, journal.Reason, cancellationToken).ConfigureAwait(false);
@@ -219,28 +252,110 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
         var records = (await _store.ListBrowserConversationsAsync(cancellationToken).ConfigureAwait(false))
             .Where(x => StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()))
             .ToArray();
+        var runtimes = (await PccHostConversationAccess.RuntimeRegistry(_host).ListAsync(cancellationToken).ConfigureAwait(false))
+            .Where(x => StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()))
+            .ToArray();
+
         foreach (var group in records.GroupBy(x => x.LogicalAgentId, StringComparer.Ordinal))
         {
-            var active = group.Where(x => x.State == ConversationLifecycleState.Active).OrderByDescending(x => x.Sequence).ThenByDescending(x => x.CreatedAt).ToArray();
-            if (active.Length <= 1) continue;
-            var winner = active[0];
-            foreach (var loser in active.Skip(1))
+            LogicalAgentSession? logical = null;
+            if (Guid.TryParse(group.Key, out var logicalGuid))
+                logical = await _store.LoadLogicalAgentAsync(new LogicalAgentId(logicalGuid), cancellationToken).ConfigureAwait(false);
+
+            var agentRuntimes = runtimes.Where(x => StringComparer.Ordinal.Equals(x.LogicalAgentId, group.Key)).ToArray();
+            var plan = ConversationRecoveryInvariantPlanner.Build(group.ToArray(), logical?.CurrentConversationId?.ToString(), agentRuntimes);
+            if (plan.ActiveConversationId is null) continue;
+
+            var selected = group.First(x => StringComparer.Ordinal.Equals(x.ConversationId, plan.ActiveConversationId));
+            if (plan.PromoteSelectedConversation && selected.State != ConversationLifecycleState.Active)
+                await _store.SaveBrowserConversationAsync(selected with { State = ConversationLifecycleState.Active, RetiredAt = null, RolloverReason = selected.RolloverReason ?? "RECOVERY_RESTORED_ACTIVE" }, cancellationToken).ConfigureAwait(false);
+
+            foreach (var conversationId in plan.ArchiveConversationIds)
             {
-                var archived = loser with { State = ConversationLifecycleState.Archived, RetiredAt = DateTimeOffset.UtcNow, SuccessorConversationId = winner.ConversationId, RolloverReason = "RECOVERY_EXACTLY_ONE_ACTIVE" };
-                await _store.SaveBrowserConversationAsync(archived, cancellationToken).ConfigureAwait(false);
-                var runtime = (await PccHostConversationAccess.RuntimeRegistry(_host).ListAsync(cancellationToken).ConfigureAwait(false))
-                    .FirstOrDefault(x => StringComparer.Ordinal.Equals(x.LogicalAgentId, loser.LogicalAgentId) && StringComparer.Ordinal.Equals(x.ConversationIdentity, loser.ConversationId));
-                if (runtime is not null && !runtime.IsArchived) await PccHostConversationAccess.Sessions(_host).KillAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
+                var loser = group.First(x => StringComparer.Ordinal.Equals(x.ConversationId, conversationId));
+                await _store.SaveBrowserConversationAsync(loser with
+                {
+                    State = ConversationLifecycleState.Archived,
+                    RetiredAt = loser.RetiredAt ?? DateTimeOffset.UtcNow,
+                    SuccessorConversationId = plan.ActiveConversationId,
+                    RolloverReason = loser.RolloverReason ?? "RECOVERY_EXACTLY_ONE_ACTIVE"
+                }, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (logical is not null && plan.UpdateLogicalSession && Guid.TryParse(plan.ActiveConversationId, out var activeGuid))
+                await _store.SaveLogicalAgentAsync(logical with { CurrentConversationId = new ConversationId(activeGuid), State = LogicalSessionState.Active }, cancellationToken).ConfigureAwait(false);
+
+            foreach (var runtimeId in plan.RetireRuntimeIds)
+            {
+                var retired = await PccHostConversationAccess.Sessions(_host).KillAsync(runtimeId, cancellationToken).ConfigureAwait(false);
+                if (!retired.Succeeded)
+                {
+                    await PccHostRecoveryAccess.NewSendPause(_host).PauseNewSendsAsync($"RETIRED_CONVERSATION_RUNTIME_NOT_CLOSED:{runtimeId}:{retired.Reason}", cancellationToken).ConfigureAwait(false);
+                    await RecordRuntimeEventAsync("RETIRED_CONVERSATION_RUNTIME_NOT_CLOSED", $"{runtimeId}:{retired.Reason}", cancellationToken).ConfigureAwait(false);
+                }
             }
         }
     }
 
+    private async Task RecoverDurableAttentionAsync(CancellationToken cancellationToken = default)
+    {
+        var run = PccHostRecoveryAccess.Run(_host);
+        if (run is null) return;
+        var attention = PccHostRecoveryAccess.Attention(_host);
+        var checkpoint = await _store.LoadCheckpointAsync($"runtime-health:{run.Id}", cancellationToken).ConfigureAwait(false);
+        DurableRuntimeHealthProjection? health = null;
+        if (checkpoint is not null)
+        {
+            try { health = JsonSerializer.Deserialize<DurableRuntimeHealthProjection>(checkpoint.Payload); }
+            catch (JsonException) { }
+        }
+
+        var attentionCode = health is null ? null : DurableProviderAttentionPolicy.Classify(health.Active, health.State, health.Reason);
+        if (attentionCode is null)
+        {
+            foreach (var key in attention.Keys.Where(x => x.StartsWith("browser-attention:", StringComparison.Ordinal)).ToArray())
+                attention.Remove(key);
+            return;
+        }
+
+        var runtimeId = health!.RuntimeId ?? string.Empty;
+        var runtime = string.IsNullOrWhiteSpace(runtimeId)
+            ? null
+            : await PccHostConversationAccess.RuntimeRegistry(_host).GetAsync(runtimeId, cancellationToken).ConfigureAwait(false);
+        var target = runtime?.WorkerSlotId is { Length: > 0 } slot ? $"Worker {slot} ChatGPT session" : "Manager ChatGPT session";
+        var id = $"browser-attention:{(string.IsNullOrWhiteSpace(runtimeId) ? "durable-global-health" : runtimeId)}";
+        var reason = attentionCode == "CHALLENGE"
+            ? "ChatGPT presented a challenge/CAPTCHA that automation must not bypass. Durable global sends remain blocked until fresh semantic recovery proof."
+            : "ChatGPT authentication is required in the isolated PCC-owned profile. Durable global sends remain blocked until fresh semantic recovery proof.";
+        attention[id] = (new AttentionSummary(id, attentionCode, reason, "Open PCC Browser", target, "P0"), runtimeId);
+        PccHostRecoveryAccess.Autopilot(_host) = "ATTENTION_REQUIRED";
+    }
+
     private async Task CommitSuccessorAsync(ConversationRecord predecessor, ConversationRecord candidate, BrowserRuntimeRecord candidateRuntime, string checkpointId, string reason, CancellationToken cancellationToken)
     {
+        var provenCandidate = candidate with
+        {
+            UrlOrProviderIdentity = candidateRuntime.ProviderConversationIdentity ?? candidate.UrlOrProviderIdentity
+        };
+        var lifecycleResult = await RecoveryRolloverLifecycleBridge.CommitWithExistingConversationLifecycleManagerAsync(
+            predecessor,
+            provenCandidate,
+            checkpointId,
+            reason,
+            (archived, successor, committedCheckpointId, ct) => _store.CommitRolloverAsync(archived, successor, committedCheckpointId, ct),
+            cancellationToken).ConfigureAwait(false);
+
+        if (!lifecycleResult.Succeeded)
+        {
+            await SaveJournalAsync(predecessor, candidate, checkpointId, "LIFECYCLE_FINALIZATION_FAILED", lifecycleResult.Reason, cancellationToken).ConfigureAwait(false);
+            await PccHostRecoveryAccess.NewSendPause(_host).PauseNewSendsAsync($"ROLLOVER_LIFECYCLE_FINALIZATION_FAILED:{lifecycleResult.Reason}", cancellationToken).ConfigureAwait(false);
+            await RecordRuntimeEventAsync("ROLLOVER_LIFECYCLE_FINALIZATION_FAILED", lifecycleResult.Reason, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         var now = DateTimeOffset.UtcNow;
         var archived = predecessor with { State = ConversationLifecycleState.Archived, RetiredAt = now, SuccessorConversationId = candidate.ConversationId, RolloverReason = reason };
-        var successor = candidate with { State = ConversationLifecycleState.Active, UrlOrProviderIdentity = candidateRuntime.ProviderConversationIdentity ?? candidate.UrlOrProviderIdentity };
-        await _store.CommitRolloverAsync(archived, successor, checkpointId, cancellationToken).ConfigureAwait(false);
+        var successor = provenCandidate with { State = ConversationLifecycleState.Active };
         await SaveJournalAsync(archived, successor, checkpointId, "COMMITTED", reason, cancellationToken).ConfigureAwait(false);
 
         var oldRuntime = (await PccHostConversationAccess.RuntimeRegistry(_host).ListAsync(cancellationToken).ConfigureAwait(false))
@@ -308,6 +423,7 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _shutdown.Cancel();
         try { await _loop.ConfigureAwait(false); } catch (OperationCanceledException) { }
         _shutdown.Dispose();
@@ -321,8 +437,15 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
         string Reason,
         string Status,
         DateTimeOffset UpdatedAt);
-}
 
+    private sealed record DurableRuntimeHealthProjection(
+        bool Active,
+        string State,
+        string Reason,
+        DateTimeOffset? ResumeNotBefore,
+        bool RequiresHumanAction,
+        string? RuntimeId);
+}
 
 internal static class PccHostRecoveryAccess
 {
@@ -330,6 +453,8 @@ internal static class PccHostRecoveryAccess
     internal static extern ref SqliteStateStore Store(PccExecutiveRuntimeHost host);
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_run")]
     internal static extern ref ProjectRun? Run(PccExecutiveRuntimeHost host);
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_currentWave")]
+    internal static extern ref Wave? CurrentWave(PccExecutiveRuntimeHost host);
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_runtimeHealthFault")]
     internal static extern ref string? RuntimeHealthFault(PccExecutiveRuntimeHost host);
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_sendGate")]
@@ -338,7 +463,10 @@ internal static class PccHostRecoveryAccess
     internal static extern ref INewSendPausePort NewSendPause(PccExecutiveRuntimeHost host);
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_autopilot")]
     internal static extern ref string Autopilot(PccExecutiveRuntimeHost host);
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_attention")]
+    internal static extern ref Dictionary<string, (AttentionSummary Summary, string RuntimeId)> Attention(PccExecutiveRuntimeHost host);
 }
+
 internal static class PccHostConversationAccess
 {
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_runtimeRegistry")]

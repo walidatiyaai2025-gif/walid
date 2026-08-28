@@ -374,42 +374,68 @@ public sealed class SqliteStateStore : IDurableStateStore, IBrowserRuntimeRegist
 public sealed class ProjectRunLock : IDisposable
 {
     private static readonly ConcurrentDictionary<string, byte> ActiveLocks = new(StringComparer.Ordinal);
-    private readonly Mutex _mutex;
+    private readonly FileStream? _lease;
     private readonly string _key;
-    private bool _owns;
+    private int _owns;
+    private int _disposed;
 
-    private ProjectRunLock(Mutex mutex, string key, bool owns)
+    private ProjectRunLock(FileStream? lease, string key, bool owns)
     {
-        _mutex = mutex;
+        _lease = lease;
         _key = key;
-        _owns = owns;
+        _owns = owns ? 1 : 0;
     }
 
-    public bool IsOwned => _owns;
+    public bool IsOwned => Volatile.Read(ref _owns) == 1;
 
     public static ProjectRunLock TryAcquire(string projectIdentity)
     {
         if (string.IsNullOrWhiteSpace(projectIdentity)) throw new ArgumentException("Project identity is required.", nameof(projectIdentity));
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(projectIdentity))).ToLowerInvariant();
         var key = $"PCCExecutive.Project.{hash}";
-        var mutex = new Mutex(false, key);
-        if (!ActiveLocks.TryAdd(key, 0)) return new ProjectRunLock(mutex, key, false);
+        if (!ActiveLocks.TryAdd(key, 0)) return new ProjectRunLock(null, key, false);
 
-        bool owns;
-        try { owns = mutex.WaitOne(TimeSpan.Zero); }
-        catch (AbandonedMutexException) { owns = true; }
-        if (!owns) ActiveLocks.TryRemove(key, out _);
-        return new ProjectRunLock(mutex, key, owns);
+        FileStream? lease = null;
+        try
+        {
+            var lockDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "PCC Executive",
+                "project-locks");
+            Directory.CreateDirectory(lockDirectory);
+            var lockPath = Path.Combine(lockDirectory, $"{hash}.lock");
+
+            // A named Mutex is thread-affine and therefore unsafe to hold across this runtime's
+            // async lifecycle. An exclusive OS file handle preserves cross-process project
+            // exclusivity, is releasable from any thread, and is closed by the OS on process exit.
+            lease = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            return new ProjectRunLock(lease, key, true);
+        }
+        catch (IOException)
+        {
+            lease?.Dispose();
+            ActiveLocks.TryRemove(key, out _);
+            return new ProjectRunLock(null, key, false);
+        }
+        catch
+        {
+            lease?.Dispose();
+            ActiveLocks.TryRemove(key, out _);
+            throw;
+        }
     }
 
     public void Dispose()
     {
-        if (_owns)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        try
         {
-            _mutex.ReleaseMutex();
-            ActiveLocks.TryRemove(_key, out _);
-            _owns = false;
+            _lease?.Dispose();
         }
-        _mutex.Dispose();
+        finally
+        {
+            if (Interlocked.Exchange(ref _owns, 0) == 1)
+                ActiveLocks.TryRemove(_key, out _);
+        }
     }
 }
