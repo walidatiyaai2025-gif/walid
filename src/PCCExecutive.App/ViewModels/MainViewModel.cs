@@ -37,22 +37,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         Navigation = new ObservableCollection<NavigationItem>
         {
-            new(ScreenId.Dashboard, "Dashboard", "⌂"),
-            new(ScreenId.ProjectSelection, "Projects", "▣"),
-            new(ScreenId.ManagerWorkspace, "Manager", "◇"),
-            new(ScreenId.WorkersDispatch, "Dispatch", "⇶"),
-            new(ScreenId.WorkerChat, "Worker Chat", "◫"),
-            new(ScreenId.WaveSummary, "Wave Summary", "≋"),
-            new(ScreenId.TaskBoard, "Task Board", "☷"),
-            new(ScreenId.EvidenceVerification, "Evidence", "✓"),
-            new(ScreenId.LoopGuard, "Loop Guard", "⛨"),
-            new(ScreenId.ChatGptHealth, "ChatGPT Health", "♡"),
-            new(ScreenId.SessionMonitor, "Sessions", "◎"),
-            new(ScreenId.ChromeConnection, "Chrome", "◉"),
-            new(ScreenId.UpdateCenter, "Update Center", "↻"),
-            new(ScreenId.AttentionCenter, "Attention", "!"),
-            new(ScreenId.ConversationHistory, "History", "↺"),
-            new(ScreenId.Settings, "Settings", "⚙")
+            new(ScreenId.ChromeConnection, "01  Chrome", "◉"),
+            new(ScreenId.ProjectSelection, "02  Projects", "▣"),
+            new(ScreenId.Dashboard, "03  Dashboard", "⌂"),
+            new(ScreenId.ManagerWorkspace, "04  Manager", "◇"),
+            new(ScreenId.WorkersDispatch, "05  Dispatch", "⇶"),
+            new(ScreenId.WorkerChat, "06  Worker Chat", "◫"),
+            new(ScreenId.WaveSummary, "07  Wave Summary", "≋"),
+            new(ScreenId.TaskBoard, "08  Task Board", "☷"),
+            new(ScreenId.EvidenceVerification, "09  Evidence", "✓"),
+            new(ScreenId.LoopGuard, "10  Loop Guard", "⛨"),
+            new(ScreenId.ChatGptHealth, "11  ChatGPT Health", "♡"),
+            new(ScreenId.SessionMonitor, "12  Sessions", "◎"),
+            new(ScreenId.Settings, "13  Settings", "⚙"),
+            new(ScreenId.UpdateCenter, "14  Update Center", "↻"),
+            new(ScreenId.AttentionCenter, "15  Attention", "!"),
+            new(ScreenId.ConversationHistory, "History", "↺")
         };
 
         _screens = new()
@@ -74,7 +74,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             [ScreenId.AttentionCenter] = new AttentionCenterViewModel(this),
             [ScreenId.ConversationHistory] = new ConversationHistoryViewModel(this)
         };
-        _selectedScreen = _snapshot.HasActiveRun ? ScreenId.Dashboard : ScreenId.ProjectSelection;
+        _selectedScreen = _snapshot.HasActiveRun ? ScreenId.Dashboard : ScreenId.ChromeConnection;
         _currentScreen = _screens[_selectedScreen];
 
         NavigateCommand = new RelayCommand(p => Navigate(p));
@@ -85,9 +85,21 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 LastUiError = null;
                 await _gateway.ExecuteAsync(UiAction.SelectProject, p?.ToString());
                 if (_gateway.Snapshot.HasActiveRun)
-                    Navigate(ScreenId.Dashboard);
+                {
+                    // Zero-touch handoff: once the owner explicitly opens a canonical project,
+                    // establishing/recovering the PCC-owned Manager Chrome runtime is routine work.
+                    // Do it automatically instead of forcing the owner to discover another button.
+                    if (_gateway.CanExecute(UiAction.ConnectChrome))
+                        await _gateway.ExecuteAsync(UiAction.ConnectChrome);
+
+                    var managerReady = _gateway.Snapshot.Sessions.Any(s =>
+                        s.IsPccOwned && string.Equals(s.Role, "Manager", StringComparison.OrdinalIgnoreCase));
+                    Navigate(managerReady ? ScreenId.ManagerWorkspace : ScreenId.ChromeConnection);
+                }
                 else
+                {
                     LastUiError = "Project selection did not resolve to a canonical PCC project. Review the project state and try again.";
+                }
             },
             p => _gateway.CanExecute(UiAction.SelectProject, p?.ToString()),
             ex => LastUiError = ex.Message);
