@@ -78,6 +78,7 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
         PCCExecutive.Domain.Dispatch? domainDispatch = null;
         AutonomousDispatchJournal? journal = null;
         Func<CancellationToken, Task>? beforeSubmit = null;
+        Func<CancellationToken, Task>? beforeSubmit = null;
         if (_durableStore is not null)
         {
             journal = new AutonomousDispatchJournal(_durableStore);

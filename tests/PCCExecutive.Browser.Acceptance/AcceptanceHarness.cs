@@ -199,6 +199,7 @@ public sealed class ControlledBrowserAcceptanceHarness
     public InMemoryDispatchLedger Ledger => _ledger;
     public GlobalBrowserSendGate GlobalGate => _globalGate;
     public IOwnershipProofService Ownership => _ownership;
+    public IOwnershipProofService Ownership => _ownership;
     public DeterministicChatGptAdapter Adapter => _adapter;
     public IReadOnlyList<AcceptanceTrace> Trace => _trace;
     public BrowserRuntimeRecord Manager => _manager ?? throw new InvalidOperationException("Topology has not been created.");
