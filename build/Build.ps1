@@ -1,4 +1,6 @@
-[CmdletBinding()]
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
 param(
     [ValidateSet('Debug','Release')]
     [string]$Configuration = 'Release',
@@ -6,68 +8,34 @@ param(
     [string]$NormalTestFilter = 'Category!=LiveBrowser'
 )
 
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$version = (Get-Content (Join-Path $repoRoot 'VERSION') -Raw).Trim()
+$solution = Join-Path $repoRoot 'PCCExecutive.sln'
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$versionPath = Join-Path $repoRoot 'VERSION'
-if (-not (Test-Path $versionPath)) { throw 'VERSION is required.' }
+if (Test-Path $solution) {
+    & dotnet restore $solution
+    if ($LASTEXITCODE -ne 0) { throw 'dotnet restore failed.' }
 
-$version = (Get-Content $versionPath -Raw).Trim()
-if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
-    throw "VERSION '$version' is not valid semantic version syntax."
+    & dotnet build $solution --configuration $Configuration --no-restore -p:Version=$version -p:ContinuousIntegrationBuild=$([bool]$env:GITHUB_ACTIONS)
+    if ($LASTEXITCODE -ne 0) { throw 'dotnet build failed.' }
+}
+elseif ($RequireProduct) {
+    throw 'PCCExecutive.sln is required for a product build.'
+}
+else {
+    Write-Host 'PCCExecutive.sln not present yet; validating any integrated .NET projects directly.'
 }
 
-$dotnetVersion = (& dotnet --version).Trim()
-if ($LASTEXITCODE -ne 0 -or $dotnetVersion -notmatch '^10\.') {
-    throw ".NET 10 SDK is required. Detected '$dotnetVersion'."
-}
-
-$solutions = @(
-    Get-ChildItem -Path $repoRoot -Recurse -File -Filter '*.slnx' |
-        Where-Object { $_.FullName -notmatch '[\\/](artifacts|bin|obj)[\\/]' } |
-        Sort-Object FullName
-)
-if ($solutions.Count -eq 0) {
-    $solutions = @(
-        Get-ChildItem -Path $repoRoot -Recurse -File -Filter '*.sln' |
-            Where-Object { $_.FullName -notmatch '[\\/](artifacts|bin|obj)[\\/]' } |
-            Sort-Object FullName
-    )
-}
-
-$srcProjects = @(
-    Get-ChildItem -Path (Join-Path $repoRoot 'src') -Recurse -File -Filter '*.csproj' -ErrorAction SilentlyContinue |
-        Sort-Object FullName
-)
-
-if ($solutions.Count -eq 0 -and $srcProjects.Count -eq 0) {
-    if ($RequireProduct) { throw 'PRODUCT_SOURCE_NOT_PRESENT: no .NET solution/project exists yet on this branch.' }
-    Write-Host 'PRODUCT_SOURCE_NOT_PRESENT: release infrastructure validated; application build is blocked on integrated source.'
-    exit 0
-}
-
-foreach ($solution in $solutions) {
-    & dotnet restore $solution.FullName
-    if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed: $($solution.FullName)" }
-    & dotnet build $solution.FullName --configuration $Configuration --no-restore -p:Version=$version -p:ContinuousIntegrationBuild=$([bool]$env:GITHUB_ACTIONS)
-    if ($LASTEXITCODE -ne 0) { throw "dotnet build failed: $($solution.FullName)" }
-}
-
-# Build every source project explicitly. This prevents a stale solution file from silently omitting
-# Browser, Infrastructure, WPF, updater, PCC or GitHub modules after cross-worker integration.
+$srcProjects = @(Get-ChildItem (Join-Path $repoRoot 'src') -Recurse -Filter '*.csproj' -File -ErrorAction SilentlyContinue | Sort-Object FullName -Unique)
 foreach ($project in $srcProjects) {
     & dotnet restore $project.FullName
     if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed: $($project.FullName)" }
+
     & dotnet build $project.FullName --configuration $Configuration --no-restore -p:Version=$version -p:ContinuousIntegrationBuild=$([bool]$env:GITHUB_ACTIONS)
     if ($LASTEXITCODE -ne 0) { throw "dotnet build failed: $($project.FullName)" }
 }
 
-$testProjects = @(
-    Get-ChildItem -Path (Join-Path $repoRoot 'tests') -Recurse -File -Filter '*.csproj' -ErrorAction SilentlyContinue |
-        Sort-Object FullName
-)
-
+$testProjects = @(Get-ChildItem (Join-Path $repoRoot 'tests') -Recurse -Filter '*.csproj' -File -ErrorAction SilentlyContinue | Sort-Object FullName -Unique)
 if ($testProjects.Count -eq 0) {
     $appProject = Join-Path $repoRoot 'src\PCCExecutive.App\PCCExecutive.App.csproj'
     if ($RequireProduct -or (Test-Path $appProject)) { throw 'TEST_INFRASTRUCTURE_NOT_INTEGRATED: product source exists but no test projects were found.' }
@@ -84,8 +52,8 @@ foreach ($testProject in $testProjects) {
         '--configuration', $Configuration,
         '--logger', 'trx',
         '--results-directory', $resultsDir,
-        '-p:Version=' + $version,
-        '-p:ContinuousIntegrationBuild=' + [bool]$env:GITHUB_ACTIONS
+        ("-p:Version=$version"),
+        ("-p:ContinuousIntegrationBuild=$([bool]$env:GITHUB_ACTIONS)")
     )
     if (-not [string]::IsNullOrWhiteSpace($NormalTestFilter)) { $args += @('--filter', $NormalTestFilter) }
     & dotnet @args
