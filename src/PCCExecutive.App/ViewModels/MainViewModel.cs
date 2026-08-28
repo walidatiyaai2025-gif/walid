@@ -18,6 +18,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string? _lastUiError;
     private DispatchMode _selectedDispatchMode;
     private ProviderMode _selectedProviderMode;
+    private string _projectQuery = string.Empty;
+    private string? _selectedWorkerId;
+    private bool _showConversationHistory;
+    private string _taskWorkerFilter = string.Empty;
+    private string _taskWaveFilter = string.Empty;
+    private string _taskPriorityFilter = string.Empty;
+    private string _taskBlockerFilter = string.Empty;
 
     public MainViewModel(IPccExecutivePresentationGateway gateway, IConfirmationService? confirmation = null)
     {
@@ -25,7 +32,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _confirmation = confirmation ?? new DenyConfirmationService();
         _snapshot = gateway.Snapshot;
         _selectedDispatchMode = _snapshot.DispatchSettings.Mode;
-        _selectedProviderMode = ProviderMode.BrowserWeb;
+        _selectedProviderMode = _snapshot.ProviderMode;
+        _selectedWorkerId = _snapshot.Workers.FirstOrDefault()?.Id;
 
         Navigation = new ObservableCollection<NavigationItem>
         {
@@ -66,12 +74,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
         };
         _currentScreen = _screens[_selectedScreen];
 
-        NavigateCommand = new RelayCommand(p => Navigate(p));
+        NavigateCommand = new RelayCommand(Navigate);
+        SelectWorkerCommand = new RelayCommand(SelectWorker);
+        ToggleConversationHistoryCommand = new RelayCommand(_ => ShowConversationHistory = !ShowConversationHistory);
+
         RefreshCommand = GatewayCommand(UiAction.Refresh);
+        ResolveProjectCommand = GatewayCommand(UiAction.ResolveProject, _ => ProjectQuery);
         SelectProjectCommand = GatewayCommand(UiAction.SelectProject, p => p?.ToString());
         ConnectChromeCommand = GatewayCommand(UiAction.ConnectChrome);
+        RetryHealthCommand = GatewayCommand(UiAction.RetryHealth);
         PauseAiCommand = GatewayCommand(UiAction.PauseAi);
         ResumeAiCommand = GatewayCommand(UiAction.ResumeAi);
+        RequestManagerPlanCommand = GatewayCommand(UiAction.RequestManagerPlan);
         StartDispatchCommand = GatewayCommand(UiAction.StartDispatch, _ => SelectedDispatchMode.ToString());
         PauseDispatchCommand = GatewayCommand(UiAction.PauseDispatch);
         OpenSessionCommand = GatewayCommand(UiAction.OpenSession, p => p?.ToString());
@@ -91,11 +105,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
             "Kill PCC Sessions");
         ReconcileWaveCommand = GatewayCommand(UiAction.ReconcileWave);
         RunVerificationCommand = GatewayCommand(UiAction.RunVerification);
+        InspectLoopGuardCommand = GatewayCommand(UiAction.InspectLoopGuard);
+        ReplanLoopCommand = GatewayCommand(UiAction.ReplanLoop);
+        ResumeLoopOnceCommand = GatewayCommand(UiAction.ResumeLoopOnce);
+        StopLoopCommand = GatewayCommand(UiAction.StopLoop);
         OpenAttentionLocationCommand = GatewayCommand(UiAction.OpenAttentionLocation, p => p?.ToString());
         InstallUpdateCommand = GatewayCommand(UiAction.InstallUpdateAndRestart);
         CheckForUpdatesCommand = GatewayCommand(UiAction.CheckForUpdates);
-        SaveSettingsCommand = GatewayCommand(UiAction.SaveSettings, _ => $"provider={SelectedProviderMode};dispatch={SelectedDispatchMode}");
-        ConversationHistoryCommand = GatewayCommand(UiAction.OpenConversationHistory, p => p?.ToString());
+        SaveSettingsCommand = GatewayCommand(UiAction.SaveSettings, _ =>
+            $"provider={SelectedProviderMode};dispatch={SelectedDispatchMode}");
 
         gateway.SnapshotChanged += OnSnapshotChanged;
     }
@@ -109,10 +127,24 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string? LastUiError { get => _lastUiError; private set => Set(ref _lastUiError, value); }
     public bool HasUiError => !string.IsNullOrWhiteSpace(LastUiError);
 
+    public string ProjectQuery
+    {
+        get => _projectQuery;
+        set
+        {
+            if (Set(ref _projectQuery, value))
+                ResolveProjectCommand.RaiseCanExecuteChanged();
+        }
+    }
+
     public DispatchMode SelectedDispatchMode
     {
         get => _selectedDispatchMode;
-        set => Set(ref _selectedDispatchMode, value);
+        set
+        {
+            if (!CanConfigureDispatch && value != _selectedDispatchMode) return;
+            Set(ref _selectedDispatchMode, value);
+        }
     }
 
     public ProviderMode SelectedProviderMode
@@ -120,6 +152,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
         get => _selectedProviderMode;
         set
         {
+            if (!CanEditSettings && value != _selectedProviderMode)
+            {
+                LastUiError = SaveSettingsDisabledReason;
+                return;
+            }
             if (value is ProviderMode.OpenAiApi or ProviderMode.Hybrid && !Snapshot.ApiConfigured)
             {
                 LastUiError = "OpenAI API / Hybrid stays disabled until the API provider is explicitly configured.";
@@ -155,27 +192,73 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public IReadOnlyList<DispatchMode> DispatchModes { get; } = Enum.GetValues<DispatchMode>();
     public IReadOnlyList<ProviderMode> ProviderModes { get; } = Enum.GetValues<ProviderMode>();
 
-    public IEnumerable<TaskSummary> TodoTasks => Snapshot.Tasks.Where(t => string.Equals(t.State, "To Do", StringComparison.OrdinalIgnoreCase) || string.Equals(t.State, "Todo", StringComparison.OrdinalIgnoreCase));
-    public IEnumerable<TaskSummary> InProgressTasks => Snapshot.Tasks.Where(t => string.Equals(t.State, "In Progress", StringComparison.OrdinalIgnoreCase) || string.Equals(t.State, "Running", StringComparison.OrdinalIgnoreCase));
-    public IEnumerable<TaskSummary> TestingTasks => Snapshot.Tasks.Where(t =>
+    public IEnumerable<TaskSummary> TodoTasks => Snapshot.Tasks.Where(TaskMatchesFilters).Where(t =>
+        string.Equals(t.State, "To Do", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(t.State, "Todo", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(t.State, "Proposed", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(t.State, "Ready", StringComparison.OrdinalIgnoreCase));
+    public IEnumerable<TaskSummary> InProgressTasks => Snapshot.Tasks.Where(TaskMatchesFilters).Where(t =>
+        string.Equals(t.State, "In Progress", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(t.State, "Running", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(t.State, "Assigned", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(t.State, "Dispatched", StringComparison.OrdinalIgnoreCase));
+    public IEnumerable<TaskSummary> TestingTasks => Snapshot.Tasks.Where(TaskMatchesFilters).Where(t =>
         string.Equals(t.State, "Testing", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(t.State, "Validating", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(t.State, "HandoffReceived", StringComparison.OrdinalIgnoreCase) ||
         (!t.EvidenceVerified && string.Equals(t.State, "Done", StringComparison.OrdinalIgnoreCase)));
-    public IEnumerable<TaskSummary> DoneTasks => Snapshot.Tasks.Where(t => t.EvidenceVerified &&
-        (string.Equals(t.State, "Done", StringComparison.OrdinalIgnoreCase) || string.Equals(t.State, "Verified", StringComparison.OrdinalIgnoreCase)));
-    public SessionSummary? ManagerSession => Snapshot.Sessions.FirstOrDefault(s => string.Equals(s.LogicalName, "Manager", StringComparison.OrdinalIgnoreCase));
-    public WorkerSummary? SelectedWorker => Snapshot.Workers.FirstOrDefault();
+    public IEnumerable<TaskSummary> DoneTasks => Snapshot.Tasks.Where(TaskMatchesFilters).Where(t => t.EvidenceVerified &&
+        (string.Equals(t.State, "Done", StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(t.State, "Completed", StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(t.State, "Verified", StringComparison.OrdinalIgnoreCase)));
+
+    public string TaskWorkerFilter { get => _taskWorkerFilter; set { if (Set(ref _taskWorkerFilter, value)) RaiseTaskFilters(); } }
+    public string TaskWaveFilter { get => _taskWaveFilter; set { if (Set(ref _taskWaveFilter, value)) RaiseTaskFilters(); } }
+    public string TaskPriorityFilter { get => _taskPriorityFilter; set { if (Set(ref _taskPriorityFilter, value)) RaiseTaskFilters(); } }
+    public string TaskBlockerFilter { get => _taskBlockerFilter; set { if (Set(ref _taskBlockerFilter, value)) RaiseTaskFilters(); } }
+
+    public SessionSummary? ManagerSession => Snapshot.Sessions.FirstOrDefault(s =>
+        string.Equals(s.LogicalName, "Manager", StringComparison.OrdinalIgnoreCase));
+    public WorkerSummary? SelectedWorker => string.IsNullOrWhiteSpace(_selectedWorkerId)
+        ? Snapshot.Workers.FirstOrDefault()
+        : Snapshot.Workers.FirstOrDefault(w => string.Equals(w.Id, _selectedWorkerId, StringComparison.Ordinal))
+          ?? Snapshot.Workers.FirstOrDefault();
     public SessionSummary? SelectedWorkerSession => SelectedWorker is null
         ? null
-        : Snapshot.Sessions.FirstOrDefault(s => string.Equals(s.LogicalName, SelectedWorker.LogicalName, StringComparison.OrdinalIgnoreCase));
+        : Snapshot.Sessions.FirstOrDefault(s =>
+            string.Equals(s.LogicalName, SelectedWorker.LogicalName, StringComparison.OrdinalIgnoreCase));
     public int PccOwnedSessionCount => Snapshot.Sessions.Count(s => s.IsPccOwned);
     public string PccOwnedSessionCountText => Snapshot.GatewayBound ? PccOwnedSessionCount.ToString() : "—";
 
+    public bool ShowConversationHistory
+    {
+        get => _showConversationHistory;
+        set => Set(ref _showConversationHistory, value);
+    }
+
+    public bool CanEditSettings => _gateway.CanExecute(UiAction.SaveSettings);
+    public bool CanConfigureDispatch => _gateway.CanExecute(UiAction.StartDispatch);
+    public string? SaveSettingsDisabledReason => _gateway.DisabledReason(UiAction.SaveSettings);
+    public string? StartDispatchDisabledReason => _gateway.DisabledReason(UiAction.StartDispatch);
+    public string? ReconcileDisabledReason => _gateway.DisabledReason(UiAction.ReconcileWave);
+    public string? VerificationDisabledReason => _gateway.DisabledReason(UiAction.RunVerification);
+    public string? LoopActionsDisabledReason => _gateway.DisabledReason(UiAction.InspectLoopGuard);
+    public string? CheckUpdateDisabledReason => _gateway.DisabledReason(UiAction.CheckForUpdates);
+    public string? InstallUpdateDisabledReason => _gateway.DisabledReason(UiAction.InstallUpdateAndRestart);
+    public string? PauseAiDisabledReason => _gateway.DisabledReason(UiAction.PauseAi);
+    public string? RequestPlanDisabledReason => _gateway.DisabledReason(UiAction.RequestManagerPlan);
+
     public ICommand NavigateCommand { get; }
+    public ICommand SelectWorkerCommand { get; }
+    public ICommand ToggleConversationHistoryCommand { get; }
     public AsyncRelayCommand RefreshCommand { get; }
+    public AsyncRelayCommand ResolveProjectCommand { get; }
     public AsyncRelayCommand SelectProjectCommand { get; }
     public AsyncRelayCommand ConnectChromeCommand { get; }
+    public AsyncRelayCommand RetryHealthCommand { get; }
     public AsyncRelayCommand PauseAiCommand { get; }
     public AsyncRelayCommand ResumeAiCommand { get; }
+    public AsyncRelayCommand RequestManagerPlanCommand { get; }
     public AsyncRelayCommand StartDispatchCommand { get; }
     public AsyncRelayCommand PauseDispatchCommand { get; }
     public AsyncRelayCommand OpenSessionCommand { get; }
@@ -186,11 +269,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public AsyncRelayCommand KillAllPccSessionsCommand { get; }
     public AsyncRelayCommand ReconcileWaveCommand { get; }
     public AsyncRelayCommand RunVerificationCommand { get; }
+    public AsyncRelayCommand InspectLoopGuardCommand { get; }
+    public AsyncRelayCommand ReplanLoopCommand { get; }
+    public AsyncRelayCommand ResumeLoopOnceCommand { get; }
+    public AsyncRelayCommand StopLoopCommand { get; }
     public AsyncRelayCommand OpenAttentionLocationCommand { get; }
     public AsyncRelayCommand InstallUpdateCommand { get; }
     public AsyncRelayCommand CheckForUpdatesCommand { get; }
     public AsyncRelayCommand SaveSettingsCommand { get; }
-    public AsyncRelayCommand ConversationHistoryCommand { get; }
 
     public void Navigate(ScreenId id)
     {
@@ -206,12 +292,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
         else if (parameter is string text && Enum.TryParse<ScreenId>(text, out var parsed)) Navigate(parsed);
     }
 
+    private void SelectWorker(object? parameter)
+    {
+        var id = parameter switch
+        {
+            WorkerSummary worker => worker.Id,
+            string text => text,
+            _ => null
+        };
+        if (string.IsNullOrWhiteSpace(id)) return;
+        _selectedWorkerId = id;
+        OnPropertyChanged(nameof(SelectedWorker));
+        OnPropertyChanged(nameof(SelectedWorkerSession));
+        RaiseAllCommands();
+    }
+
     private AsyncRelayCommand GatewayCommand(UiAction action, Func<object?, string?>? target = null) =>
         new(
-            async p =>
+            async (p, ct) =>
             {
                 LastUiError = null;
-                await _gateway.ExecuteAsync(action, target?.Invoke(p));
+                await _gateway.ExecuteAsync(action, target?.Invoke(p), ct);
             },
             p => _gateway.CanExecute(action, target?.Invoke(p)),
             ex => LastUiError = ex.Message);
@@ -223,11 +324,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
         string confirmLabel,
         Func<object?, string?>? target = null) =>
         new(
-            async p =>
+            async (p, ct) =>
             {
                 LastUiError = null;
                 if (!_confirmation.Confirm(title, message, confirmLabel)) return;
-                await _gateway.ExecuteAsync(action, target?.Invoke(p));
+                await _gateway.ExecuteAsync(action, target?.Invoke(p), ct);
             },
             p => _gateway.CanExecute(action, target?.Invoke(p)),
             ex => LastUiError = ex.Message);
@@ -235,8 +336,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private void OnSnapshotChanged(object? sender, RuntimeSnapshot snapshot)
     {
         Snapshot = snapshot;
-        if (snapshot.ProviderMode == ProviderMode.BrowserWeb || snapshot.ApiConfigured)
-            SelectedProviderMode = snapshot.ProviderMode;
+        _selectedDispatchMode = snapshot.DispatchSettings.Mode;
+        _selectedProviderMode = snapshot.ProviderMode;
+        if (SelectedWorker is null || !snapshot.Workers.Any(w => w.Id == _selectedWorkerId))
+            _selectedWorkerId = snapshot.Workers.FirstOrDefault()?.Id;
+
+        OnPropertyChanged(nameof(SelectedDispatchMode));
+        OnPropertyChanged(nameof(SelectedProviderMode));
+        OnPropertyChanged(nameof(IsBrowserProviderSelected));
+        OnPropertyChanged(nameof(IsOpenAiProviderSelected));
+        OnPropertyChanged(nameof(IsHybridProviderSelected));
         OnPropertyChanged(nameof(TodoTasks));
         OnPropertyChanged(nameof(InProgressTasks));
         OnPropertyChanged(nameof(TestingTasks));
@@ -246,6 +355,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SelectedWorkerSession));
         OnPropertyChanged(nameof(PccOwnedSessionCount));
         OnPropertyChanged(nameof(PccOwnedSessionCountText));
+        OnPropertyChanged(nameof(CanEditSettings));
+        OnPropertyChanged(nameof(CanConfigureDispatch));
+        OnPropertyChanged(nameof(SaveSettingsDisabledReason));
+        OnPropertyChanged(nameof(StartDispatchDisabledReason));
+        OnPropertyChanged(nameof(ReconcileDisabledReason));
+        OnPropertyChanged(nameof(VerificationDisabledReason));
+        OnPropertyChanged(nameof(LoopActionsDisabledReason));
+        OnPropertyChanged(nameof(CheckUpdateDisabledReason));
+        OnPropertyChanged(nameof(InstallUpdateDisabledReason));
+        OnPropertyChanged(nameof(PauseAiDisabledReason));
+        OnPropertyChanged(nameof(RequestPlanDisabledReason));
         RaiseAllCommands();
         OnPropertyChanged(nameof(HasUiError));
     }
@@ -253,10 +373,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private void RaiseAllCommands()
     {
         RefreshCommand.RaiseCanExecuteChanged();
+        ResolveProjectCommand.RaiseCanExecuteChanged();
         SelectProjectCommand.RaiseCanExecuteChanged();
         ConnectChromeCommand.RaiseCanExecuteChanged();
+        RetryHealthCommand.RaiseCanExecuteChanged();
         PauseAiCommand.RaiseCanExecuteChanged();
         ResumeAiCommand.RaiseCanExecuteChanged();
+        RequestManagerPlanCommand.RaiseCanExecuteChanged();
         StartDispatchCommand.RaiseCanExecuteChanged();
         PauseDispatchCommand.RaiseCanExecuteChanged();
         OpenSessionCommand.RaiseCanExecuteChanged();
@@ -267,11 +390,34 @@ public sealed class MainViewModel : INotifyPropertyChanged
         KillAllPccSessionsCommand.RaiseCanExecuteChanged();
         ReconcileWaveCommand.RaiseCanExecuteChanged();
         RunVerificationCommand.RaiseCanExecuteChanged();
+        InspectLoopGuardCommand.RaiseCanExecuteChanged();
+        ReplanLoopCommand.RaiseCanExecuteChanged();
+        ResumeLoopOnceCommand.RaiseCanExecuteChanged();
+        StopLoopCommand.RaiseCanExecuteChanged();
         OpenAttentionLocationCommand.RaiseCanExecuteChanged();
         InstallUpdateCommand.RaiseCanExecuteChanged();
         CheckForUpdatesCommand.RaiseCanExecuteChanged();
         SaveSettingsCommand.RaiseCanExecuteChanged();
-        ConversationHistoryCommand.RaiseCanExecuteChanged();
+    }
+
+    private bool TaskMatchesFilters(TaskSummary task)
+    {
+        static bool Match(string? value, string filter) =>
+            string.IsNullOrWhiteSpace(filter) ||
+            (!string.IsNullOrWhiteSpace(value) && value.Contains(filter.Trim(), StringComparison.OrdinalIgnoreCase));
+
+        return Match(task.Owner, TaskWorkerFilter) &&
+               Match(task.Wave, TaskWaveFilter) &&
+               Match(task.Priority, TaskPriorityFilter) &&
+               Match(task.Blocker, TaskBlockerFilter);
+    }
+
+    private void RaiseTaskFilters()
+    {
+        OnPropertyChanged(nameof(TodoTasks));
+        OnPropertyChanged(nameof(InProgressTasks));
+        OnPropertyChanged(nameof(TestingTasks));
+        OnPropertyChanged(nameof(DoneTasks));
     }
 
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null)

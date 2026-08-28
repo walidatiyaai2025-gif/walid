@@ -4,6 +4,7 @@
              ShutdownMode="OnMainWindowClose">
     <Application.Resources>
         <ResourceDictionary>
+            <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="Themes/PremiumTheme.xaml"/>
                 <ResourceDictionary Source="Views/ScreenCommon.xaml"/>

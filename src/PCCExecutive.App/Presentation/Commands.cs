@@ -11,28 +11,36 @@ public sealed class RelayCommand(Action<object?> execute, Func<object?, bool>? c
 }
 
 public sealed class AsyncRelayCommand(
-    Func<object?, Task> execute,
+    Func<object?, CancellationToken, Task> execute,
     Func<object?, bool>? canExecute = null,
-    Action<Exception>? onError = null) : ICommand
+    Action<Exception>? onError = null) : ICommand, IDisposable
 {
     private bool _isRunning;
-    public event EventHandler? CanExecuteChanged;
+    private CancellationTokenSource? _cts;
 
+    public event EventHandler? CanExecuteChanged;
+    public bool IsRunning => _isRunning;
     public bool CanExecute(object? parameter) => !_isRunning && (canExecute?.Invoke(parameter) ?? true);
 
     public async void Execute(object? parameter)
     {
         if (!CanExecute(parameter)) return;
         _isRunning = true;
+        _cts = new CancellationTokenSource();
         RaiseCanExecuteChanged();
-        try { await execute(parameter).ConfigureAwait(true); }
+        try { await execute(parameter, _cts.Token).ConfigureAwait(true); }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested) { }
         catch (Exception ex) { onError?.Invoke(ex); }
         finally
         {
+            _cts.Dispose();
+            _cts = null;
             _isRunning = false;
             RaiseCanExecuteChanged();
         }
     }
 
+    public void Cancel() => _cts?.Cancel();
     public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
+    public void Dispose() { _cts?.Cancel(); _cts?.Dispose(); _cts = null; }
 }

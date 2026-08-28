@@ -8,7 +8,7 @@ namespace PCCExecutive.App;
 public partial class App : Application
 {
     private TrayIconService? _tray;
-    private IntegratedPresentationGateway? _gateway;
+    private TerminalPresentationGateway? _gateway;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -16,17 +16,23 @@ public partial class App : Application
 
         try
         {
-            _gateway = IntegratedPresentationGateway.Create();
+            _gateway = TerminalPresentationGateway.Create();
 
             if (e.Args.Any(arg => string.Equals(arg, "--smoke-test", StringComparison.OrdinalIgnoreCase)))
             {
-                if (!_gateway.Snapshot.GatewayBound || !_gateway.Snapshot.HasActiveRun)
-                    throw new InvalidOperationException("Integrated runtime gateway did not initialize an active durable project run.");
+                if (!_gateway.Snapshot.GatewayBound)
+                    throw new InvalidOperationException("Integrated runtime gateway did not initialize.");
                 Shutdown(0);
                 return;
             }
 
             var viewModel = new MainViewModel(_gateway, new WpfConfirmationService());
+            viewModel.Navigate(_gateway.Snapshot.HasActiveRun ? ScreenId.Dashboard : ScreenId.ProjectSelection);
+            _gateway.SnapshotChanged += (_, snapshot) =>
+            {
+                if (snapshot.HasActiveRun && viewModel.SelectedScreen == ScreenId.ProjectSelection)
+                    Dispatcher.Invoke(() => viewModel.Navigate(ScreenId.Dashboard));
+            };
             var window = new MainWindow(viewModel);
             MainWindow = window;
 

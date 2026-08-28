@@ -3,10 +3,14 @@ namespace PCCExecutive.App.Presentation;
 public enum UiAction
 {
     Refresh,
-    ConnectChrome,
+    ResolveProject,
     SelectProject,
+    ConnectChrome,
+    RetryHealth,
+    DisconnectChrome,
     PauseAi,
     ResumeAi,
+    RequestManagerPlan,
     StartDispatch,
     PauseDispatch,
     OpenSession,
@@ -17,11 +21,14 @@ public enum UiAction
     KillAllPccSessions,
     ReconcileWave,
     RunVerification,
+    InspectLoopGuard,
+    ReplanLoop,
+    ResumeLoopOnce,
+    StopLoop,
     OpenAttentionLocation,
     InstallUpdateAndRestart,
     SaveSettings,
-    CheckForUpdates,
-    OpenConversationHistory
+    CheckForUpdates
 }
 
 public interface IPccExecutivePresentationGateway
@@ -30,5 +37,7 @@ public interface IPccExecutivePresentationGateway
     event EventHandler<RuntimeSnapshot>? SnapshotChanged;
 
     bool CanExecute(UiAction action, string? targetId = null);
+    string? DisabledReason(UiAction action, string? targetId = null) =>
+        CanExecute(action, targetId) ? null : "Control is unavailable in the current runtime state.";
     Task ExecuteAsync(UiAction action, string? targetId = null, CancellationToken cancellationToken = default);
 }

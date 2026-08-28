@@ -24,18 +24,26 @@ public enum ScreenId
 public enum HealthState
 {
     Unknown,
+    Ready,
     Healthy,
+    Sending,
+    Generating,
     Slow,
     Throttled,
     RateLimited,
     Cooldown,
     TemporaryError,
     PartialResponse,
+    SessionExpired,
     LoginRequired,
     Challenge,
     Offline,
     Stuck,
     Recovering,
+    Paused,
+    Failed,
+    Done,
+    ContextLimitDetected,
     AdapterUncertain
 }
 
@@ -43,6 +51,7 @@ public enum SessionVisibility { Hidden, Visible, Unknown }
 public enum ProviderMode { BrowserWeb, OpenAiApi, Hybrid }
 public enum DispatchMode { Manual, Assisted, AutomaticStaged }
 public enum CompletionMode { Unknown, Running, ClosureMode, Verified, Blocked }
+public enum ControlClassification { WiredReal, DisabledWithReason, InformationalOnly }
 
 public sealed record NavigationItem(ScreenId Id, string Label, string Glyph);
 
@@ -53,7 +62,14 @@ public sealed record ProjectSummary(
     int? VerifiedCompletion,
     string State,
     string? CurrentWave,
-    DateTimeOffset? LastActivity);
+    DateTimeOffset? LastActivity)
+{
+    public string? Model { get; init; }
+    public string? Scope { get; init; }
+    public string? Variant { get; init; }
+    public string? RoutingState { get; init; }
+    public string? RoutingMessage { get; init; }
+}
 
 public sealed record SessionSummary(
     string RuntimeId,
@@ -65,7 +81,16 @@ public sealed record SessionSummary(
     DateTimeOffset? LastActivity,
     bool IsPccOwned,
     int? ProcessId,
-    HealthState Health);
+    HealthState Health)
+{
+    public string? LogicalAgentId { get; init; }
+    public string? ConversationId { get; init; }
+    public string? TaskId { get; init; }
+    public DateTimeOffset? Heartbeat { get; init; }
+    public string OwnershipStatus { get; init; } = "UNKNOWN";
+    public string? OwnershipReason { get; init; }
+    public bool CanKill { get; init; }
+}
 
 public sealed record WorkerSummary(
     string Id,
@@ -75,7 +100,18 @@ public sealed record WorkerSummary(
     int? Progress,
     string CurrentTask,
     HealthState Health,
-    string? LatestHandoff);
+    string? LatestHandoff)
+{
+    public string? LogicalAgentId { get; init; }
+    public string? TaskScope { get; init; }
+    public string? ConversationId { get; init; }
+    public string? DispatchState { get; init; }
+    public string? Blocker { get; init; }
+    public string? Branch { get; init; }
+    public string? PullRequest { get; init; }
+    public string? HeadSha { get; init; }
+    public DateTimeOffset? LastActivity { get; init; }
+}
 
 public sealed record TaskSummary(
     string Id,
@@ -83,13 +119,22 @@ public sealed record TaskSummary(
     string State,
     string Priority,
     string? Owner,
-    bool EvidenceVerified);
+    bool EvidenceVerified)
+{
+    public string? Wave { get; init; }
+    public string? Blocker { get; init; }
+    public string? Scope { get; init; }
+}
 
 public sealed record EvidenceGateSummary(
     string Name,
     string State,
     int? Score,
-    string Evidence);
+    string Evidence)
+{
+    public string Freshness { get; init; } = "UNKNOWN";
+    public string? ExactHead { get; init; }
+}
 
 public sealed record AttentionSummary(
     string Id,
@@ -105,6 +150,18 @@ public sealed record RecoveryEventSummary(
     string Description,
     bool Automatic);
 
+public sealed record ConversationHistorySummary(
+    string LogicalName,
+    int Sequence,
+    string State,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? RetiredAt,
+    string? RolloverReason,
+    string? Checkpoint,
+    string? Predecessor,
+    string? Successor,
+    string? ProviderIdentity);
+
 public sealed record UpdateSummary(
     string CurrentVersion,
     string? NewVersion,
@@ -112,7 +169,12 @@ public sealed record UpdateSummary(
     string BackupState,
     string MigrationState,
     string RollbackState,
-    bool InstallReady);
+    bool InstallReady)
+{
+    public string State { get; init; } = "NOT_CHECKED";
+    public string? DisabledReason { get; init; }
+    public string? PackagePath { get; init; }
+}
 
 public sealed record DispatchSettingsSummary(
     DispatchMode Mode,
@@ -156,14 +218,36 @@ public sealed record RuntimeSnapshot(
     IReadOnlyList<AttentionSummary> AttentionItems,
     IReadOnlyList<RecoveryEventSummary> RecoveryEvents)
 {
+    public string? SelectedProjectId { get; init; }
+    public string ProjectDisplayName { get; init; } = "No project selected";
+    public string Repository { get; init; } = "—";
+    public string PccSourceSha { get; init; } = "—";
+    public string Branch { get; init; } = "—";
+    public string HeadSha { get; init; } = "—";
+    public string PullRequest { get; init; } = "—";
+    public string CiState { get; init; } = "UNKNOWN";
+    public string EvidenceFreshness { get; init; } = "UNKNOWN";
+    public string ProjectResolutionState { get; init; } = "NOT_SELECTED";
+    public string? ProjectResolutionMessage { get; init; }
+    public string BrowserProviderState { get; init; } = "NOT_BOUND";
+    public string AdapterState { get; init; } = "UNKNOWN";
+    public string LoginState { get; init; } = "UNKNOWN";
+    public string ManagerReadiness { get; init; } = "UNKNOWN";
+    public string WorkerReadiness { get; init; } = "UNKNOWN";
+    public string AutomaticRecoveryAction { get; init; } = "None";
+    public string CooldownStatus { get; init; } = "None";
+    public string HealthScope { get; init; } = "None";
+    public string StartupRecoveryState { get; init; } = "No recovery service integrated";
+    public IReadOnlyList<ConversationHistorySummary> Conversations { get; init; } = Array.Empty<ConversationHistorySummary>();
+    public IReadOnlyDictionary<string, string> DisabledReasons { get; init; } = new Dictionary<string, string>();
+
     public int AttentionCount => AttentionItems.Count;
     public string AttentionCountText => GatewayBound ? AttentionCount.ToString() : "—";
     public string AttentionSummaryText => GatewayBound ? $"{AttentionCount} required" : "— unavailable";
     public string AttentionHeadline => !GatewayBound
         ? "Attention state unavailable until runtime binding"
-        : AttentionCount == 0
-            ? "0 — Nothing needs you"
-            : $"{AttentionCount} required operator action{(AttentionCount == 1 ? string.Empty : "s")}";
+        : AttentionCount == 0 ? "0 — Nothing needs you"
+        : $"{AttentionCount} required operator action{(AttentionCount == 1 ? string.Empty : "s")}";
     public string AttentionSubhead => !GatewayBound
         ? "No healthy-state claim is made until the canonical runtime supplies evidence."
         : AttentionCount == 0
@@ -176,19 +260,25 @@ public sealed record RuntimeSnapshot(
     public string BlockerCountText => GatewayBound ? BlockerCount.ToString() : "—";
     public string VerifiedCompletionText => VerifiedCompletion is null ? "—" : $"{VerifiedCompletion}%";
     public string ManagerEstimateText => ManagerEstimate is null ? "—" : $"{ManagerEstimate}%";
+    public bool IsClosureMode => CompletionMode == CompletionMode.ClosureMode;
+    public bool IsVerifiedComplete => CompletionMode == CompletionMode.Verified && VerifiedCompletion == 100;
+
     public string HealthText => GlobalHealth switch
     {
         HealthState.RateLimited => "RATE LIMITED",
         HealthState.TemporaryError => "TEMPORARY ERROR",
         HealthState.PartialResponse => "PARTIAL RESPONSE",
+        HealthState.SessionExpired => "SESSION EXPIRED",
         HealthState.LoginRequired => "LOGIN REQUIRED",
-        HealthState.AdapterUncertain => "ADAPTER UNCERTAIN",
+        HealthState.ContextLimitDetected => "CONTEXT LIMIT DETECTED",
+        HealthState.AdapterUncertain => "BROWSER ADAPTER UNCERTAIN",
         _ => GlobalHealth.ToString().ToUpperInvariant()
     };
 
     public string HealthAccent => GlobalHealth switch
     {
-        HealthState.Healthy => "#6EE7B7",
+        HealthState.Ready or HealthState.Healthy or HealthState.Done => "#6EE7B7",
+        HealthState.Sending or HealthState.Generating => "#38BDF8",
         HealthState.Slow or HealthState.Throttled or HealthState.RateLimited or HealthState.Cooldown => "#FBBF24",
         HealthState.Recovering => "#8B5CF6",
         HealthState.Unknown => "#8FA3B8",
@@ -198,9 +288,10 @@ public sealed record RuntimeSnapshot(
     public string AttentionAccent => !GatewayBound ? "#8FA3B8" : AttentionCount == 0 ? "#6EE7B7" : "#FBBF24";
 
     public bool NoActionRequired => GatewayBound && AttentionCount == 0 &&
-        GlobalHealth is HealthState.Healthy or HealthState.Slow or HealthState.Throttled or HealthState.RateLimited
-            or HealthState.Cooldown or HealthState.TemporaryError or HealthState.PartialResponse or HealthState.Offline
-            or HealthState.Stuck or HealthState.Recovering;
+        GlobalHealth is HealthState.Ready or HealthState.Healthy or HealthState.Sending or HealthState.Generating
+            or HealthState.Slow or HealthState.Throttled or HealthState.RateLimited or HealthState.Cooldown
+            or HealthState.TemporaryError or HealthState.PartialResponse or HealthState.Offline
+            or HealthState.Stuck or HealthState.Recovering or HealthState.ContextLimitDetected;
 
     public string OperatorMessage => !GatewayBound
         ? "Runtime contracts are not bound yet. Operational controls stay disabled."
@@ -208,19 +299,24 @@ public sealed record RuntimeSnapshot(
             ? $"{AttentionCount} action{(AttentionCount == 1 ? string.Empty : "s")} require operator attention."
             : GlobalHealth switch
             {
+                HealthState.Ready or HealthState.Healthy => "AUTOPILOT · HEALTHY · NO ACTION REQUIRED",
+                HealthState.Sending => "SEND IN PROGRESS · DUPLICATE INVOCATION PROTECTION ACTIVE",
+                HealthState.Generating => "CHATGPT GENERATING · OTHER HEALTHY SESSIONS MAY CONTINUE",
                 HealthState.Slow => "SLOW RESPONSE DETECTED · MONITORING ACTIVE · NO ACTION REQUIRED",
                 HealthState.Throttled => "THROTTLING DETECTED · NEW SENDS PACED · NO ACTION REQUIRED",
                 HealthState.RateLimited => "RATE LIMIT DETECTED · NEW SENDS PAUSED · AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
                 HealthState.Cooldown => "COOLDOWN ACTIVE · AUTO RESUME ENABLED · NO ACTION REQUIRED",
                 HealthState.TemporaryError => "TEMPORARY ERROR · AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
                 HealthState.PartialResponse => "PARTIAL RESPONSE · RECONCILIATION ACTIVE · NO ACTION REQUIRED",
+                HealthState.ContextLimitDetected => "CONTEXT LIMIT DETECTED · CONVERSATION ROLLOVER RECOVERY ACTIVE",
                 HealthState.Offline => "OFFLINE · RECOVERY WATCH ACTIVE · NO ACTION REQUIRED",
                 HealthState.Stuck => "STUCK SESSION DETECTED · RECOVERY ACTIVE · NO ACTION REQUIRED",
                 HealthState.Recovering => "AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
-                HealthState.Healthy => "AUTOPILOT · HEALTHY · NO ACTION REQUIRED",
                 HealthState.LoginRequired => "LOGIN REQUIRED · OPEN ATTENTION CENTER",
                 HealthState.Challenge => "ACCOUNT CHALLENGE · OPEN ATTENTION CENTER",
                 HealthState.AdapterUncertain => "NEW SENDS PAUSED · ADAPTER STATE UNCERTAIN · SAFE-FAIL ACTIVE",
+                HealthState.Paused => "AUTOMATION PAUSED · STATE PRESERVED",
+                HealthState.Failed => "RECOVERY FAILED · REVIEW ATTENTION CENTER",
                 _ => "Runtime state is being evaluated."
             };
 
@@ -240,11 +336,15 @@ public sealed record RuntimeSnapshot(
         BlockerCount: 0,
         LoopGuardState: "No runtime evidence",
         LatestManagerHandoff: "No structured Manager handoff has been received.",
-        CurrentExecutionFlow: "Waiting for Application / Browser runtime adapter",
+        CurrentExecutionFlow: "Waiting for accepted Application / Browser / persistence adapters",
         ApiConfigured: false,
         ProviderMode: ProviderMode.BrowserWeb,
         DispatchSettings: DispatchSettingsSummary.ProductDefaults,
-        Update: new UpdateSummary("0.1.0", null, "Not checked", "Not started", "Not started", "Not needed", false),
+        Update: new UpdateSummary("0.1.0", null, "Not checked", "Not started", "Not started", "Not needed", false)
+        {
+            State = "NOT_CONFIGURED",
+            DisabledReason = "No verified update source is configured."
+        },
         Projects: Array.Empty<ProjectSummary>(),
         Sessions: Array.Empty<SessionSummary>(),
         Workers: Array.Empty<WorkerSummary>(),
