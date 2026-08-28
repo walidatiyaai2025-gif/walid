@@ -18,6 +18,7 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Task _loop;
     private readonly string _profileRoot;
+    private int _disposed;
 
     private AutonomousConversationRolloverRuntime(PccExecutiveRuntimeHost host)
     {
@@ -397,6 +398,7 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _shutdown.Cancel();
         try { await _loop.ConfigureAwait(false); } catch (OperationCanceledException) { }
         _shutdown.Dispose();
