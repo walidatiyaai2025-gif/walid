@@ -15,19 +15,22 @@ function Replace-IfPresent([string]$Path, [string]$Old, [string]$New) {
     return $false
 }
 
-# Import the existing deterministic Integration/E2E acceptance assets.  This commit
-# is a direct descendant of the runtime closure baseline and touches no product
-# runtime source, so reusing it avoids building a second orchestration harness.
+# Import the existing deterministic Integration/E2E acceptance assets without its
+# auxiliary workflow file. The current runtime-closure workflow remains the single
+# write-capable verification driver and the imported assets remain ordinary source.
 $acceptanceCommit = 'b24dbd14d8c46f2b1a8af4eb69f1cd88d033ec11'
-git merge-base --is-ancestor $acceptanceCommit HEAD 2>$null
-if ($LASTEXITCODE -ne 0) {
-    git cherry-pick $acceptanceCommit
-    if ($LASTEXITCODE -ne 0) { throw "Failed to import final acceptance commit $acceptanceCommit" }
+if (-not (Test-Path (Join-Path $root 'tests/PCCExecutive.E2E/PCCExecutive.E2E.csproj'))) {
+    git cherry-pick --no-commit $acceptanceCommit
+    if ($LASTEXITCODE -ne 0) { throw "Failed to stage final acceptance commit $acceptanceCommit" }
+    if (Test-Path (Join-Path $root '.github/workflows/final-e2e-release-acceptance.yml')) {
+        git rm -f -- '.github/workflows/final-e2e-release-acceptance.yml'
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to exclude auxiliary acceptance workflow from staged import.' }
+    }
 }
 
 # Final Browser boundary: all semantic/wrong-chat checks and fresh PCC ownership
 # proof must succeed before the caller is allowed to persist its pre-submit domain
-# fence.  The callback then runs immediately before Browser ledger reservation and
+# fence. The callback then runs immediately before Browser ledger reservation and
 # Enter, making the durable domain Dispatch and Browser Dispatch share one stable id.
 $browser = 'src/PCCExecutive.Browser/DispatchAndResilience.cs'
 [void](Replace-IfPresent $browser @'
@@ -95,7 +98,7 @@ $crashStore = 'src/PCCExecutive.Infrastructure/CrashConsistentOrchestrationStore
 # Browser unit fixtures carry the exact WorkerSlot binding.
 $browserTests = 'tests/PCCExecutive.Browser.Tests/BrowserRuntimeTests.cs'
 [void](Replace-IfPresent $browserTests 'new BrowserDispatchRequest("dispatch-1",runtime.ProjectRunId,runtime.LogicalAgentId,runtime.TaskId!,runtime.ConversationIdentity!,runtime.ProviderConversationIdentity!,"prompt")' 'new BrowserDispatchRequest("dispatch-1",runtime.ProjectRunId,runtime.LogicalAgentId,runtime.TaskId!,runtime.ConversationIdentity!,runtime.ProviderConversationIdentity!,"prompt",null,runtime.WorkerSlotId)')
-[void](Replace-IfPresent $browserTests 'new BrowserDispatchRequest("new-dispatch", runtime.ProjectRunId, runtime.LogicalAgentId, runtime.TaskId!, runtime.ConversationIdentity!, "NEW", "prompt")' 'new BrowserDispatchRequest("new-dispatch", runtime.ProjectRunId, runtime.LogicalAgentId,runtime.TaskId!,runtime.ConversationIdentity!, "NEW", "prompt", null, runtime.WorkerSlotId)')
+[void](Replace-IfPresent $browserTests 'new BrowserDispatchRequest("new-dispatch", runtime.ProjectRunId, runtime.LogicalAgentId, runtime.TaskId!, runtime.ConversationIdentity!, "NEW", "prompt")' 'new BrowserDispatchRequest("new-dispatch", runtime.ProjectRunId, runtime.LogicalAgentId, runtime.TaskId!, runtime.ConversationIdentity!, "NEW", "prompt", null, runtime.WorkerSlotId)')
 [void](Replace-IfPresent $browserTests 'private static BrowserDispatchExpectation Expectation(BrowserRuntimeRecord r)=>new(r.ProjectRunId,r.LogicalAgentId,r.TaskId!,r.ConversationIdentity!,r.ProviderConversationIdentity!);' 'private static BrowserDispatchExpectation Expectation(BrowserRuntimeRecord r)=>new(r.ProjectRunId,r.LogicalAgentId,r.TaskId!,r.ConversationIdentity!,r.ProviderConversationIdentity!,r.WorkerSlotId);')
 
 # Acceptance fixtures use an explicit deterministic ownership authority. Production
