@@ -50,16 +50,26 @@ jobs:
         shell: pwsh
         run: |
           $config=Get-Content release/integration-rehearsal.json -Raw | ConvertFrom-Json
+          $sourceFailures=@()
           foreach($chain in $config.chains){
             $out="artifacts/rehearsal/chains/$($chain.owner)"
             New-Item -ItemType Directory -Path $out -Force | Out-Null
             if($chain.state -eq 'BLOCKED'){
               [ordered]@{Owner=$chain.owner;SourceSha=$chain.head;State='BLOCKED_DEPENDENCY';Reason=$chain.reason} | ConvertTo-Json | Set-Content "$out/result.json" -Encoding UTF8
-              Write-Host "$($chain.owner) BLOCKED_DEPENDENCY: $($chain.reason)"
-            } else {
+              $sourceFailures += [ordered]@{Owner=$chain.owner;SourceSha=$chain.head;State='BLOCKED_DEPENDENCY';Reason=$chain.reason}
+              continue
+            }
+            try {
               ./build/Invoke-ChainValidation.ps1 -Owner $chain.owner -HeadSha $chain.head -OutputRoot $out
             }
+            catch {
+              $packetPath=Join-Path $out 'failure-ownership.json'
+              $packet=if(Test-Path $packetPath){Get-Content $packetPath -Raw | ConvertFrom-Json}else{[pscustomobject]@{ERROR=$_.Exception.Message}}
+              $sourceFailures += [ordered]@{Owner=$chain.owner;SourceSha=$chain.head;State='FAIL';Reason=[string]$packet.ERROR}
+              [ordered]@{Owner=$chain.owner;SourceSha=$chain.head;State='FAIL';Reason=[string]$packet.ERROR;RemediationBoundary='Candidate head may contain a later Worker-5 dependency/build bridge; combined exact-head gates remain authoritative.'} | ConvertTo-Json -Depth 6 | Set-Content "$out/result.json" -Encoding UTF8
+            }
           }
+          $sourceFailures | ConvertTo-Json -Depth 6 | Set-Content artifacts/rehearsal/source-chain-failures.json -Encoding UTF8
 
       - name: Resolve Playwright and Chrome packaging strategy
         shell: pwsh
