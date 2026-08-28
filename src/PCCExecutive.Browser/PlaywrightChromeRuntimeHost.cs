@@ -53,13 +53,25 @@ public sealed class WindowsBrowserWindowVisibilityController : IBrowserWindowVis
     }
     private static IntPtr FindTopLevelWindow(int processId)
     {
+        if (processId <= 0) return IntPtr.Zero;
+        var targetPid = checked((uint)processId);
         var result = IntPtr.Zero;
-        _ = EnumWindows((window, _) => { _ = GetWindowThreadProcessId(window, out var ownerPid); if (ownerPid == processId) { result = window; return false; } return true; }, IntPtr.Zero);
+        _ = EnumWindows((window, lParam) =>
+        {
+            _ = lParam;
+            _ = GetWindowThreadProcessId(window, out var ownerPid);
+            if (ownerPid == targetPid)
+            {
+                result = window;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
         return result;
     }
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
     [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProcessId);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
     [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetForegroundWindow(IntPtr hWnd);
 }

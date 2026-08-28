@@ -168,7 +168,7 @@ public sealed class ChatGptResilienceController
     public RuntimeTransitionDecision Evaluate(RuntimeResilienceState previous, RuntimeResilienceObservation observation)
     {
         var detected = Detect(observation);
-        var current = detected.State;
+        var current = detected.Current;
         if (current == RuntimeResilienceState.Ready && IsRecoverableFault(previous))
             current = RuntimeResilienceState.Recovering;
         else if (previous == RuntimeResilienceState.Recovering && current == RuntimeResilienceState.Recovering)
