@@ -10,4 +10,12 @@
     <AssemblyName>PCCExecutive</AssemblyName>
     <RootNamespace>PCCExecutive.App</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\PCCExecutive.Domain\PCCExecutive.Domain.csproj" />
+    <ProjectReference Include="..\PCCExecutive.Application\PCCExecutive.Application.csproj" />
+    <ProjectReference Include="..\PCCExecutive.Infrastructure\PCCExecutive.Infrastructure.csproj" />
+    <ProjectReference Include="..\PCCExecutive.Browser\PCCExecutive.Browser.csproj" />
+    <ProjectReference Include="..\PCCExecutive.Pcc\PCCExecutive.Pcc.csproj" />
+    <ProjectReference Include="..\PCCExecutive.GitHub\PCCExecutive.GitHub.csproj" />
+  </ItemGroup>
 </Project>
