@@ -283,11 +283,19 @@ public sealed class AutopilotClosureTests
 
     private static IReadOnlyList<StagnationObservation> RepeatedObservations(string? task = null, string? blocker = null)
     {
-        var tasks = new HashSet<string>(task is null ? [] : [task]);
-        var blockers = new HashSet<string>(blocker is null ? [] : [blocker]);
+        var tasks = task is null ? new HashSet<string>() : new HashSet<string> { task };
+        var blockers = blocker is null ? new HashSet<string>() : new HashSet<string> { blocker };
         return Enumerable.Range(0, 3).Select(i => new StagnationObservation(
-            Now.AddMinutes(i), Head, new HashSet<string>(tasks), new HashSet<string>(blockers), [], ["14:open"], ["evidence"], ["continue"],
-            new ManagerEstimate(80), new VerifiedCompletion(80))).ToArray();
+            Now.AddMinutes(i),
+            Head,
+            new HashSet<string>(tasks),
+            new HashSet<string>(blockers),
+            new HashSet<string>(),
+            new HashSet<string> { "14:open" },
+            new HashSet<string> { "evidence" },
+            new HashSet<string> { "continue" },
+            new ManagerEstimate(80),
+            new VerifiedCompletion(80))).ToArray();
     }
 
     private sealed class MemoryAttentionStore : IAttentionLifecycleStore
