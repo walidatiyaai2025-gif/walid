@@ -17,7 +17,7 @@ public sealed record FullDurabilityRecoverySnapshot(
 
 public sealed class FullDurabilityRecoveryService
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions Json = DurabilityJson.CreateOptions();
     private readonly SqliteStateStore _store;
     private readonly IOrchestrationStateStore _orchestration;
     private readonly SqliteDurabilityPolicy _policy;
