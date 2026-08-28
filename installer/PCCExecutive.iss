@@ -107,6 +107,15 @@ begin
   Result := FileExists(ExpandConstant('{app}\{#MyAppExeName}'));
 end;
 
+function IsSameVersionRepair(): Boolean;
+var
+  ExistingVersion: String;
+begin
+  Result :=
+    RegQueryStringValue(HKA, 'Software\PCC Executive', 'Version', ExistingVersion) and
+    (CompareText(Trim(ExistingVersion), '{#MyAppVersion}') = 0);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   UpdaterPath, BackupRoot, Params: String;
@@ -115,6 +124,20 @@ begin
   Result := '';
   if not ExistingInstallDetected() then
     Exit;
+
+  { A same-version reinstall is a repair, not a schema/version upgrade. The durable
+    data root is outside {app}, so replacing application files does not delete it.
+    Do not invoke the already-installed updater here: older 0.1.0 builds launch the
+    normal WPF app for --update-control, which collides with the running singleton
+    and can never create checkpoint.json. Inno's CloseApplications boundary will
+    close PCCExecutive.exe before files are replaced. }
+  if IsSameVersionRepair() then
+  begin
+    UpgradeBackupRoot := '';
+    UpgradeAttemptId := '';
+    Log('Same-version PCC Executive repair detected; preserving durable data and skipping cross-version checkpoint handshake.');
+    Exit;
+  end;
 
   UpdaterPath := ExpandConstant('{app}\updater\PCCExecutive.Updater.exe');
   if not FileExists(UpdaterPath) then
