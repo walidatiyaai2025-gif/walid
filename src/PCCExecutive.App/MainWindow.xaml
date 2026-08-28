@@ -94,10 +94,14 @@
                     <Border Margin="18,14,18,0" Padding="14,10" CornerRadius="8" Background="#111A2A" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1">
                         <Grid>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                <Border Style="{StaticResource PurpleChip}" Margin="0,0,10,0"><TextBlock Text="STATE" FontSize="10" Foreground="#D8C7FF"/></Border>
-                                <TextBlock Text="{Binding Snapshot.OperatorMessage}" FontWeight="SemiBold"/>
-                            </StackPanel>
+                            <Grid Margin="0,0,16,0">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Border Style="{StaticResource PurpleChip}" Margin="0,0,10,0" VerticalAlignment="Center">
+                                    <TextBlock Text="NEXT ACTION" FontSize="10" Foreground="#D8C7FF" FontWeight="SemiBold"/>
+                                </Border>
+                                <TextBlock Grid.Column="1" Text="{Binding Snapshot.OperatorMessage}" FontWeight="SemiBold"
+                                           TextWrapping="Wrap" VerticalAlignment="Center"/>
+                            </Grid>
                             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                                 <Button Content="Pause AI" Margin="0,0,8,0" Command="{Binding PauseAiCommand}" ToolTip="Checkpoints state and stops new dispatches; no session is destroyed."/>
                                 <Button Content="Resume" Command="{Binding ResumeAiCommand}"/>
