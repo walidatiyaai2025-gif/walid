@@ -164,4 +164,36 @@ public sealed class MainViewModelTests
             SnapshotChanged?.Invoke(this, snapshot);
         }
     }
+
+    private static class TestSnapshots
+    {
+        public static RuntimeSnapshot Healthy => new(
+            GatewayBound: true,
+            HasActiveRun: true,
+            RuntimeStatus: "Integrated runtime",
+            GlobalHealth: HealthState.Unknown,
+            AutopilotState: "READY",
+            CurrentWave: "Manager planning",
+            VerifiedCompletion: 0,
+            ManagerEstimate: 0,
+            CompletionMode: CompletionMode.Running,
+            ActiveWorkers: 0,
+            P0Count: 0,
+            P1Count: 0,
+            BlockerCount: 0,
+            LoopGuardState: "NORMAL",
+            LatestManagerHandoff: "Awaiting",
+            CurrentExecutionFlow: "Project → Manager",
+            ApiConfigured: false,
+            ProviderMode: ProviderMode.BrowserWeb,
+            DispatchSettings: DispatchSettingsSummary.ProductDefaults,
+            Update: new UpdateSummary("0.1.0", null, "ready", "ready", "ready", "ready", false),
+            Projects: [],
+            Sessions: [],
+            Workers: [],
+            Tasks: [],
+            EvidenceGates: [],
+            AttentionItems: [],
+            RecoveryEvents: []);
+    }
 }
