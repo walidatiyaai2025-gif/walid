@@ -43,7 +43,6 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
     internal MutableBaselineBuilder Baseline { get; }
     internal ProjectRoutingSnapshot Route { get; private set; }
     internal string DatabasePath => _databasePath;
-    internal string Root => _root;
 
     internal static async Task<ProductionRuntimeAcceptanceHarness> CreateAsync()
     {
@@ -63,24 +62,19 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
     internal string Autopilot => GetField<string>(Host, "_autopilot");
     internal object? RolloverRuntime => GetField<object?>(Host, "_rolloverRuntime");
 
-    internal async Task SelectProjectAsync() => await Host.ExecuteAsync(UiAction.SelectProject, ProjectControlId).ConfigureAwait(false);
-    internal async Task ConnectManagerAsync() => await Host.ExecuteAsync(UiAction.ConnectChrome).ConfigureAwait(false);
-    internal async Task StartManagerAsync() => await Host.ExecuteAsync(UiAction.StartManager).ConfigureAwait(false);
-    internal async Task ReconcileAsync() => await Host.ExecuteAsync(UiAction.ReconcileWave).ConfigureAwait(false);
-    internal async Task StartDispatchAsync() => await Host.ExecuteAsync(UiAction.StartDispatch).ConfigureAwait(false);
-    internal async Task PauseAsync() => await Host.ExecuteAsync(UiAction.PauseAi).ConfigureAwait(false);
-    internal async Task ResumeAsync() => await Host.ExecuteAsync(UiAction.ResumeAi).ConfigureAwait(false);
-
-    internal BrowserRuntimeRecord RuntimeFor(LogicalAgentId logicalAgentId) =>
-        Store.ListBrowserRuntimesAsync().GetAwaiter().GetResult()
-            .Where(x => !x.IsArchived && x.State is not BrowserSessionState.Killed and not BrowserSessionState.Archived)
-            .OrderByDescending(x => x.LastActivityAt)
-            .First(x => StringComparer.Ordinal.Equals(x.ProjectRunId, Run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, logicalAgentId.ToString()));
+    internal Task SelectProjectAsync() => Host.ExecuteAsync(UiAction.SelectProject, ProjectControlId);
+    internal Task ConnectManagerAsync() => Host.ExecuteAsync(UiAction.ConnectChrome);
+    internal Task StartManagerAsync() => Host.ExecuteAsync(UiAction.StartManager);
+    internal Task ReconcileAsync() => Host.ExecuteAsync(UiAction.ReconcileWave);
+    internal Task StartDispatchAsync() => Host.ExecuteAsync(UiAction.StartDispatch);
+    internal Task PauseAsync() => Host.ExecuteAsync(UiAction.PauseAi);
+    internal Task ResumeAsync() => Host.ExecuteAsync(UiAction.ResumeAi);
 
     internal async Task<BrowserRuntimeRecord> RuntimeForAsync(LogicalAgentId logicalAgentId)
     {
         var runtimes = await Store.ListBrowserRuntimesAsync().ConfigureAwait(false);
-        return runtimes.Where(x => !x.IsArchived && x.State is not BrowserSessionState.Killed and not BrowserSessionState.Archived)
+        return runtimes
+            .Where(x => !x.IsArchived && x.State is not BrowserSessionState.Killed and not BrowserSessionState.Archived)
             .OrderByDescending(x => x.LastActivityAt)
             .First(x => StringComparer.Ordinal.Equals(x.ProjectRunId, Run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, logicalAgentId.ToString()));
     }
@@ -90,27 +84,21 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
         var runId = Run.Id;
         var identity = Route.RoutingIdentity;
         await Host.DisposeAsync().ConfigureAwait(false);
+        _restartLock?.Dispose();
         _restartLock = null;
 
         await using (var markerStore = new SqliteStateStore(_databasePath))
         {
             await markerStore.InitializeAsync().ConfigureAwait(false);
             var interrupted = new ShutdownMarker(runId, false, DateTimeOffset.UtcNow, "FORCED_PROCESS_TERMINATION_ACCEPTANCE");
-            await markerStore.SaveCheckpointAsync(new DurableCheckpoint($"shutdown:{runId}", runId.ToString(), "shutdown-marker-v1", JsonSerializer.Serialize(interrupted), DateTimeOffset.UtcNow)).ConfigureAwait(false);
+            await markerStore.SaveCheckpointAsync(new DurableCheckpoint(
+                $"shutdown:{runId}", runId.ToString(), "shutdown-marker-v1",
+                JsonSerializer.Serialize(interrupted), DateTimeOffset.UtcNow)).ConfigureAwait(false);
         }
 
         _restartLock = ProjectRunLock.TryAcquire(identity);
-        if (!_restartLock.IsOwned) throw new InvalidOperationException("Fresh production host could not reacquire the project singleton lock after disposal.");
-        await ConstructFreshHostAsync(runId, _restartLock).ConfigureAwait(false);
-    }
-
-    internal async Task CleanRestartAsync()
-    {
-        var runId = Run.Id;
-        var identity = Route.RoutingIdentity;
-        await Host.DisposeAsync().ConfigureAwait(false);
-        _restartLock = ProjectRunLock.TryAcquire(identity);
-        if (!_restartLock.IsOwned) throw new InvalidOperationException("Fresh production host could not reacquire the project singleton lock after clean shutdown.");
+        if (!_restartLock.IsOwned)
+            throw new InvalidOperationException("Fresh production host could not reacquire the project singleton lock after disposal.");
         await ConstructFreshHostAsync(runId, _restartLock).ConfigureAwait(false);
     }
 
@@ -118,7 +106,8 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
     {
         Store = new SqliteStateStore(_databasePath);
         await Store.InitializeAsync().ConfigureAwait(false);
-        await Store.SaveSettingsAsync(new PccExecutiveSettings("BrowserChat", DispatchMode.AutomaticStaged.ToString(), 5, 0, true, false)).ConfigureAwait(false);
+        await Store.SaveSettingsAsync(new PccExecutiveSettings(
+            "BrowserChat", PCCExecutive.Browser.DispatchMode.AutomaticStaged.ToString(), 5, 0, true, false)).ConfigureAwait(false);
 
         var processInspector = new ControlledProcessInspector(_external);
         var browserHost = new ControlledBrowserRuntimeHost(_root, _external);
@@ -130,25 +119,15 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
         var browserProvider = new BrowserChatProvider(Store, Adapter, Store, new WrongChatGuard(), SendGate, Ownership);
         AgentProvider = new BrowserAgentProviderAdapter(Store, browserProvider, Ownership);
         var pausePort = new BrowserNewSendPausePort(SendGate);
-        ProjectRun? run = runId is null ? null : await Store.LoadProjectRunAsync(runId.Value).ConfigureAwait(false);
+        var run = runId is null ? null : await Store.LoadProjectRunAsync(runId.Value).ConfigureAwait(false);
 
-        var constructor = typeof(PccExecutiveRuntimeHost).GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic).Single();
+        var constructor = typeof(PccExecutiveRuntimeHost)
+            .GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic)
+            .Single();
         Host = (PccExecutiveRuntimeHost)constructor.Invoke(new object?[]
         {
-            Store,
-            projectLock,
-            Pcc,
-            Baseline,
-            Sessions,
-            Store,
-            Ownership,
-            pausePort,
-            AgentProvider,
-            Adapter,
-            SendGate,
-            new HttpClient(),
-            new HttpClient(),
-            run
+            Store, projectLock, Pcc, Baseline, Sessions, Store, Ownership, pausePort,
+            AgentProvider, Adapter, SendGate, new HttpClient(), new HttpClient(), run
         });
 
         if (run is not null)
@@ -164,31 +143,38 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
         await InvokePrivateAsync(Host, "RefreshLocalSnapshotAsync", CancellationToken.None).ConfigureAwait(false);
     }
 
-    internal async Task<bool> RunIndependentFinalVerificationAsync() =>
-        await InvokePrivateAsync<bool>(Host, "RunIndependentFinalVerificationAsync", CancellationToken.None).ConfigureAwait(false);
+    internal Task<bool> RunIndependentFinalVerificationAsync() =>
+        InvokePrivateAsync<bool>(Host, "RunIndependentFinalVerificationAsync", CancellationToken.None);
 
-    internal async Task RecordRuntimeLoopErrorAsync(string message)
-    {
-        await InvokePrivateAsync(Host, "RecordRuntimeLoopErrorAsync", new InvalidOperationException(message), CancellationToken.None).ConfigureAwait(false);
-    }
+    internal Task RecordRuntimeLoopErrorAsync(string message) =>
+        InvokePrivateAsync(Host, "RecordRuntimeLoopErrorAsync", new InvalidOperationException(message), CancellationToken.None);
 
-    internal async Task InvokeGovernedRolloverAsync(BrowserRuntimeRecord runtime, ConversationRecord predecessor, string reason)
+    internal Task InvokeGovernedRolloverAsync(BrowserRuntimeRecord runtime, ConversationRecord predecessor, string reason)
     {
         var rollover = RolloverRuntime ?? throw new InvalidOperationException("Production rollover runtime is not attached.");
-        await InvokePrivateAsync(rollover, "GovernedRolloverAsync", runtime, predecessor, reason, CancellationToken.None).ConfigureAwait(false);
+        return InvokePrivateAsync(rollover, "GovernedRolloverAsync", runtime, predecessor, reason, CancellationToken.None);
     }
 
     internal async Task<ConversationRecord> ActiveBrowserConversationAsync(LogicalAgentId agentId)
     {
         var records = await Store.ListBrowserConversationsAsync().ConfigureAwait(false);
-        return records.Where(x => StringComparer.Ordinal.Equals(x.ProjectRunId, Run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, agentId.ToString()) && x.State == ConversationLifecycleState.Active)
-            .OrderByDescending(x => x.Sequence).ThenByDescending(x => x.CreatedAt).First();
+        return records
+            .Where(x => StringComparer.Ordinal.Equals(x.ProjectRunId, Run.Id.ToString()) &&
+                        StringComparer.Ordinal.Equals(x.LogicalAgentId, agentId.ToString()) &&
+                        x.State == ConversationLifecycleState.Active)
+            .OrderByDescending(x => x.Sequence)
+            .ThenByDescending(x => x.CreatedAt)
+            .First();
     }
 
     internal async Task<IReadOnlyList<ConversationRecord>> BrowserConversationsAsync(LogicalAgentId agentId)
     {
         var records = await Store.ListBrowserConversationsAsync().ConfigureAwait(false);
-        return records.Where(x => StringComparer.Ordinal.Equals(x.ProjectRunId, Run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, agentId.ToString())).OrderBy(x => x.Sequence).ToArray();
+        return records
+            .Where(x => StringComparer.Ordinal.Equals(x.ProjectRunId, Run.Id.ToString()) &&
+                        StringComparer.Ordinal.Equals(x.LogicalAgentId, agentId.ToString()))
+            .OrderBy(x => x.Sequence)
+            .ToArray();
     }
 
     internal void MakeCanonicalTaskTerminal(string state = "DONE")
@@ -206,21 +192,32 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
             "PCCEXECUTIVE-T0001", ProjectControlId, null, "Final runtime closure", canonicalState, "P0",
             "worker/pcc-final-runtime-e2e-closure", "main", ExactHead, ExactHead, "0.1.0",
             ["src", "tests"], [], ["all mandatory runtime acceptance is green"], [], ["exact-head CI"]);
-        var provenance = new ProjectControlProvenance("walidatiyaai2025-gif/project-control-center", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "1.6.0", "v1", Now, EvidenceFreshness.Current);
-        return new ProjectRoutingSnapshot(ProjectControlId, "PCC Executive", Repository, ProjectModel.Standalone, ProjectScopeKind.Project, null, null, null, "READY", "READY", ["PCC Executive"], [task], null, provenance);
+        var provenance = new ProjectControlProvenance(
+            "walidatiyaai2025-gif/project-control-center", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "1.6.0", "v1", Now, EvidenceFreshness.Current);
+        return new ProjectRoutingSnapshot(
+            ProjectControlId, "PCC Executive", Repository, ProjectModel.Standalone, ProjectScopeKind.Project,
+            null, null, null, "READY", "READY", ["PCC Executive"], [task], null, provenance);
     }
 
-    internal static ProjectBaselineSnapshot BuildBaseline(ProjectRoutingSnapshot route, string? head = null, string ci = "success", EvidenceFreshness freshness = EvidenceFreshness.Current, IReadOnlyList<string>? blockers = null)
+    internal static ProjectBaselineSnapshot BuildBaseline(
+        ProjectRoutingSnapshot route,
+        string? head = null,
+        string ci = "success",
+        EvidenceFreshness freshness = EvidenceFreshness.Current,
+        IReadOnlyList<string>? blockers = null)
     {
         var exactHead = head ?? ExactHead;
         return new ProjectBaselineSnapshot(
-            route.ProjectControlId, route.DisplayName, route.Repository, route.ProjectModel, route.Scope, route.VariantId, route.ImplementationLocation,
-            route.Provenance.SourceSha, route.RoutingIdentity, "main", exactHead, route.CanonicalTasks, [],
-            new GitHubCheckSummary(route.Repository, exactHead, ci, [new GitHubCheckSnapshot("runtime-e2e", "completed", ci, null)]),
+            route.ProjectControlId, route.DisplayName, route.Repository, route.ProjectModel, route.Scope,
+            route.VariantId, route.ImplementationLocation, route.Provenance.SourceSha, route.RoutingIdentity,
+            "main", exactHead, route.CanonicalTasks, [],
+            new GitHubCheckSummary(route.Repository, exactHead, ci,
+                [new GitHubCheckSnapshot("runtime-e2e", "completed", ci, null)]),
             route.DesiredState, null, blockers ?? [], Now, freshness);
     }
 
-    internal static string PlanJson(ProjectRoutingSnapshot route, decimal estimate, string decision, params PlannedTask[] tasks) =>
+    internal static string PlanJson(ProjectRoutingSnapshot route, decimal estimate, string decision, params PlannedTask[] planned) =>
         JsonSerializer.Serialize(new
         {
             managerEstimate = estimate,
@@ -228,7 +225,7 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
             expectedRoutingIdentity = route.RoutingIdentity,
             projectDecision = decision,
             knownBlockers = Array.Empty<string>(),
-            tasks = tasks.Select(x => new
+            tasks = planned.Select(x => new
             {
                 taskId = x.Id.Value,
                 objective = x.Objective,
@@ -270,32 +267,43 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
         "BLOCKER: N/A",
         "NEXT_ACTION: manager-review");
 
-    internal static PlannedTask Task(string objective, string path, int priority = 0, IReadOnlyList<TaskId>? dependencies = null, params string[] exclusiveResources) =>
+    internal static PlannedTask CreatePlannedTask(
+        string objective,
+        string path,
+        int priority = 0,
+        IReadOnlyList<TaskId>? dependencies = null,
+        params string[] exclusiveResources) =>
         new(TaskId.New(), objective, path, priority, dependencies ?? [], exclusiveResources);
 
     internal static T GetField<T>(object target, string name)
     {
-        var field = target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new MissingFieldException(target.GetType().FullName, name);
+        var field = target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingFieldException(target.GetType().FullName, name);
         return (T)field.GetValue(target)!;
     }
 
     internal static void SetField(object target, string name, object? value)
     {
-        var field = target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new MissingFieldException(target.GetType().FullName, name);
+        var field = target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingFieldException(target.GetType().FullName, name);
         field.SetValue(target, value);
     }
 
     internal static async Task InvokePrivateAsync(object target, string name, params object?[] args)
     {
-        var method = target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new MissingMethodException(target.GetType().FullName, name);
-        var task = method.Invoke(target, args) as Task ?? throw new InvalidOperationException($"{name} did not return Task.");
+        var method = target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(target.GetType().FullName, name);
+        var task = method.Invoke(target, args) as Task
+            ?? throw new InvalidOperationException($"{name} did not return Task.");
         await task.ConfigureAwait(false);
     }
 
     internal static async Task<T> InvokePrivateAsync<T>(object target, string name, params object?[] args)
     {
-        var method = target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new MissingMethodException(target.GetType().FullName, name);
-        var task = method.Invoke(target, args) as Task<T> ?? throw new InvalidOperationException($"{name} did not return Task<{typeof(T).Name}>.");
+        var method = target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(target.GetType().FullName, name);
+        var task = method.Invoke(target, args) as Task<T>
+            ?? throw new InvalidOperationException($"{name} did not return Task<{typeof(T).Name}>.");
         return await task.ConfigureAwait(false);
     }
 
@@ -309,12 +317,19 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
         try { Directory.Delete(_root, true); } catch { }
     }
 
-    internal sealed record PlannedTask(TaskId Id, string Objective, string Path, int Priority, IReadOnlyList<TaskId> Dependencies, IReadOnlyList<string> ExclusiveResources);
+    internal sealed record PlannedTask(
+        TaskId Id,
+        string Objective,
+        string Path,
+        int Priority,
+        IReadOnlyList<TaskId> Dependencies,
+        IReadOnlyList<string> ExclusiveResources);
 
     internal sealed class ControlledProjectControl(ProjectRoutingSnapshot initial) : IProjectControlResolver
     {
         internal ProjectRoutingSnapshot Route { get; set; } = initial;
         internal int ResolveCalls { get; private set; }
+
         public Task<ProjectResolution> ResolveProjectAsync(string nameOrAlias, CancellationToken cancellationToken = default)
         {
             ResolveCalls++;
@@ -322,10 +337,18 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
                 ? new ProjectResolution(ProjectResolutionStatus.Success, Route, null)
                 : new ProjectResolution(ProjectResolutionStatus.ProjectNotFound, null, "PROJECT_NOT_FOUND"));
         }
-        public Task<ProjectResolution> GetProjectAsync(string projectControlId, string? variantId = null, ProjectScopeKind? scope = null, CancellationToken cancellationToken = default) => ResolveProjectAsync(projectControlId, cancellationToken);
-        public Task<ExternalResult<ProjectRoutingSnapshot>> GetRoutingSnapshotAsync(string projectControlId, string? variantId = null, ProjectScopeKind? scope = null, CancellationToken cancellationToken = default) => Task.FromResult(new ExternalResult<ProjectRoutingSnapshot>(ExternalReadStatus.Success, Route, Now));
-        public Task<ExternalResult<IReadOnlyList<CanonicalTaskSnapshot>>> GetCanonicalTasksAsync(string projectControlId, CancellationToken cancellationToken = default) => Task.FromResult(new ExternalResult<IReadOnlyList<CanonicalTaskSnapshot>>(ExternalReadStatus.Success, Route.CanonicalTasks, Now));
-        public Task<ExternalResult<DesiredStateSnapshot>> GetDesiredStateAsync(string projectControlId, CancellationToken cancellationToken = default) => Task.FromResult(new ExternalResult<DesiredStateSnapshot>(ExternalReadStatus.NotFound, null, Now));
+
+        public Task<ProjectResolution> GetProjectAsync(string projectControlId, string? variantId = null, ProjectScopeKind? scope = null, CancellationToken cancellationToken = default) =>
+            ResolveProjectAsync(projectControlId, cancellationToken);
+
+        public Task<ExternalResult<ProjectRoutingSnapshot>> GetRoutingSnapshotAsync(string projectControlId, string? variantId = null, ProjectScopeKind? scope = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ExternalResult<ProjectRoutingSnapshot>(ExternalReadStatus.Success, Route, Now));
+
+        public Task<ExternalResult<IReadOnlyList<CanonicalTaskSnapshot>>> GetCanonicalTasksAsync(string projectControlId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ExternalResult<IReadOnlyList<CanonicalTaskSnapshot>>(ExternalReadStatus.Success, Route.CanonicalTasks, Now));
+
+        public Task<ExternalResult<DesiredStateSnapshot>> GetDesiredStateAsync(string projectControlId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ExternalResult<DesiredStateSnapshot>(ExternalReadStatus.NotFound, null, Now));
     }
 
     internal sealed class MutableBaselineBuilder(ProjectBaselineSnapshot initial) : IProjectBaselineBuilder
@@ -333,6 +356,7 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
         internal ProjectBaselineSnapshot Current { get; set; } = initial;
         internal ExternalReadStatus Status { get; set; } = ExternalReadStatus.Success;
         internal int Calls { get; private set; }
+
         public Task<ExternalResult<ProjectBaselineSnapshot>> BuildAsync(string nameOrAlias, CancellationToken cancellationToken = default)
         {
             Calls++;
@@ -388,15 +412,23 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
                 OwnershipNonce = $"nonce:{runtimeId}"
             });
         }
-        public Task<bool> RecoverAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default) => Task.FromResult(runtime.ProcessId is int pid && state.Processes.ContainsKey(pid));
+
+        public Task<bool> RecoverAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default) =>
+            Task.FromResult(runtime.ProcessId is int pid && state.Processes.ContainsKey(pid));
+
         public Task SetVisibilityAsync(BrowserRuntimeRecord runtime, BrowserVisibility visibility, bool bringToFront, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
         public Task KillAsync(BrowserRuntimeRecord runtime, OwnershipProof proof, CancellationToken cancellationToken = default)
         {
             if (runtime.ProcessId is int pid) state.Processes.TryRemove(pid, out _);
             return Task.CompletedTask;
         }
+
         public Task<BrowserRuntimeTelemetry> GetTelemetryAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new BrowserRuntimeTelemetry(runtime.RuntimeId, runtime.ProcessId is int pid && state.Processes.ContainsKey(pid), 1, 1024, TimeSpan.Zero, runtime.LastHeartbeatAt, false, runtime.IsArchived));
+            Task.FromResult(new BrowserRuntimeTelemetry(
+                runtime.RuntimeId,
+                runtime.ProcessId is int pid && state.Processes.ContainsKey(pid),
+                1, 1024, TimeSpan.Zero, runtime.LastHeartbeatAt, false, runtime.IsArchived));
     }
 
     internal sealed class ControlledProcessInspector(ControlledExternalState state) : IProcessInspector
@@ -408,8 +440,13 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
     internal sealed class ControlledMarkerStore : IOwnershipMarkerStore
     {
         private readonly ConcurrentDictionary<string, OwnershipMarker> _items = new(StringComparer.OrdinalIgnoreCase);
-        public Task WriteAsync(OwnershipMarker marker, CancellationToken cancellationToken = default) { _items[marker.ProfilePath] = marker; return Task.CompletedTask; }
-        public Task<OwnershipMarker?> ReadAsync(string profilePath, CancellationToken cancellationToken = default) => Task.FromResult(_items.TryGetValue(profilePath, out var value) ? value : null);
+        public Task WriteAsync(OwnershipMarker marker, CancellationToken cancellationToken = default)
+        {
+            _items[marker.ProfilePath] = marker;
+            return Task.CompletedTask;
+        }
+        public Task<OwnershipMarker?> ReadAsync(string profilePath, CancellationToken cancellationToken = default) =>
+            Task.FromResult(_items.TryGetValue(profilePath, out var value) ? value : null);
     }
 
     internal sealed class ControlledOwnershipProof(ControlledExternalState state) : IOwnershipProofService
@@ -420,7 +457,8 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
             var alive = runtime.ProcessId is int pid && state.Processes.ContainsKey(pid);
             return Task.FromResult(Allow && alive && runtime.CreatedByPcc && !runtime.IsArchived
                 ? OwnershipProof.Proven(runtime.RuntimeId)
-                : OwnershipProof.Denied(runtime.RuntimeId, Allow ? "PROCESS_OR_RUNTIME_OWNERSHIP_INVALID" : "OWNERSHIP_DENIED_BY_ACCEPTANCE_BOUNDARY"));
+                : OwnershipProof.Denied(runtime.RuntimeId,
+                    Allow ? "PROCESS_OR_RUNTIME_OWNERSHIP_INVALID" : "OWNERSHIP_DENIED_BY_ACCEPTANCE_BOUNDARY"));
         }
     }
 
@@ -430,21 +468,23 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
         internal int PhysicalEnterCount => state.EnterByRuntime.Values.Sum();
         internal IReadOnlyCollection<SubmittedPrompt> SubmittedPrompts => state.SubmittedPrompts.ToArray();
         internal int EnterCount(string runtimeId) => state.EnterByRuntime.TryGetValue(runtimeId, out var value) ? value : 0;
-        internal void QueueSubmission(bool provenSubmitted, bool submittedUnknown, string reason) => state.SubmissionPlans.Enqueue(new SubmissionPlan(provenSubmitted, submittedUnknown, reason));
+        internal void QueueSubmission(bool provenSubmitted, bool submittedUnknown, string reason) =>
+            state.SubmissionPlans.Enqueue(new SubmissionPlan(provenSubmitted, submittedUnknown, reason));
         internal void SetSemantic(string runtimeId, ChatGptSemanticSnapshot semantic) => state.Semantics[runtimeId] = semantic;
-        internal void ClearSemantic(string runtimeId) => state.Semantics.TryRemove(runtimeId, out _);
         internal void BeforeFinalAuthorization(Func<BrowserRuntimeRecord, Task>? callback) => state.BeforeFinalAuthorization = callback;
 
-        public Task<ChatGptSemanticSnapshot> InspectAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, CancellationToken cancellationToken = default)
-        {
-            if (state.Semantics.TryGetValue(runtime.RuntimeId, out var semantic)) return Task.FromResult(semantic);
-            return Task.FromResult(SemanticReady());
-        }
+        public Task<ChatGptSemanticSnapshot> InspectAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, CancellationToken cancellationToken = default) =>
+            Task.FromResult(state.Semantics.TryGetValue(runtime.RuntimeId, out var semantic) ? semantic : SemanticReady());
 
         public Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, string prompt, CancellationToken cancellationToken = default) =>
             Task.FromResult(new AdapterSubmissionResult(false, false, false, "PHYSICAL_AUTHORIZATION_REQUIRED", ["submit:refused-without-final-authorization"]));
 
-        public async Task<AdapterSubmissionResult> SubmitAuthorizedAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, string prompt, Func<CancellationToken, Task<PreEnterAuthorizationDecision>> authorizeBeforeEnter, CancellationToken cancellationToken = default)
+        public async Task<AdapterSubmissionResult> SubmitAuthorizedAsync(
+            BrowserRuntimeRecord runtime,
+            BrowserDispatchExpectation expectation,
+            string prompt,
+            Func<CancellationToken, Task<PreEnterAuthorizationDecision>> authorizeBeforeEnter,
+            CancellationToken cancellationToken = default)
         {
             if (state.BeforeFinalAuthorization is not null)
             {
@@ -452,27 +492,41 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
                 state.BeforeFinalAuthorization = null;
                 await callback(runtime).ConfigureAwait(false);
             }
+
             var authorization = await authorizeBeforeEnter(cancellationToken).ConfigureAwait(false);
             if (!authorization.Authorized)
-                return new(false, false, false, "PRE_ENTER_AUTHORIZATION_DENIED", authorization.Evidence.Append(authorization.Reason).ToArray());
+                return new(false, false, false, "PRE_ENTER_AUTHORIZATION_DENIED",
+                    authorization.Evidence.Append(authorization.Reason).ToArray());
 
             state.EnterByRuntime.AddOrUpdate(runtime.RuntimeId, 1, static (_, count) => count + 1);
             state.SubmittedPrompts.Enqueue(new SubmittedPrompt(runtime.RuntimeId, expectation, prompt));
             state.ProviderIdentities.TryAdd(runtime.RuntimeId, $"provider-{runtime.RuntimeId[..Math.Min(12, runtime.RuntimeId.Length)]}");
-            var plan = state.SubmissionPlans.TryDequeue(out var queued) ? queued : new SubmissionPlan(true, false, "SUBMISSION_PROVEN");
-            return new(true, plan.ProvenSubmitted, plan.SubmittedUnknown, plan.Reason, ["physical-enter:1", $"runtime:{runtime.RuntimeId}"]);
+            var plan = state.SubmissionPlans.TryDequeue(out var queued)
+                ? queued
+                : new SubmissionPlan(true, false, "SUBMISSION_PROVEN");
+            return new(true, plan.ProvenSubmitted, plan.SubmittedUnknown, plan.Reason,
+                ["physical-enter:1", $"runtime:{runtime.RuntimeId}"]);
         }
 
         public Task<string?> GetCurrentConversationIdentityAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default) =>
-            Task.FromResult<string?>(state.ProviderIdentities.GetOrAdd(runtime.RuntimeId, $"provider-{runtime.RuntimeId[..Math.Min(12, runtime.RuntimeId.Length)]}"));
+            Task.FromResult<string?>(state.ProviderIdentities.GetOrAdd(
+                runtime.RuntimeId, $"provider-{runtime.RuntimeId[..Math.Min(12, runtime.RuntimeId.Length)]}"));
 
-        internal static ChatGptSemanticSnapshot SemanticReady(string? response = null, bool complete = false, PageHealth health = PageHealth.Healthy, AuthState auth = AuthState.Authenticated, params string[] healthEvidence) =>
+        internal static ChatGptSemanticSnapshot SemanticReady(
+            string? response = null,
+            bool complete = false,
+            PageHealth health = PageHealth.Healthy,
+            AuthState auth = AuthState.Authenticated,
+            params string[] healthEvidence) =>
             new(
                 SemanticDetection<InputState>.Create(InputState.Ready, .99, "controlled", "input:ready"),
-                SemanticDetection<GenerationState>.Create(complete ? GenerationState.Complete : GenerationState.Idle, .99, "controlled", complete ? "generation:complete" : "generation:idle"),
+                SemanticDetection<GenerationState>.Create(
+                    complete ? GenerationState.Complete : GenerationState.Idle, .99, "controlled",
+                    complete ? "generation:complete" : "generation:idle"),
                 SemanticDetection<AuthState>.Create(auth, .99, "controlled", auth.ToString()),
                 SemanticDetection<ConversationMatch>.Create(ConversationMatch.Match, .99, "controlled", "conversation:match"),
-                SemanticDetection<PageHealth>.Create(health, .99, "controlled", healthEvidence.Length == 0 ? [health.ToString()] : healthEvidence),
+                SemanticDetection<PageHealth>.Create(
+                    health, .99, "controlled", healthEvidence.Length == 0 ? [health.ToString()] : healthEvidence),
                 complete ? ResponseCompleteness.Complete : ResponseCompleteness.None,
                 response is null ? 0 : 1,
                 response,
