@@ -210,7 +210,9 @@ public sealed record ProjectBaselineSnapshot(
     DateTimeOffset CapturedAt,
     EvidenceFreshness Freshness)
 {
-    public string CiState => Checks?.CombinedState ?? "UNKNOWN";
+    public string CiState => Checks is not null && string.Equals(Checks.CommitSha, DefaultHeadSha, StringComparison.OrdinalIgnoreCase)
+        ? Checks.CombinedState
+        : "UNKNOWN";
     public string? CurrentVersion => LatestRelease?.TagName ?? CanonicalTasks.Select(x => x.TargetVersion).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
 }
 
