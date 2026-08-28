@@ -59,7 +59,7 @@ public sealed record SqliteDurabilityPolicy(
 public static class SqliteDurabilityConnection
 {
     public static string ConnectionString(string databasePath, SqliteOpenMode mode = SqliteOpenMode.ReadWriteCreate) =>
-        new SqliteConnectionStringBuilder { DataSource = databasePath, Mode = mode, Cache = SqliteCacheMode.Shared }.ToString();
+        new SqliteConnectionStringBuilder { DataSource = databasePath, Mode = mode, Cache = SqliteCacheMode.Shared, Pooling = false }.ToString();
 
     public static async Task<SqliteConnection> OpenAsync(string databasePath, SqliteDurabilityPolicy policy, SqliteOpenMode mode = SqliteOpenMode.ReadWriteCreate, CancellationToken cancellationToken = default)
     {
