@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "canonical": {
     "branch": "task/pcc-executive-t0001-v1",
-    "sha": "067155627365de21d3d9c5789982023ed702bb22"
+    "sha": "7cf4978875cce16fd2b422beb68d12b7d2e4ff4b"
   },
   "databaseSchemaTarget": "1",
   "minimumUpgradeVersion": "NONE_FRESH_BASELINE",
@@ -13,52 +13,52 @@
     {
       "owner": "WORKER_1",
       "name": "FOUNDATION_PCC_GITHUB_MANAGER_ORCHESTRATION",
-      "head": "067155627365de21d3d9c5789982023ed702bb22",
-      "prs": [4, 7],
-      "dependsOn": ["032058791bd009c22691c4db437f02e369057811"],
+      "head": "7cf4978875cce16fd2b422beb68d12b7d2e4ff4b",
+      "prs": [4, 7, 16],
+      "dependsOn": [],
       "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "Foundation, PCC/GitHub and Manager-to-workers orchestration/evidence reconciliation are integrated on canonical."
+      "reason": "Foundation, PCC/GitHub and Manager orchestration are integrated on canonical."
     },
     {
       "owner": "WORKER_2",
       "name": "PERSISTENCE_RECOVERY_CANONICAL_INTEGRATION",
-      "head": "067155627365de21d3d9c5789982023ed702bb22",
+      "head": "7cf4978875cce16fd2b422beb68d12b7d2e4ff4b",
       "prs": [],
       "dependsOn": [],
       "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "Durable PCCExecutive.Infrastructure, schema identity and patched SQLite native dependency override are integrated on canonical."
+      "reason": "Durable PCCExecutive.Infrastructure, schema identity and patched SQLite dependency are integrated on canonical."
     },
     {
       "owner": "WORKER_3",
-      "name": "BROWSER_RESILIENCE_E2E",
-      "head": "df1254161311cecf2147bde09458c0893952fee8",
-      "prs": [5, 8],
-      "dependsOn": ["97b4134ccfef67d2c534f774c8a4852ce5cde0ae"],
-      "state": "FOUND",
-      "includeInPartialCandidate": false,
-      "reason": "Browser runtime and resilience are integrated; current browser-e2e branch has not advanced beyond the integrated resilience head."
+      "name": "BROWSER_BUILD_CLOSURE",
+      "head": "cee146dca074a5e5d6bd42876067d0c25d5651e6",
+      "prs": [20],
+      "dependsOn": ["7cf4978875cce16fd2b422beb68d12b7d2e4ff4b"],
+      "state": "PENDING_PR",
+      "includeInPartialCandidate": true,
+      "reason": "PR #20 exact head closes the two terminal Browser compiler blockers and is consumed by PR #12 convergence without mutating canonical."
     },
     {
       "owner": "WORKER_4",
       "name": "PREMIUM_WPF_UI_RUNTIME_BINDING",
-      "head": "067155627365de21d3d9c5789982023ed702bb22",
+      "head": "7cf4978875cce16fd2b422beb68d12b7d2e4ff4b",
       "prs": [],
       "dependsOn": ["af5f2b3d783752b4272f521f192ab6068bda86ac"],
       "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "Premium WPF shell, integrated services and startup smoke binding are present on canonical."
+      "reason": "Premium WPF shell and runtime binding are integrated on canonical; terminal compile repair is tracked separately if required."
     },
     {
       "owner": "WORKER_5",
       "name": "INSTALLER_RELEASE_HARDENING",
       "head": "2524ada71367da112e55b648820c3f30ce738546",
-      "prs": [6, 9],
-      "dependsOn": ["ddebed8704a508b16186e19441aa1dcb9fcf278c"],
+      "prs": [6, 9, 12],
+      "dependsOn": [],
       "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "Installer foundation and release hardening are integrated on canonical."
+      "reason": "Installer foundation and release hardening are integrated on canonical; PR #12 owns terminal exact-head build/package acceptance."
     }
   ],
   "expectedModules": [
