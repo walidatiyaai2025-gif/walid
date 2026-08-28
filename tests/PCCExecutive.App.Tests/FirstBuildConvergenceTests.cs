@@ -89,6 +89,7 @@ public sealed class FirstBuildConvergenceTests
             {
                 var application = new PCCExecutive.App.App();
                 application.InitializeComponent();
+                application.ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown;
 
                 foreach (var viewport in new[]
                 {
