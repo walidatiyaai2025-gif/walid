@@ -22,3 +22,4 @@ public sealed class SessionMonitorViewModel(MainViewModel shell) : ScreenViewMod
 public sealed class SettingsViewModel(MainViewModel shell) : ScreenViewModelBase(shell);
 public sealed class UpdateCenterViewModel(MainViewModel shell) : ScreenViewModelBase(shell);
 public sealed class AttentionCenterViewModel(MainViewModel shell) : ScreenViewModelBase(shell);
+public sealed class ConversationHistoryViewModel(MainViewModel shell) : ScreenViewModelBase(shell);

@@ -7,6 +7,7 @@ public enum UiAction
     SelectProject,
     PauseAi,
     ResumeAi,
+    StartManager,
     StartDispatch,
     PauseDispatch,
     OpenSession,

@@ -222,6 +222,7 @@ public interface IChatGptBrowserAdapter
     string AdapterVersion { get; }
     Task<ChatGptSemanticSnapshot> InspectAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, CancellationToken cancellationToken = default);
     Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, string prompt, CancellationToken cancellationToken = default);
+    Task<string?> GetCurrentConversationIdentityAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 }
 
 public interface IDispatchLedger

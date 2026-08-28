@@ -4,51 +4,65 @@ using PCCExecutive.Domain;
 using PCCExecutive.GitHub;
 using PCCExecutive.Infrastructure;
 using PCCExecutive.Pcc;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 namespace PCCExecutive.App.Presentation;
 
-public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGateway, IAsyncDisposable
+public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, IAsyncDisposable
 {
-    private static readonly ProjectId ProductProjectId = new(new Guid("82ddbf4b-2872-4bd9-aa4a-992bbd48f185"));
-    private static readonly ProjectRunId ProductRunId = new(new Guid("38cb3810-0c36-402f-b9b2-3a7dbcd63054"));
-    private static readonly LogicalAgentId ManagerAgentId = new(new Guid("cc501537-dc9b-45ea-ae40-59b31ea00bf6"));
-    private static readonly LogicalAgentId[] WorkerAgentIds =
-    [
-        new(new Guid("11111111-1111-4111-8111-111111111111")),
-        new(new Guid("22222222-2222-4222-8222-222222222222")),
-        new(new Guid("33333333-3333-4333-8333-333333333333")),
-        new(new Guid("44444444-4444-4444-8444-444444444444")),
-        new(new Guid("55555555-5555-4555-8555-555555555555"))
-    ];
-
     private readonly SqliteStateStore _store;
-    private readonly ProjectRunLock _projectLock;
+    private ProjectRunLock? _projectLock;
     private readonly IProjectControlResolver _pcc;
     private readonly IProjectBaselineBuilder _baseline;
     private readonly BrowserSessionController _sessions;
     private readonly IBrowserRuntimeRegistry _runtimeRegistry;
     private readonly IOwnershipProofService _ownership;
     private readonly INewSendPausePort _newSendPause;
+    private readonly IAgentProvider _agentProvider;
+    private readonly IChatGptBrowserAdapter _browserAdapter;
+    private readonly GlobalBrowserSendGate _sendGate;
+    private readonly CrashConsistentOrchestrationStore _orchestrationStore;
     private readonly HttpClient _pccHttp;
     private readonly HttpClient _githubHttp;
     private readonly List<RecoveryEventSummary> _recovery = [];
     private ProjectRun? _run;
-    private string _projectDisplay = "PCC Executive";
-    private string _projectRepository = "walidatiyaai2025-gif/walid";
+    private string? _projectControlId;
+    private string _projectDisplay = "No project selected";
+    private string _projectRepository = "Not resolved";
+    private LogicalAgentId? _managerAgentId;
+    private LogicalAgentId[] _workerAgentIds = [];
     private string _pccState = "NOT_CHECKED";
     private string _githubState = "NOT_CHECKED";
     private string _autopilot = "READY";
     private PccExecutiveSettings _settings;
+    private string _latestManagerHandoff = "Select a project, connect Chrome, then start Manager.";
+    private StructuredManagerPlan? _currentPlan;
+    private Wave? _currentWave;
+    private IReadOnlyDictionary<TaskId, WorkerSlotId> _assignments = new Dictionary<TaskId, WorkerSlotId>();
+    private IReadOnlyList<WorkerTask> _runtimeTasks = [];
+    private readonly Dictionary<string, (AttentionSummary Summary, string RuntimeId)> _attention = new(StringComparer.Ordinal);
+    private ProjectBaselineSnapshot? _managerBaseline;
+    private readonly CancellationTokenSource _autopilotCancellation = new();
+    private readonly SemaphoreSlim _autopilotOperation = new(1, 1);
+    private Task? _autopilotTask;
+    private readonly Queue<string> _recentPlanFingerprints = new();
+    private readonly Queue<decimal> _recentVerifiedCompletion = new();
+    private IReadOnlyList<ConversationHistorySummary> _conversationHistory = [];
 
-    private IntegratedPresentationGateway(
+    private PccExecutiveRuntimeHost(
         SqliteStateStore store,
-        ProjectRunLock projectLock,
+        ProjectRunLock? projectLock,
         IProjectControlResolver pcc,
         IProjectBaselineBuilder baseline,
         BrowserSessionController sessions,
         IBrowserRuntimeRegistry runtimeRegistry,
         IOwnershipProofService ownership,
         INewSendPausePort newSendPause,
+        IAgentProvider agentProvider,
+        IChatGptBrowserAdapter browserAdapter,
+        GlobalBrowserSendGate sendGate,
         HttpClient pccHttp,
         HttpClient githubHttp,
         ProjectRun? run)
@@ -61,9 +75,35 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
         _runtimeRegistry = runtimeRegistry;
         _ownership = ownership;
         _newSendPause = newSendPause;
+        _agentProvider = agentProvider;
+        _browserAdapter = browserAdapter;
+        _sendGate = sendGate;
+        _orchestrationStore = new CrashConsistentOrchestrationStore(store);
         _pccHttp = pccHttp;
         _githubHttp = githubHttp;
         _run = run;
+        if (run is not null)
+        {
+            _managerAgentId = AgentId(run.Id, "manager");
+            _workerAgentIds = Enumerable.Range(1, 5).Select(slot => AgentId(run.Id, $"worker:{slot}")).ToArray();
+            var recovered = _orchestrationStore.LoadAsync(run.Id).GetAwaiter().GetResult();
+            if (recovered is not null)
+            {
+                _run = recovered.ProjectRun;
+                _currentWave = recovered.CurrentWave;
+                _assignments = recovered.Assignments;
+                _runtimeTasks = recovered.Tasks;
+                _autopilot = recovered.Phase.ToString().ToUpperInvariant();
+            }
+            var planCheckpoint = store.LoadCheckpointAsync($"manager-plan:{run.Id}").GetAwaiter().GetResult();
+            if (planCheckpoint is not null)
+            {
+                var parsed = new StructuredManagerPlanParser().Parse(planCheckpoint.Payload);
+                if (parsed.IsValid) _currentPlan = parsed.Plan;
+            }
+            var baselineCheckpoint = store.LoadCheckpointAsync($"manager-baseline:{run.Id}").GetAwaiter().GetResult();
+            if (baselineCheckpoint is not null) _managerBaseline = JsonSerializer.Deserialize<ProjectBaselineSnapshot>(baselineCheckpoint.Payload);
+        }
         _settings = store.LoadSettingsAsync().GetAwaiter().GetResult();
         if (run is not null)
         {
@@ -80,15 +120,8 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
     public RuntimeSnapshot Snapshot { get; private set; }
     public event EventHandler<RuntimeSnapshot>? SnapshotChanged;
 
-    public static IntegratedPresentationGateway Create()
+    public static PccExecutiveRuntimeHost Create()
     {
-        var projectLock = ProjectRunLock.TryAcquire("PCCEXECUTIVE");
-        if (!projectLock.IsOwned)
-        {
-            projectLock.Dispose();
-            throw new InvalidOperationException("PCC Executive is already controlling this project on this machine.");
-        }
-
         try
         {
             var store = new SqliteStateStore(SqliteStateStore.DefaultDatabasePath);
@@ -97,9 +130,24 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             if (!string.Equals(settings.Provider, "BrowserChat", StringComparison.Ordinal))
                 store.SaveSettingsAsync(settings with { Provider = "BrowserChat" }).GetAwaiter().GetResult();
 
-            var run = store.LoadProjectRunAsync(ProductRunId).GetAwaiter().GetResult();
-            if (run is not null)
-                PersistLogicalAgents(store, run.Id);
+            ProjectRun? run = null;
+            ProjectRunLock? projectLock = null;
+            SelectedProjectState? selected = null;
+            var selectedCheckpoint = store.LoadCheckpointAsync("active-project").GetAwaiter().GetResult();
+            if (selectedCheckpoint is not null)
+            {
+                selected = JsonSerializer.Deserialize<SelectedProjectState>(selectedCheckpoint.Payload);
+                if (selected is not null)
+                {
+                    run = store.LoadProjectRunAsync(new ProjectRunId(selected.ProjectRunId)).GetAwaiter().GetResult();
+                    if (run is not null)
+                    {
+                        projectLock = ProjectRunLock.TryAcquire(selected.ProjectIdentity);
+                        if (!projectLock.IsOwned)
+                            throw new InvalidOperationException($"PCC Executive is already controlling project '{selected.ProjectControlId}' on this machine.");
+                    }
+                }
+            }
 
             var profileRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PCC Executive", "browser-profiles");
             var markerStore = new FileOwnershipMarkerStore();
@@ -112,7 +160,7 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             var adapter = new PlaywrightChatGptBrowserAdapter(runtimeHost);
             var sendGate = new GlobalBrowserSendGate();
             var browserProvider = new PCCExecutive.Browser.BrowserChatProvider(registry, adapter, store, new WrongChatGuard(), sendGate);
-            _ = new BrowserAgentProviderAdapter(registry, browserProvider);
+            IAgentProvider agentProvider = new BrowserAgentProviderAdapter(registry, browserProvider);
             INewSendPausePort newSendPause = new BrowserNewSendPausePort(sendGate);
 
             var pccHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
@@ -121,21 +169,35 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             var github = new GitHubRestEvidenceClient(githubHttp);
             var baseline = new ProjectBaselineBuilder(pcc, github);
 
-            var gateway = new IntegratedPresentationGateway(store, projectLock, pcc, baseline, controller, registry, ownership, newSendPause, pccHttp, githubHttp, run);
+            var gateway = new PccExecutiveRuntimeHost(store, projectLock, pcc, baseline, controller, registry, ownership, newSendPause, agentProvider, adapter, sendGate, pccHttp, githubHttp, run);
+            if (selected is not null && run is not null)
+            {
+                gateway._projectControlId = selected.ProjectControlId;
+                gateway._projectDisplay = selected.DisplayName;
+                gateway._projectRepository = selected.Repository;
+                PersistLogicalAgents(store, run.Id, gateway._managerAgentId!.Value, gateway._workerAgentIds);
+            }
             gateway.RefreshLocalSnapshotAsync().GetAwaiter().GetResult();
+            if (run is not null && gateway._settings.AutoResume && gateway._autopilot != "PAUSED") gateway.EnsureAutopilotLoop();
             return gateway;
         }
         catch
         {
-            projectLock.Dispose();
             throw;
         }
     }
 
     public bool CanExecute(UiAction action, string? targetId = null) => action switch
     {
-        UiAction.Refresh or UiAction.SelectProject or UiAction.SaveSettings or UiAction.RunVerification => true,
+        UiAction.SelectProject or UiAction.SaveSettings => true,
+        UiAction.Refresh or UiAction.RunVerification => _run is not null,
         UiAction.ConnectChrome or UiAction.PauseAi or UiAction.ResumeAi => _run is not null,
+        UiAction.StartManager => _run is not null && Snapshot.Sessions.Any(x => x.Role == "Manager" && x.IsPccOwned),
+        UiAction.StartDispatch => _run is not null && _currentPlan is not null && _currentWave?.State == WaveState.Ready && _autopilot != "PAUSED",
+        UiAction.PauseDispatch => _run is not null && _currentWave?.State is WaveState.Dispatching or WaveState.Running,
+        UiAction.ReconcileWave => _run is not null && Snapshot.Sessions.Any(x => x.Role == "Manager" && x.IsPccOwned),
+        UiAction.OpenAttentionLocation => !string.IsNullOrWhiteSpace(targetId) && _attention.TryGetValue(targetId, out var attention) && Snapshot.Sessions.Any(x => x.RuntimeId == attention.RuntimeId && x.IsPccOwned),
+        UiAction.OpenConversationHistory => _run is not null && !string.IsNullOrWhiteSpace(targetId),
         UiAction.OpenSession or UiAction.BringSessionToFront or UiAction.HideSession or UiAction.RestartSession or UiAction.KillSession =>
             _run is not null && !string.IsNullOrWhiteSpace(targetId) && Snapshot.Sessions.Any(x => StringComparer.Ordinal.Equals(x.RuntimeId, targetId) && x.IsPccOwned),
         UiAction.KillAllPccSessions => _run is not null && Snapshot.Sessions.Any(x => x.IsPccOwned),
@@ -147,8 +209,10 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
         switch (action)
         {
             case UiAction.Refresh:
+                await RefreshExternalAsync(_projectControlId ?? throw new InvalidOperationException("Select a project before refreshing it."), cancellationToken).ConfigureAwait(false);
+                break;
             case UiAction.SelectProject:
-                await RefreshExternalAsync(targetId ?? "PCCEXECUTIVE", cancellationToken).ConfigureAwait(false);
+                await RefreshExternalAsync(targetId ?? throw new InvalidOperationException("A PCC project name or alias is required."), cancellationToken).ConfigureAwait(false);
                 break;
             case UiAction.ConnectChrome:
                 await ConnectManagerChromeAsync(cancellationToken).ConfigureAwait(false);
@@ -164,8 +228,31 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
                 var resumedRun = RequireActiveRun();
                 await _newSendPause.ResumeNewSendsAsync("Operator resumed AI from PCC Executive.", cancellationToken).ConfigureAwait(false);
                 await _store.SaveCheckpointAsync(new DurableCheckpoint($"autopilot-pause:{resumedRun.Id}", resumedRun.Id.ToString(), "autopilot-pause-v1", "{\"paused\":false}", DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+                await _store.SaveCheckpointAsync(new DurableCheckpoint($"dispatch-pause:{resumedRun.Id}", resumedRun.Id.ToString(), "dispatch-pause-v1", "{\"paused\":false}", DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
                 _autopilot = "READY";
                 await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+                break;
+            case UiAction.StartManager:
+                await StartManagerAsync(cancellationToken).ConfigureAwait(false);
+                break;
+            case UiAction.StartDispatch:
+                await StartDispatchAsync(cancellationToken).ConfigureAwait(false);
+                break;
+            case UiAction.PauseDispatch:
+                await PauseDispatchAsync(cancellationToken).ConfigureAwait(false);
+                break;
+            case UiAction.ReconcileWave:
+                if (_currentWave?.State == WaveState.Running)
+                    await ReconcileWorkerResponsesAsync(cancellationToken).ConfigureAwait(false);
+                else
+                    await ReconcileManagerResponseAsync(cancellationToken).ConfigureAwait(false);
+                break;
+            case UiAction.OpenAttentionLocation:
+                if (string.IsNullOrWhiteSpace(targetId) || !_attention.TryGetValue(targetId, out var attention)) throw new InvalidOperationException("A valid Attention target is required.");
+                await RunSessionActionAsync(attention.RuntimeId, id => _sessions.BringToFrontAsync(id, cancellationToken), cancellationToken).ConfigureAwait(false);
+                break;
+            case UiAction.OpenConversationHistory:
+                await LoadConversationHistoryAsync(targetId, cancellationToken).ConfigureAwait(false);
                 break;
             case UiAction.OpenSession:
                 await RunSessionActionAsync(targetId, id => _sessions.OpenAsync(id, cancellationToken), cancellationToken).ConfigureAwait(false);
@@ -215,16 +302,24 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             throw new InvalidOperationException("Only the Browser Web provider is currently configured.");
         var dispatch = values.GetValueOrDefault("dispatch") ?? throw new InvalidOperationException("Dispatch mode selection is required.");
         if (!Enum.TryParse<DispatchMode>(dispatch, out _)) throw new InvalidOperationException("Unsupported dispatch mode.");
-        return current with { Provider = "BrowserChat", DispatchMode = dispatch };
+        if (!int.TryParse(values.GetValueOrDefault("interval"), out var interval) || interval < 0 || interval > 3600)
+            throw new InvalidOperationException("Base dispatch interval must be between 0 and 3600 seconds.");
+        if (!int.TryParse(values.GetValueOrDefault("maxWorkers"), out var maxWorkers) || maxWorkers is < 1 or > 5)
+            throw new InvalidOperationException("Max Workers must be between 1 and 5.");
+        if (!bool.TryParse(values.GetValueOrDefault("adaptive"), out var adaptive))
+            throw new InvalidOperationException("Adaptive pacing selection is invalid.");
+        if (!bool.TryParse(values.GetValueOrDefault("autoResume"), out var autoResume))
+            throw new InvalidOperationException("Auto Resume selection is invalid.");
+        return current with { Provider = "BrowserChat", DispatchMode = dispatch, BaseDispatchIntervalSeconds = interval, MaxWorkers = maxWorkers, AdaptivePacing = adaptive, AutoResume = autoResume };
     }
 
-    private static void PersistLogicalAgents(SqliteStateStore store, ProjectRunId runId)
+    private static void PersistLogicalAgents(SqliteStateStore store, ProjectRunId runId, LogicalAgentId managerAgentId, IReadOnlyList<LogicalAgentId> workerAgentIds)
     {
-        var manager = new LogicalAgentSession(ManagerAgentId, runId, AgentRole.Manager, null, null, null, LogicalSessionState.Ready);
+        var manager = new LogicalAgentSession(managerAgentId, runId, AgentRole.Manager, null, null, null, LogicalSessionState.Ready);
         store.SaveLogicalAgentAsync(manager).GetAwaiter().GetResult();
-        for (var i = 0; i < WorkerAgentIds.Length; i++)
+        for (var i = 0; i < workerAgentIds.Count; i++)
         {
-            var worker = new LogicalAgentSession(WorkerAgentIds[i], runId, AgentRole.Worker, new WorkerSlotId(i + 1), null, null, LogicalSessionState.Ready);
+            var worker = new LogicalAgentSession(workerAgentIds[i], runId, AgentRole.Worker, new WorkerSlotId(i + 1), null, null, LogicalSessionState.Ready);
             store.SaveLogicalAgentAsync(worker).GetAwaiter().GetResult();
         }
     }
@@ -232,12 +327,13 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
     private async Task ConnectManagerChromeAsync(CancellationToken cancellationToken)
     {
         var run = RequireActiveRun();
+        var managerAgentId = _managerAgentId ?? throw new InvalidOperationException("Manager logical identity is not initialized.");
         try
         {
             var existing = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false))
-                .FirstOrDefault(x => StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, ManagerAgentId.ToString()) && !x.IsArchived && x.State is not BrowserSessionState.Killed);
+                .FirstOrDefault(x => StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, managerAgentId.ToString()) && !x.IsArchived && x.State is not BrowserSessionState.Killed);
             if (existing is null)
-                await _sessions.CreateAsync(new BrowserSessionRequest(run.Id.ToString(), ManagerAgentId.ToString(), DefaultVisibility: BrowserVisibility.Hidden), cancellationToken).ConfigureAwait(false);
+                await _sessions.CreateAsync(new BrowserSessionRequest(run.Id.ToString(), managerAgentId.ToString(), DefaultVisibility: BrowserVisibility.Hidden), cancellationToken).ConfigureAwait(false);
             _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "READY", "PCC-owned Manager Chrome runtime initialized; personal Chrome remains excluded.", true));
         }
         catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException or TimeoutException)
@@ -245,6 +341,398 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "BROWSER BLOCKED", ex.Message, false));
         }
         await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task StartManagerAsync(CancellationToken cancellationToken)
+    {
+        var run = RequireActiveRun();
+        var managerAgentId = _managerAgentId ?? throw new InvalidOperationException("Manager logical identity is not initialized.");
+        if (_autopilot == "PAUSED") throw new InvalidOperationException("Resume AI before starting Manager.");
+        var runtime = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false))
+            .FirstOrDefault(x => !x.IsArchived && x.State is not BrowserSessionState.Killed && StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, managerAgentId.ToString()))
+            ?? throw new InvalidOperationException("Connect the PCC-owned Manager Chrome session first.");
+        var ownership = await _ownership.ProveAsync(runtime, cancellationToken).ConfigureAwait(false);
+        if (!ownership.IsProven) throw new InvalidOperationException($"Manager send refused: {ownership.Reason}.");
+
+        var logicalConversation = runtime.ConversationIdentity;
+        if (string.IsNullOrWhiteSpace(logicalConversation))
+        {
+            logicalConversation = StableGuid($"conversation:{run.Id}:manager:1").ToString();
+            var bound = await _sessions.BindDispatchTargetAsync(runtime.RuntimeId, $"manager-plan:{run.Id}", logicalConversation, "NEW", cancellationToken).ConfigureAwait(false);
+            if (!bound.Succeeded) throw new InvalidOperationException($"Manager conversation binding failed: {bound.Reason}.");
+            await _store.SaveBrowserConversationAsync(new ConversationRecord { ConversationId = logicalConversation, LogicalAgentId = managerAgentId.ToString(), ProjectRunId = run.Id.ToString(), Sequence = 1, UrlOrProviderIdentity = "NEW", CreatedAt = DateTimeOffset.UtcNow, State = ConversationLifecycleState.Active }, cancellationToken).ConfigureAwait(false);
+        }
+
+        var baseline = await _baseline.BuildAsync(_projectControlId ?? throw new InvalidOperationException("Selected PCC project identity is unavailable."), cancellationToken).ConfigureAwait(false);
+        if (!baseline.IsSuccess || baseline.Value is null)
+            throw new InvalidOperationException($"Manager start requires fresh PCC/GitHub evidence: {baseline.ErrorCode ?? baseline.Status.ToString()}.");
+        var prompt = BuildManagerPrompt(run, baseline.Value);
+        _managerBaseline = baseline.Value;
+        await _store.SaveCheckpointAsync(new DurableCheckpoint($"manager-baseline:{run.Id}", run.Id.ToString(), "manager-baseline-v1", JsonSerializer.Serialize(baseline.Value), DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt))).ToLowerInvariant();
+        var request = new AgentRequest(run.Id, managerAgentId, new ConversationId(Guid.Parse(logicalConversation)), DispatchId.New(), prompt, hash);
+        var result = await _agentProvider.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (result.Accepted)
+        {
+            var updatedRuntime = await _runtimeRegistry.GetAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
+            if (updatedRuntime?.ProviderConversationIdentity is { Length: > 0 } providerIdentity)
+                await _store.SaveBrowserConversationAsync(new ConversationRecord { ConversationId = logicalConversation, LogicalAgentId = managerAgentId.ToString(), ProjectRunId = run.Id.ToString(), Sequence = 1, UrlOrProviderIdentity = providerIdentity, CreatedAt = DateTimeOffset.UtcNow, State = ConversationLifecycleState.Active }, cancellationToken).ConfigureAwait(false);
+        }
+        await _store.SaveCheckpointAsync(new DurableCheckpoint($"manager-dispatch:{result.DispatchId}", run.Id.ToString(), "manager-dispatch-v1", JsonSerializer.Serialize(new { request.DispatchId, request.ContentHash, result.Accepted, result.IsUncertain, result.ErrorCode, result.ProviderEvidence }), DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+        _latestManagerHandoff = result.IsUncertain
+            ? $"SUBMITTED_UNKNOWN — Manager dispatch {result.DispatchId} requires reconciliation before retry."
+            : result.Accepted
+                ? $"Manager request {result.DispatchId} submitted. Waiting for a complete structured response."
+                : $"Manager send stopped safely: {result.ErrorCode ?? result.ProviderEvidence ?? "unknown provider state"}.";
+        _autopilot = result.Accepted ? "PLANNING" : result.IsUncertain ? "WAITING_FOR_EVIDENCE" : "READY";
+        CaptureProviderAttention(result.ErrorCode, runtime.RuntimeId, "Manager ChatGPT session");
+        if (result.Accepted) EnsureAutopilotLoop();
+        await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private string BuildManagerPrompt(ProjectRun run, ProjectBaselineSnapshot baseline) =>
+        $"PROJECT_ID: {_projectControlId}\nDISPLAY_NAME: {_projectDisplay}\nREPOSITORY: {_projectRepository}\nPROJECT_RUN: {run.Id}\nPCC_SOURCE_SHA: {baseline.PccSourceSha}\nDEFAULT_BRANCH: {baseline.DefaultBranch}\nDEFAULT_HEAD: {baseline.DefaultHeadSha}\nVERIFIED_COMPLETION: {run.VerifiedCompletion.Percent}\nMANAGER_ESTIMATE: {run.ManagerEstimate.Percent}\nACTIVE_WORKERS: 0/5\nAUTOPILOT: {_autopilot}\n\nReturn one JSON object only with ManagerEstimate, ExpectedHead, ExpectedRoutingIdentity, ProjectDecision, KnownBlockers, and Tasks (0..5). Each task requires TaskId GUID, Objective, Repository, Paths, Components, ExclusiveResources, Dependencies, AcceptanceCriteria, EvidenceExpected, Priority, SuggestedWorkerSlot (1..5), Reason, KnownBlockers, RequiredPreviousTasks, RecommendedExecutionMode, TargetScope, TargetVariant, ExpectedHead, RelatedPullRequest, ExpectedPullRequestState, TargetBranch, FeatureExpansion.";
+
+    private async Task ReconcileManagerResponseAsync(CancellationToken cancellationToken)
+    {
+        var run = RequireActiveRun();
+        var managerAgentId = _managerAgentId ?? throw new InvalidOperationException("Manager logical identity is not initialized.");
+        var runtime = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false))
+            .FirstOrDefault(x => !x.IsArchived && x.State is not BrowserSessionState.Killed && StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, managerAgentId.ToString()))
+            ?? throw new InvalidOperationException("Manager Browser runtime is unavailable.");
+        if (string.IsNullOrWhiteSpace(runtime.TaskId) || string.IsNullOrWhiteSpace(runtime.ConversationIdentity) || string.IsNullOrWhiteSpace(runtime.ProviderConversationIdentity) || string.Equals(runtime.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Manager conversation identity is not yet proven. Wait for submission reconciliation before reading a response.");
+
+        var expected = new BrowserDispatchExpectation(run.Id.ToString(), managerAgentId.ToString(), runtime.TaskId, runtime.ConversationIdentity, runtime.ProviderConversationIdentity);
+        var semantic = await _browserAdapter.InspectAsync(runtime, expected, cancellationToken).ConfigureAwait(false);
+        var resilience = new ChatGptResilienceClassifier().Classify(semantic, DateTimeOffset.UtcNow - runtime.LastActivityAt);
+        if (semantic.Auth.State is AuthState.LoginRequired or AuthState.Challenge)
+        {
+            CaptureProviderAttention(semantic.Auth.State == AuthState.Challenge ? "CHALLENGE" : "LOGIN_REQUIRED", runtime.RuntimeId, "Manager ChatGPT session");
+            await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        if (resilience.Scope == FaultScope.Global && resilience.PauseUnsafeNewSends)
+        {
+            var cooldown = resilience.State == ChatGptResilienceState.RateLimited ? new ConservativeCooldownPolicy().GetCooldown(1) : TimeSpan.FromSeconds(30);
+            _sendGate.Apply(resilience, DateTimeOffset.UtcNow, cooldown);
+            _autopilot = resilience.State.ToString().ToUpperInvariant();
+            await _store.SaveCheckpointAsync(new DurableCheckpoint($"runtime-health:{run.Id}", run.Id.ToString(), "runtime-health-v1", JsonSerializer.Serialize(new { resilience.State, resilience.Reason, ResumeNotBefore = _sendGate.Snapshot.ResumeNotBefore }), DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+            await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        if (semantic.Generation.State == GenerationState.Generating)
+        {
+            _latestManagerHandoff = "Manager generation is still active; no plan has been accepted.";
+            await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        if (semantic.ResponseCompleteness != ResponseCompleteness.Complete || string.IsNullOrWhiteSpace(semantic.CapturedResponseText))
+            throw new InvalidOperationException($"Manager response is not proven complete ({semantic.ResponseCompleteness}); dispatch remains blocked.");
+
+        var parsed = new StructuredManagerPlanParser().Parse(semantic.CapturedResponseText);
+        if (!parsed.IsValid || parsed.Plan is null)
+            throw new InvalidOperationException($"Manager response rejected: {string.Join("; ", parsed.Findings.Select(x => $"{x.Code}:{x.Message}"))}");
+        var planFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", parsed.Plan.Tasks.Select(x => x.Task.Fingerprint))))).ToLowerInvariant();
+        _recentPlanFingerprints.Enqueue(planFingerprint);
+        while (_recentPlanFingerprints.Count > 3) _recentPlanFingerprints.Dequeue();
+        if (_recentPlanFingerprints.Count == 3 && _recentPlanFingerprints.Distinct(StringComparer.Ordinal).Count() == 1)
+        {
+            _run = run with { State = ProjectRunState.StalledAutoStopped };
+            _autopilot = "STALLED";
+            _latestManagerHandoff = "STALLED_AUTO_STOPPED — Manager repeated the identical task fingerprint for three plans.";
+            await _orchestrationStore.SaveAsync(new OrchestrationRecoverySnapshot(_run, _currentWave, _runtimeTasks, _assignments, [], null, OrchestrationPhase.StalledAutoStopped, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+            await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        var routingResult = await _pcc.ResolveProjectAsync(_projectControlId!, cancellationToken).ConfigureAwait(false);
+        var baselineResult = await _baseline.BuildAsync(_projectControlId!, cancellationToken).ConfigureAwait(false);
+        if (!routingResult.IsSuccess || routingResult.Project is null || !baselineResult.IsSuccess || baselineResult.Value is null)
+            throw new InvalidOperationException("Fresh PCC and GitHub evidence is required before accepting a Manager wave.");
+        var validation = new ManagerWaveValidator().Validate(parsed.Plan, routingResult.Project, baselineResult.Value, EmptyCompletedTaskIndex.Instance, run.CompletionMode);
+        if (!validation.IsValid)
+            throw new InvalidOperationException($"Manager wave rejected: {string.Join("; ", validation.Findings.Select(x => $"{x.Code}:{x.Message}"))}");
+        if (parsed.Plan.Tasks.Count == 0)
+        {
+            if (string.Equals(parsed.Plan.ProjectDecision, "CLOSE", StringComparison.OrdinalIgnoreCase) && run.VerifiedCompletion.Percent >= 99m && EvidenceReadyForClosure(baselineResult.Value))
+            {
+                _run = run with { State = ProjectRunState.VerifiedComplete, ManagerEstimate = parsed.Plan.ManagerEstimate, VerifiedCompletion = new VerifiedCompletion(100m), CompletionMode = ProjectCompletionMode.VerifiedComplete };
+                _currentPlan = parsed.Plan;
+                _currentWave = _currentWave is null ? null : _currentWave with { State = WaveState.Completed };
+                await _orchestrationStore.SaveAsync(new OrchestrationRecoverySnapshot(_run, _currentWave, _runtimeTasks, _assignments, [], null, OrchestrationPhase.VerifiedComplete, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+                _autopilot = "DONE";
+                _latestManagerHandoff = "100% VERIFIED — Manager requested CLOSE and all current PCC/GitHub evidence gates are satisfied.";
+                await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            throw new InvalidOperationException("A zero-task Manager response must request CLOSE with 99% evidence-backed completion, or identify a real blocker.");
+        }
+
+        var taskStates = parsed.Plan.Tasks.ToDictionary(x => x.Task.Id, x => x.Task.State);
+        var batch = new SafeDispatchPlanner().Schedule(parsed.Plan, taskStates, new HashSet<WorkerSlotId>(), new RuntimeHealthSnapshot(false, _settings.AdaptivePacing, TimeSpan.FromSeconds(_settings.BaseDispatchIntervalSeconds), null));
+        _assignments = batch.Assignments.ToDictionary(x => x.TaskId, x => x.SlotId);
+        _currentPlan = parsed.Plan;
+        _runtimeTasks = parsed.Plan.Tasks.Select(x => x.Task).ToArray();
+        _currentWave = new Wave(WaveId.New(), run.Id, (_currentWave?.Sequence ?? 0) + 1, WaveState.Ready, parsed.Plan.Tasks.Select(x => x.Task.Id).ToArray(), DateTimeOffset.UtcNow);
+        _run = run with { State = ProjectRunState.WaveReady, ManagerEstimate = parsed.Plan.ManagerEstimate };
+        var snapshot = new OrchestrationRecoverySnapshot(_run, _currentWave, parsed.Plan.Tasks.Select(x => x.Task).ToArray(), _assignments, [], null, OrchestrationPhase.WaveValidation, DateTimeOffset.UtcNow);
+        await _orchestrationStore.CreateWaveAsync(snapshot, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await _store.SaveCheckpointAsync(new DurableCheckpoint($"manager-plan:{run.Id}", run.Id.ToString(), "structured-manager-plan-v1", semantic.CapturedResponseText, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+        _autopilot = "READY_TO_DISPATCH";
+        _latestManagerHandoff = $"Validated Wave {_currentWave.Id}: {parsed.Plan.Tasks.Count} task(s), {batch.Assignments.Count} ready, {batch.Deferred.Count} dependency/scope deferred.";
+        await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task StartDispatchAsync(CancellationToken cancellationToken)
+    {
+        var run = RequireActiveRun();
+        var plan = _currentPlan ?? throw new InvalidOperationException("A validated Manager plan is required before dispatch.");
+        var wave = _currentWave is { State: WaveState.Ready } ready ? ready : throw new InvalidOperationException("Current Wave is not ready for dispatch.");
+        var dispatchProposals = plan.Tasks.Where(x => _assignments.ContainsKey(x.Task.Id) && _runtimeTasks.FirstOrDefault(t => t.Id == x.Task.Id)?.State is not (TaskState.Dispatched or TaskState.Running or TaskState.Completed)).ToArray();
+        if (dispatchProposals.Length == 0) throw new InvalidOperationException("No safely dispatchable tasks remain in the current Wave.");
+        var bindings = new List<WorkerExecutionBinding>();
+        foreach (var proposal in dispatchProposals)
+        {
+            if (!_assignments.TryGetValue(proposal.Task.Id, out var slot)) continue;
+            var agentId = _workerAgentIds[slot.Value - 1];
+            var runtime = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false))
+                .FirstOrDefault(x => !x.IsArchived && x.State is not BrowserSessionState.Killed && StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, agentId.ToString()));
+            var conversationId = new ConversationId(StableGuid($"conversation:{run.Id}:worker:{slot.Value}:1"));
+            if (runtime is null)
+                runtime = await _sessions.CreateAsync(new BrowserSessionRequest(run.Id.ToString(), agentId.ToString(), slot.Value.ToString(), proposal.Task.Id.ToString(), conversationId.ToString(), "NEW", BrowserVisibility.Hidden), cancellationToken).ConfigureAwait(false);
+            else
+                await _sessions.BindDispatchTargetAsync(runtime.RuntimeId, proposal.Task.Id.ToString(), conversationId.ToString(), runtime.ProviderConversationIdentity ?? "NEW", cancellationToken).ConfigureAwait(false);
+            await _store.SaveBrowserConversationAsync(new ConversationRecord { ConversationId = conversationId.ToString(), LogicalAgentId = agentId.ToString(), ProjectRunId = run.Id.ToString(), Sequence = 1, UrlOrProviderIdentity = runtime.ProviderConversationIdentity ?? "NEW", CreatedAt = DateTimeOffset.UtcNow, State = ConversationLifecycleState.Active }, cancellationToken).ConfigureAwait(false);
+            bindings.Add(new WorkerExecutionBinding(slot, agentId, conversationId));
+        }
+
+        _currentWave = wave with { State = WaveState.Dispatching };
+        _run = run with { State = ProjectRunState.Dispatching };
+        _autopilot = "DISPATCHING";
+        await _orchestrationStore.SaveAsync(new OrchestrationRecoverySnapshot(_run, _currentWave, plan.Tasks.Select(x => x.Task).ToArray(), _assignments, [], null, OrchestrationPhase.Dispatching, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+        var result = await new ManagerWorkerOrchestrator(_agentProvider, baseDispatchInterval: TimeSpan.FromSeconds(_settings.BaseDispatchIntervalSeconds))
+            .DispatchWaveAsync(run.Id, new WavePlan(wave.Id, plan.ManagerEstimate, dispatchProposals.Select(x => x.Task).ToArray(), []), bindings, EmptyCompletedTaskIndex.Instance, cancellationToken).ConfigureAwait(false);
+        foreach (var dispatched in result.Dispatches.Where(x => x.Result.Accepted))
+        {
+            var runtime = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false)).FirstOrDefault(x => !x.IsArchived && StringComparer.Ordinal.Equals(x.LogicalAgentId, dispatched.Binding.LogicalAgentId.ToString()));
+            if (runtime?.ProviderConversationIdentity is { Length: > 0 } providerIdentity)
+                await _store.SaveBrowserConversationAsync(new ConversationRecord { ConversationId = dispatched.Binding.ConversationId.ToString(), LogicalAgentId = dispatched.Binding.LogicalAgentId.ToString(), ProjectRunId = run.Id.ToString(), Sequence = 1, UrlOrProviderIdentity = providerIdentity, CreatedAt = DateTimeOffset.UtcNow, State = ConversationLifecycleState.Active }, cancellationToken).ConfigureAwait(false);
+        }
+        var taskStates = result.Dispatches.ToDictionary(x => x.Task.Id, x => x.Result.Accepted ? TaskState.Dispatched : x.Result.IsUncertain ? TaskState.Dispatched : TaskState.Blocked);
+        var tasks = plan.Tasks.Select(x => taskStates.TryGetValue(x.Task.Id, out var state) ? x.Task with { State = state } : x.Task).ToArray();
+        _runtimeTasks = tasks;
+        var allSubmitted = _assignments.Keys.All(id => _runtimeTasks.FirstOrDefault(t => t.Id == id)?.State == TaskState.Dispatched);
+        _currentWave = _currentWave with { State = allSubmitted ? WaveState.Running : WaveState.Ready };
+        _run = _run with { State = allSubmitted ? ProjectRunState.WaveRunning : ProjectRunState.WaveReady };
+        _autopilot = result.HasUncertainDispatch ? "WAITING_FOR_EVIDENCE" : allSubmitted ? "WAITING_WORKERS" : "READY_TO_DISPATCH";
+        foreach (var dispatch in result.Dispatches.Where(x => !x.Result.Accepted))
+        {
+            var runtime = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false)).FirstOrDefault(x => StringComparer.Ordinal.Equals(x.LogicalAgentId, dispatch.Binding.LogicalAgentId.ToString()) && !x.IsArchived);
+            if (runtime is not null) CaptureProviderAttention(dispatch.Result.ErrorCode, runtime.RuntimeId, $"Worker {dispatch.Binding.SlotId} ChatGPT session");
+        }
+        await _orchestrationStore.SaveAsync(new OrchestrationRecoverySnapshot(_run, _currentWave, tasks, _assignments, [], null, allSubmitted ? OrchestrationPhase.WaveRunning : OrchestrationPhase.Dispatching, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+        await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task PauseDispatchAsync(CancellationToken cancellationToken)
+    {
+        var run = RequireActiveRun();
+        await _newSendPause.PauseNewSendsAsync("Operator paused dispatch; canonical new-send gate is shared by Manager and Workers.", cancellationToken).ConfigureAwait(false);
+        await _store.SaveCheckpointAsync(new DurableCheckpoint($"dispatch-pause:{run.Id}", run.Id.ToString(), "dispatch-pause-v1", "{\"paused\":true}", DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+        await _store.SaveCheckpointAsync(new DurableCheckpoint($"autopilot-pause:{run.Id}", run.Id.ToString(), "autopilot-pause-v1", "{\"paused\":true}", DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+        _autopilot = "PAUSED";
+        await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ReconcileWorkerResponsesAsync(CancellationToken cancellationToken)
+    {
+        var run = RequireActiveRun();
+        var plan = _currentPlan ?? throw new InvalidOperationException("Current Manager plan is unavailable.");
+        var wave = _currentWave ?? throw new InvalidOperationException("Current Wave is unavailable.");
+        var parsedHandoffs = new List<(ManagerTaskProposal Expected, WorkerSlotId Slot, HandoffAssessment Parsed)>();
+        var runtimes = await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var proposal in plan.Tasks.Where(x => _assignments.ContainsKey(x.Task.Id)))
+        {
+            var slot = _assignments[proposal.Task.Id];
+            var agentId = _workerAgentIds[slot.Value - 1];
+            var runtime = runtimes.FirstOrDefault(x => !x.IsArchived && x.State is not BrowserSessionState.Killed && StringComparer.Ordinal.Equals(x.LogicalAgentId, agentId.ToString()));
+            if (runtime is null || string.IsNullOrWhiteSpace(runtime.ConversationIdentity) || string.IsNullOrWhiteSpace(runtime.ProviderConversationIdentity) || string.Equals(runtime.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
+                continue;
+            var expected = new BrowserDispatchExpectation(run.Id.ToString(), agentId.ToString(), proposal.Task.Id.ToString(), runtime.ConversationIdentity, runtime.ProviderConversationIdentity);
+            var semantic = await _browserAdapter.InspectAsync(runtime, expected, cancellationToken).ConfigureAwait(false);
+            if (semantic.Auth.State is AuthState.LoginRequired or AuthState.Challenge)
+            {
+                CaptureProviderAttention(semantic.Auth.State == AuthState.Challenge ? "CHALLENGE" : "LOGIN_REQUIRED", runtime.RuntimeId, $"Worker {slot.Value} ChatGPT session");
+                continue;
+            }
+            var resilience = new ChatGptResilienceClassifier().Classify(semantic, DateTimeOffset.UtcNow - runtime.LastActivityAt);
+            if (resilience.Scope == FaultScope.Global && resilience.PauseUnsafeNewSends)
+            {
+                _sendGate.Apply(resilience, DateTimeOffset.UtcNow, new ConservativeCooldownPolicy().GetCooldown(1));
+                _autopilot = resilience.State.ToString().ToUpperInvariant();
+                continue;
+            }
+            if (semantic.Generation.State == GenerationState.Generating || semantic.ResponseCompleteness != ResponseCompleteness.Complete || string.IsNullOrWhiteSpace(semantic.CapturedResponseText))
+                continue;
+            parsedHandoffs.Add((proposal, slot, new WorkerHandoffParser().Parse(semantic.CapturedResponseText)));
+        }
+        if (parsedHandoffs.Count < _assignments.Count)
+        {
+            _autopilot = "WAITING_WORKERS";
+            _latestManagerHandoff = $"Waiting for complete Worker handoffs: {parsedHandoffs.Count}/{_assignments.Count} captured.";
+            await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        var baseline = _managerBaseline ?? throw new InvalidOperationException("Manager planning baseline is unavailable; verification cannot proceed.");
+        var reconciled = await new LiveWaveEvidenceReconciler(_baseline, _pcc).ReconcileAsync(_projectControlId!, baseline, parsedHandoffs, cancellationToken).ConfigureAwait(false);
+        if (!reconciled.IsSuccess || reconciled.Value is null) throw new InvalidOperationException($"Live Wave reconciliation failed: {reconciled.ErrorCode ?? reconciled.Status.ToString()}.");
+        var validated = parsedHandoffs.Zip(reconciled.Value.Handoffs, (source, assessment) => (source.Expected, source.Slot, Assessment: assessment)).ToArray();
+        _runtimeTasks = _runtimeTasks.Select(task =>
+        {
+            var assessment = validated.FirstOrDefault(x => x.Expected.Task.Id == task.Id).Assessment;
+            return assessment?.Quality == HandoffQuality.Valid ? task with { State = TaskState.Completed } : task with { State = TaskState.Validating };
+        }).ToArray();
+        var completionGates = validated.Select(x => new CompletionGate($"Task {x.Expected.Task.Id}", true, 1m, x.Assessment.Quality == HandoffQuality.Valid ? GateState.Pass : GateState.Partial, string.Join(";", x.Assessment.Findings.Select(f => f.Code)))).ToArray();
+        var completion = EvaluateEvidenceCompletion(run.ManagerEstimate, reconciled.Value.Live, validated);
+        _run = run with { State = completion.Mode == ProjectCompletionMode.ClosureMode ? ProjectRunState.ClosureMode : ProjectRunState.ManagerReview, VerifiedCompletion = completion.VerifiedCompletion, CompletionMode = completion.Mode };
+        _recentVerifiedCompletion.Enqueue(_run.VerifiedCompletion.Percent);
+        while (_recentVerifiedCompletion.Count > 3) _recentVerifiedCompletion.Dequeue();
+        if (_recentVerifiedCompletion.Count == 3 && _recentVerifiedCompletion.Distinct().Count() == 1 && _run.VerifiedCompletion.Percent < 99m)
+        {
+            _run = _run with { State = ProjectRunState.StalledAutoStopped };
+            _autopilot = "STALLED";
+        }
+        var loop = new LoopAssessment(LoopGuardLevel.Normal, []);
+        var recommendation = _run.State == ProjectRunState.StalledAutoStopped ? OrchestrationDecision.StalledAutoStopped : OrchestrationDecision.Continue;
+        var review = new ManagerReviewPacketBuilder().Build(_projectControlId!, wave.Id, validated, reconciled.Value.Live, [], completionGates, loop, [], recommendation);
+        _currentWave = wave with { State = WaveState.Completed };
+        await _orchestrationStore.SaveManagerReviewAsync(new OrchestrationRecoverySnapshot(_run, _currentWave, _runtimeTasks, _assignments, [], review, OrchestrationPhase.ManagerReview, DateTimeOffset.UtcNow), $"manager-review:{wave.Id}", cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (_run.State != ProjectRunState.StalledAutoStopped)
+        {
+            await SendManagerReviewAsync(review, cancellationToken).ConfigureAwait(false);
+            _autopilot = "MANAGER_REVIEW";
+            _latestManagerHandoff = $"Wave {wave.Sequence} reconciled against live evidence; {validated.Count(x => x.Assessment.Quality == HandoffQuality.Valid)}/{validated.Length} tasks verified. Manager review submitted.";
+        }
+        else
+        {
+            _latestManagerHandoff = "STALLED_AUTO_STOPPED — three reconciled Waves produced no Verified Completion movement.";
+        }
+        await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static CompletionControlEvaluation EvaluateEvidenceCompletion(ManagerEstimate estimate, ProjectBaselineSnapshot live, IReadOnlyList<(ManagerTaskProposal Expected, WorkerSlotId Slot, HandoffAssessment Assessment)> handoffs)
+    {
+        var qualityPass = new EvidenceQualityAssessment(EvidenceQuality.STRONG, []);
+        var gates = new List<PolicyCompletionGate>
+        {
+            Gate(CompletionGateFamily.IMPLEMENTATION, "Validated Worker handoffs", handoffs.Count > 0 && handoffs.All(x => x.Assessment.Quality == HandoffQuality.Valid) ? GateState.Pass : GateState.Partial, qualityPass),
+            Gate(CompletionGateFamily.CI, "Exact-head CI", string.Equals(live.CiState, "success", StringComparison.OrdinalIgnoreCase) || string.Equals(live.CiState, "green", StringComparison.OrdinalIgnoreCase) ? GateState.Pass : GateState.Unknown, qualityPass),
+            Gate(CompletionGateFamily.ORCHESTRATION, "PCC routing freshness", live.Freshness == EvidenceFreshness.Current ? GateState.Pass : GateState.Unknown, qualityPass),
+            Gate(CompletionGateFamily.TESTS, "Canonical task closure", live.CanonicalTasks.Count > 0 && live.CanonicalTasks.All(x => IsTerminalCanonicalState(x.State)) ? GateState.Pass : GateState.Partial, qualityPass),
+            Gate(CompletionGateFamily.RELEASE, "No live blockers", live.KnownBlockers.Count == 0 ? GateState.Pass : GateState.Fail, qualityPass)
+        };
+        var evaluation = new CompletionGateController().Evaluate(estimate, gates, []);
+        if (evaluation.VerifiedCompletion.Percent == 100m)
+            return evaluation with { VerifiedCompletion = new VerifiedCompletion(99m), Mode = ProjectCompletionMode.ClosureMode };
+        return evaluation;
+
+        static PolicyCompletionGate Gate(CompletionGateFamily family, string name, GateState state, EvidenceQualityAssessment quality) =>
+            new(family, new CompletionGate(name, true, 1m, state, name), quality, ClosurePriority.P0_VERIFICATION_BLOCKER);
+    }
+
+    private static bool EvidenceReadyForClosure(ProjectBaselineSnapshot live) =>
+        live.Freshness == EvidenceFreshness.Current &&
+        live.KnownBlockers.Count == 0 &&
+        (string.Equals(live.CiState, "success", StringComparison.OrdinalIgnoreCase) || string.Equals(live.CiState, "green", StringComparison.OrdinalIgnoreCase)) &&
+        live.CanonicalTasks.Count > 0 && live.CanonicalTasks.All(x => IsTerminalCanonicalState(x.State));
+
+    private static bool IsTerminalCanonicalState(string state) => state.ToUpperInvariant() is "DONE" or "COMPLETE" or "COMPLETED" or "VERIFIED" or "MERGED" or "CLOSED" or "ACCEPTED";
+
+    private async Task SendManagerReviewAsync(ConsolidatedManagerReviewPacket review, CancellationToken cancellationToken)
+    {
+        var run = RequireActiveRun();
+        var managerAgentId = _managerAgentId!.Value;
+        var runtime = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false)).First(x => !x.IsArchived && StringComparer.Ordinal.Equals(x.LogicalAgentId, managerAgentId.ToString()));
+        var logicalConversation = runtime.ConversationIdentity ?? throw new InvalidOperationException("Manager logical conversation is unavailable.");
+        var providerConversation = runtime.ProviderConversationIdentity ?? throw new InvalidOperationException("Manager provider conversation is unavailable.");
+        await _sessions.BindDispatchTargetAsync(runtime.RuntimeId, $"manager-review:{review.WaveId}", logicalConversation, providerConversation, cancellationToken).ConfigureAwait(false);
+        var prompt = $"WAVE_REVIEW:\n{JsonSerializer.Serialize(review)}\nReturn the next structured Manager plan JSON only. Use 0..5 tasks and current live evidence.";
+        var request = new AgentRequest(run.Id, managerAgentId, new ConversationId(Guid.Parse(logicalConversation)), DispatchId.New(), prompt, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt))).ToLowerInvariant());
+        var result = await _agentProvider.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (!result.Accepted) throw new InvalidOperationException(result.IsUncertain ? "Manager review submission is SUBMITTED_UNKNOWN; no retry is allowed before reconciliation." : $"Manager review send failed: {result.ErrorCode}.");
+    }
+
+    private void CaptureProviderAttention(string? errorCode, string runtimeId, string target)
+    {
+        if (errorCode is not ("LOGIN_REQUIRED" or "CHALLENGE")) return;
+        var id = $"browser-attention:{runtimeId}";
+        var reason = errorCode == "CHALLENGE" ? "ChatGPT presented a challenge/CAPTCHA that automation must not bypass." : "ChatGPT authentication is required in the isolated PCC-owned profile.";
+        _attention[id] = (new AttentionSummary(id, errorCode, reason, "Open PCC Browser", target, "P0"), runtimeId);
+        _autopilot = "ATTENTION_REQUIRED";
+    }
+
+    private async Task LoadConversationHistoryAsync(string? target, CancellationToken cancellationToken)
+    {
+        var run = RequireActiveRun();
+        LogicalAgentId? agentId = string.Equals(target, "Manager", StringComparison.OrdinalIgnoreCase) ? _managerAgentId : null;
+        if (agentId is null && target is not null && target.StartsWith("Worker ", StringComparison.OrdinalIgnoreCase) && int.TryParse(target[7..], out var slot) && slot is >= 1 and <= 5)
+            agentId = _workerAgentIds[slot - 1];
+        if (agentId is null) throw new InvalidOperationException("Conversation History requires Manager or Worker 1..5.");
+        var records = await _store.ListBrowserConversationsAsync(cancellationToken).ConfigureAwait(false);
+        _conversationHistory = records
+            .Where(x => StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, agentId.Value.ToString()))
+            .OrderBy(x => x.Sequence)
+            .Select(x => new ConversationHistorySummary(target!, x.Sequence, x.State.ToString(), x.UrlOrProviderIdentity, x.CreatedAt, x.RetiredAt, x.RolloverReason, x.PredecessorConversationId, x.SuccessorConversationId))
+            .ToArray();
+        await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private void EnsureAutopilotLoop()
+    {
+        if (_autopilotTask is { IsCompleted: false }) return;
+        _autopilotTask = Task.Run(() => RunAutopilotLoopAsync(_autopilotCancellation.Token));
+    }
+
+    private async Task RunAutopilotLoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                if (_autopilot == "PAUSED" || _run?.State is ProjectRunState.VerifiedComplete or ProjectRunState.BlockedExternal or ProjectRunState.StalledAutoStopped or ProjectRunState.StoppedByOperator)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+                if (_sendGate.Snapshot is { IsPaused: true, ResumeNotBefore: not null } gate && gate.ResumeNotBefore <= DateTimeOffset.UtcNow && _settings.AutoResume)
+                {
+                    await _newSendPause.ResumeNewSendsAsync("Conservative runtime cooldown elapsed; reconciling before sends resume.", cancellationToken).ConfigureAwait(false);
+                    _autopilot = _currentWave?.State == WaveState.Running ? "WAITING_WORKERS" : "RECOVERING";
+                }
+                await _autopilotOperation.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    if (_currentWave?.State == WaveState.Running)
+                        await ReconcileWorkerResponsesAsync(cancellationToken).ConfigureAwait(false);
+                    else if (_autopilot is "PLANNING" or "MANAGER_REVIEW")
+                        await ReconcileManagerResponseAsync(cancellationToken).ConfigureAwait(false);
+                    if (_settings.DispatchMode == DispatchMode.AutomaticStaged.ToString() && _currentWave?.State == WaveState.Ready && _currentPlan is not null)
+                        await StartDispatchAsync(cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _autopilotOperation.Release();
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
+            catch (InvalidOperationException)
+            {
+                // Incomplete generation, login, offline and stale evidence remain observable runtime states;
+                // the loop polls conservatively and never retries a dispatch here.
+            }
+            await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async Task RunSessionActionAsync(string? targetId, Func<string, Task<SessionActionResult>> operation, CancellationToken cancellationToken)
@@ -266,12 +754,27 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             _pccState = $"PASS@{result.Project.Provenance.SourceSha[..Math.Min(8, result.Project.Provenance.SourceSha.Length)]}";
             _projectDisplay = result.Project.DisplayName;
             _projectRepository = result.Project.Repository;
+            _projectControlId = result.Project.ProjectControlId;
 
-            if (_run is null)
+            var projectIdentity = result.Project.RoutingIdentity;
+            var expectedProjectId = new ProjectId(StableGuid($"project:{projectIdentity}"));
+            if (_run is null || _run.ProjectId != expectedProjectId)
             {
-                _run = new ProjectRun(ProductRunId, ProductProjectId, ProjectRunState.Initializing, DateTimeOffset.UtcNow, new ManagerEstimate(0), new VerifiedCompletion(0), ProjectCompletionMode.Active);
+                var replacementLock = ProjectRunLock.TryAcquire(projectIdentity);
+                if (!replacementLock.IsOwned)
+                {
+                    replacementLock.Dispose();
+                    throw new InvalidOperationException($"PCC Executive is already controlling project '{result.Project.ProjectControlId}' on this machine.");
+                }
+                _projectLock?.Dispose();
+                _projectLock = replacementLock;
+                _run = new ProjectRun(ProjectRunId.New(), expectedProjectId, ProjectRunState.Initializing, DateTimeOffset.UtcNow, new ManagerEstimate(0), new VerifiedCompletion(0), ProjectCompletionMode.Active);
+                _managerAgentId = AgentId(_run.Id, "manager");
+                _workerAgentIds = Enumerable.Range(1, 5).Select(slot => AgentId(_run.Id, $"worker:{slot}")).ToArray();
                 await _store.SaveProjectRunAsync(_run, cancellationToken).ConfigureAwait(false);
-                PersistLogicalAgents(_store, _run.Id);
+                PersistLogicalAgents(_store, _run.Id, _managerAgentId.Value, _workerAgentIds);
+                var selected = new SelectedProjectState(result.Project.ProjectControlId, projectIdentity, result.Project.DisplayName, result.Project.Repository, _run.Id.Value);
+                await _store.SaveCheckpointAsync(new DurableCheckpoint("active-project", _run.Id.ToString(), "active-project-v1", JsonSerializer.Serialize(selected), DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
             }
 
             if (_run.State == ProjectRunState.Initializing)
@@ -290,7 +793,7 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
 
     private async Task RunVerificationAsync(CancellationToken cancellationToken)
     {
-        var result = await _baseline.BuildAsync("PCCEXECUTIVE", cancellationToken).ConfigureAwait(false);
+        var result = await _baseline.BuildAsync(_projectControlId ?? throw new InvalidOperationException("Select a project before verification."), cancellationToken).ConfigureAwait(false);
         if (result.IsSuccess && result.Value is not null)
         {
             _pccState = $"PASS@{result.Value.PccSourceSha[..Math.Min(8, result.Value.PccSourceSha.Length)]}";
@@ -339,7 +842,7 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
                 .Select(x => new SessionSummary(
                     x.RuntimeId,
                     LogicalNameFor(x),
-                    StringComparer.Ordinal.Equals(x.LogicalAgentId, ManagerAgentId.ToString()) ? "Manager" : "Worker",
+                    _managerAgentId is not null && StringComparer.Ordinal.Equals(x.LogicalAgentId, _managerAgentId.Value.ToString()) ? "Manager" : "Worker",
                     x.State.ToString().ToUpperInvariant(),
                     x.Visibility == BrowserVisibility.Hidden ? SessionVisibility.Hidden : SessionVisibility.Visible,
                     x.ConversationIdentity ?? x.TaskId ?? "Not bound to a conversation yet",
@@ -351,15 +854,21 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
 
         var workers = run is null
             ? Array.Empty<WorkerSummary>()
-            : WorkerAgentIds.Select((id, index) => new WorkerSummary(
-                id.ToString(),
-                $"Worker {index + 1}",
-                "Worker",
-                "IDLE",
-                0,
-                "No task assigned",
-                HealthState.Unknown,
-                null)).ToArray();
+            : _workerAgentIds.Select((id, index) =>
+            {
+                var slot = new WorkerSlotId(index + 1);
+                var task = _assignments.Where(x => x.Value == slot).Select(x => _runtimeTasks.FirstOrDefault(t => t.Id == x.Key)).FirstOrDefault(x => x is not null);
+                var session = sessions.FirstOrDefault(x => StringComparer.Ordinal.Equals(x.RuntimeId, runtimes.FirstOrDefault(r => StringComparer.Ordinal.Equals(r.LogicalAgentId, id.ToString()) && !r.IsArchived)?.RuntimeId));
+                return new WorkerSummary(id.ToString(), $"Worker {index + 1}", "Worker", task?.State.ToString().ToUpperInvariant() ?? "IDLE", null, task?.Objective ?? "No task assigned", session?.Health ?? HealthState.Unknown, null);
+            }).ToArray();
+
+        var taskSummaries = _runtimeTasks.Select(task => new TaskSummary(
+            task.Id.ToString(),
+            task.Objective,
+            task.State.ToString(),
+            _currentPlan?.Tasks.FirstOrDefault(x => x.Task.Id == task.Id)?.Priority.ToString() ?? "—",
+            _assignments.TryGetValue(task.Id, out var slot) ? $"Worker {slot.Value}" : null,
+            task.State == TaskState.Completed)).ToArray();
 
         var schemaVersion = _store.GetSchemaVersionAsync().GetAwaiter().GetResult();
         var gates = new[]
@@ -378,16 +887,16 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             RuntimeStatus: run is null ? "Select a project to begin" : "Integrated runtime",
             GlobalHealth: AggregateHealth(sessions),
             AutopilotState: run is null ? "WAITING_FOR_PROJECT" : _autopilot,
-            CurrentWave: run is null ? "No project selected" : run.State == ProjectRunState.ManagerPlanning ? "Manager planning" : run.State.ToString(),
+            CurrentWave: run is null ? "No project selected" : _currentWave is not null ? $"Wave {_currentWave.Sequence} · {_currentWave.State}" : run.State == ProjectRunState.ManagerPlanning ? "Manager planning" : run.State.ToString(),
             VerifiedCompletion: run is null ? null : (int)run.VerifiedCompletion.Percent,
             ManagerEstimate: run is null ? null : (int)run.ManagerEstimate.Percent,
             CompletionMode: run is null ? CompletionMode.Unknown : MapCompletionMode(run.CompletionMode),
-            ActiveWorkers: 0,
+            ActiveWorkers: _runtimeTasks.Count(x => x.State is TaskState.Assigned or TaskState.Dispatched or TaskState.Running),
             P0Count: 0,
             P1Count: 0,
             BlockerCount: 0,
             LoopGuardState: run is null ? "WAITING_FOR_PROJECT" : "NORMAL",
-            LatestManagerHandoff: run is null ? "Select and resolve a project before Manager execution." : "Awaiting first live Manager plan",
+            LatestManagerHandoff: run is null ? "Select and resolve a project before Manager execution." : _latestManagerHandoff,
             CurrentExecutionFlow: run is null ? "Project Selection → resolve canonical project → Dashboard" : "Project → Manager plan → validate → staged Workers → reconcile → Manager review",
             ApiConfigured: false,
             ProviderMode: ProviderMode.BrowserWeb,
@@ -395,18 +904,19 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             Update: new UpdateSummary("0.1.0", null, "Release hardening integrated", "Durable data path active", $"Schema v{schemaVersion}", "Updater rollback contract integrated", false),
             Projects: run is null
                 ? Array.Empty<ProjectSummary>()
-                : [new ProjectSummary("PCCEXECUTIVE", _projectDisplay, _projectRepository, (int)run.VerifiedCompletion.Percent, run.State.ToString().ToUpperInvariant(), null, DateTimeOffset.UtcNow)],
+                : [new ProjectSummary(_projectControlId ?? "UNKNOWN", _projectDisplay, _projectRepository, (int)run.VerifiedCompletion.Percent, run.State.ToString().ToUpperInvariant(), null, run.CreatedAt)],
             Sessions: sessions,
             Workers: workers,
-            Tasks: Array.Empty<TaskSummary>(),
+            Tasks: taskSummaries,
             EvidenceGates: gates,
-            AttentionItems: Array.Empty<AttentionSummary>(),
-            RecoveryEvents: _recovery.Take(20).ToArray());
+            AttentionItems: _attention.Values.Select(x => x.Summary).ToArray(),
+            RecoveryEvents: _recovery.Take(20).ToArray(),
+            ConversationHistory: _conversationHistory);
     }
 
-    private static string LogicalNameFor(BrowserRuntimeRecord runtime)
+    private string LogicalNameFor(BrowserRuntimeRecord runtime)
     {
-        if (StringComparer.Ordinal.Equals(runtime.LogicalAgentId, ManagerAgentId.ToString())) return "Manager";
+        if (_managerAgentId is not null && StringComparer.Ordinal.Equals(runtime.LogicalAgentId, _managerAgentId.Value.ToString())) return "Manager";
         if (int.TryParse(runtime.WorkerSlotId, out var slot) && slot is >= 1 and <= 5) return $"Worker {slot}";
         return "Worker";
     }
@@ -435,9 +945,37 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
 
     public async ValueTask DisposeAsync()
     {
+        _autopilotCancellation.Cancel();
+        if (_autopilotTask is not null)
+        {
+            try { await _autopilotTask.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+        }
+        _autopilotOperation.Dispose();
+        _autopilotCancellation.Dispose();
         _pccHttp.Dispose();
         _githubHttp.Dispose();
         await _store.DisposeAsync().ConfigureAwait(false);
-        _projectLock.Dispose();
+        _projectLock?.Dispose();
+    }
+
+    private static LogicalAgentId AgentId(ProjectRunId runId, string role) => new(StableGuid($"agent:{runId}:{role}"));
+
+    private static Guid StableGuid(string value)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        var guid = bytes[..16];
+        guid[6] = (byte)((guid[6] & 0x0f) | 0x50);
+        guid[8] = (byte)((guid[8] & 0x3f) | 0x80);
+        return new Guid(guid);
+    }
+
+    private sealed record SelectedProjectState(string ProjectControlId, string ProjectIdentity, string DisplayName, string Repository, Guid ProjectRunId);
+
+    private sealed class EmptyCompletedTaskIndex : ICompletedTaskIndex
+    {
+        public static EmptyCompletedTaskIndex Instance { get; } = new();
+        public bool IsCompleted(TaskId taskId) => false;
+        public bool ContainsFingerprint(string fingerprint) => false;
     }
 }

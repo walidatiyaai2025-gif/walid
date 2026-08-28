@@ -50,6 +50,26 @@ public sealed class BrowserRuntimeTests
     }
 
     [Fact]
+    public async Task Proven_new_chat_submission_persists_resulting_provider_conversation_identity()
+    {
+        var runtime = Runtime(Root(), "new-chat") with { ProviderConversationIdentity = "NEW" };
+        var registry = new InMemoryBrowserRuntimeRegistry();
+        await registry.UpsertAsync(runtime);
+        var adapter = new FakeAdapter
+        {
+            Snapshot = Snapshot(),
+            Submission = new(true, true, false, "submitted", ["generation:started"]),
+            CurrentConversationIdentity = "created-conversation"
+        };
+        var provider = new BrowserChatProvider(registry, adapter, new InMemoryDispatchLedger(), new WrongChatGuard(), new GlobalBrowserSendGate());
+
+        var result = await provider.SendAsync(runtime.RuntimeId, new BrowserDispatchRequest("new-dispatch", runtime.ProjectRunId, runtime.LogicalAgentId, runtime.TaskId!, runtime.ConversationIdentity!, "NEW", "prompt"));
+
+        Assert.Equal(BrowserDispatchOutcome.Submitted, result.Outcome);
+        Assert.Equal("created-conversation", (await registry.GetAsync(runtime.RuntimeId))!.ProviderConversationIdentity);
+    }
+
+    [Fact]
     public void Automatic_staged_dispatch_respects_ten_second_boundary()
     {
         var scheduler=new BrowserDispatchScheduler(); var options=new DispatchSchedulerOptions(); var t=DateTimeOffset.UtcNow; var gate=new GlobalSendGateSnapshot(false,null,null,null);
@@ -101,7 +121,7 @@ public sealed class BrowserRuntimeTests
     private sealed class FakeMarkers:IOwnershipMarkerStore { private readonly Dictionary<string,OwnershipMarker> _m=new(StringComparer.Ordinal); public void Set(OwnershipMarker m)=>_m[m.ProfilePath]=m; public Task WriteAsync(OwnershipMarker m,CancellationToken c=default){Set(m);return Task.CompletedTask;} public Task<OwnershipMarker?> ReadAsync(string p,CancellationToken c=default)=>Task.FromResult(_m.TryGetValue(p,out var m)?m:null); }
     private sealed class FakeProcesses:IProcessInspector { private readonly Dictionary<int,(string Start,bool Alive)> _p=new(); public void Set(int id,string s,bool a)=>_p[id]=(s,a); public bool IsAlive(int id)=>_p.TryGetValue(id,out var p)&&p.Alive; public string? GetStartIdentity(int id)=>_p.TryGetValue(id,out var p)?p.Start:null; }
     private sealed class FakeHost:IBrowserRuntimeHost { private readonly string _root; public List<string> Killed{get;}=new(); public FakeHost(string root)=>_root=root; public Task<BrowserRuntimeRecord> LaunchAsync(BrowserSessionRequest r,CancellationToken c=default){var id=r.RuntimeId??Guid.NewGuid().ToString("N"); return Task.FromResult(Runtime(_root,id) with {ProjectRunId=r.ProjectRunId,LogicalAgentId=r.LogicalAgentId,WorkerSlotId=r.WorkerSlotId,TaskId=r.TaskId,ConversationIdentity=r.ConversationIdentity,ProviderConversationIdentity=r.ProviderConversationIdentity});} public Task<bool> RecoverAsync(BrowserRuntimeRecord r,CancellationToken c=default)=>Task.FromResult(true); public Task SetVisibilityAsync(BrowserRuntimeRecord r,BrowserVisibility v,bool b,CancellationToken c=default)=>Task.CompletedTask; public Task KillAsync(BrowserRuntimeRecord r,OwnershipProof p,CancellationToken c=default){Assert.True(p.IsProven);Killed.Add(r.RuntimeId);return Task.CompletedTask;} public Task<BrowserRuntimeTelemetry> GetTelemetryAsync(BrowserRuntimeRecord r,CancellationToken c=default)=>Task.FromResult(new BrowserRuntimeTelemetry(r.RuntimeId,true,1,1,TimeSpan.Zero,r.LastHeartbeatAt,false,r.IsArchived)); }
-    private sealed class FakeAdapter:IChatGptBrowserAdapter { public string AdapterVersion=>"test"; public ChatGptSemanticSnapshot Snapshot{get;init;}=BrowserRuntimeTests.Snapshot(); public AdapterSubmissionResult Submission{get;init;}=new(false,false,false,"not-triggered",Array.Empty<string>()); public int SubmitCalls{get;private set;} public Task<ChatGptSemanticSnapshot> InspectAsync(BrowserRuntimeRecord r,BrowserDispatchExpectation e,CancellationToken c=default)=>Task.FromResult(Snapshot); public Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord r,BrowserDispatchExpectation e,string p,CancellationToken c=default){SubmitCalls++;return Task.FromResult(Submission);} }
+    private sealed class FakeAdapter:IChatGptBrowserAdapter { public string AdapterVersion=>"test"; public ChatGptSemanticSnapshot Snapshot{get;init;}=BrowserRuntimeTests.Snapshot(); public AdapterSubmissionResult Submission{get;init;}=new(false,false,false,"not-triggered",Array.Empty<string>()); public string? CurrentConversationIdentity{get;init;} public int SubmitCalls{get;private set;} public Task<ChatGptSemanticSnapshot> InspectAsync(BrowserRuntimeRecord r,BrowserDispatchExpectation e,CancellationToken c=default)=>Task.FromResult(Snapshot); public Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord r,BrowserDispatchExpectation e,string p,CancellationToken c=default){SubmitCalls++;return Task.FromResult(Submission);} public Task<string?> GetCurrentConversationIdentityAsync(BrowserRuntimeRecord r,CancellationToken c=default)=>Task.FromResult(CurrentConversationIdentity); }
     private sealed class FakeCheckpoint:IConversationCheckpointPort { public Task<string> CreateCheckpointAsync(ConversationRecord a,CancellationToken c=default)=>Task.FromResult("checkpoint"); }
     private sealed class FakeCreator:IConversationCreator { public Task<ConversationCreationResult> CreateAsync(ConversationRecord p,CancellationToken c=default)=>Task.FromResult(new ConversationCreationResult("new","https://chatgpt.com/c/new-provider")); }
     private sealed class FakeSender(bool result):IContinuationSender { public Task<bool> SendContinuationAsync(ConversationRecord c,string id,string p,CancellationToken ct=default)=>Task.FromResult(result); }

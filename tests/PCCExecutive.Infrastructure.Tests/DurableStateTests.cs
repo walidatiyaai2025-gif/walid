@@ -139,9 +139,34 @@ public sealed class DurableStateTests : IAsyncLifetime
     [Fact]
     public void Project_lock_excludes_second_controller()
     {
-        using var first = ProjectRunLock.TryAcquire("PCCEXECUTIVE");
-        using var second = ProjectRunLock.TryAcquire("PCCEXECUTIVE");
+        var isolatedProject = $"PCCEXECUTIVE-LOCK-TEST-{Guid.NewGuid():N}";
+        using var first = ProjectRunLock.TryAcquire(isolatedProject);
+        using var second = ProjectRunLock.TryAcquire(isolatedProject);
         Assert.True(first.IsOwned);
         Assert.False(second.IsOwned);
+    }
+
+    [Fact]
+    public async Task Browser_conversation_history_is_durable_and_project_scoped()
+    {
+        var path = Path.Combine(_root, "conversation-history.db");
+        await using var store = new SqliteStateStore(path);
+        await store.InitializeAsync();
+        var record = new ConversationRecord
+        {
+            ConversationId = "conversation-1",
+            LogicalAgentId = "manager-1",
+            ProjectRunId = "run-1",
+            Sequence = 1,
+            UrlOrProviderIdentity = "provider-conversation-1",
+            CreatedAt = DateTimeOffset.UtcNow,
+            State = ConversationLifecycleState.Active
+        };
+
+        await store.SaveBrowserConversationAsync(record);
+        var history = await store.ListBrowserConversationsAsync();
+
+        Assert.Single(history);
+        Assert.Equal(record, history[0]);
     }
 }

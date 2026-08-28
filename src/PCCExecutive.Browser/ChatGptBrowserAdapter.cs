@@ -81,6 +81,12 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter
     public PlaywrightChatGptBrowserAdapter(IPlaywrightPageProvider pages) => _pages = pages;
     public string AdapterVersion => CurrentAdapterVersion;
 
+    public async Task<string?> GetCurrentConversationIdentityAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default)
+    {
+        var page = await _pages.GetPageAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
+        return page is not null && Normalize(page.Url, out var identity) ? identity : null;
+    }
+
     public async Task<ChatGptSemanticSnapshot> InspectAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, CancellationToken cancellationToken = default)
     {
         var page = await _pages.GetPageAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
@@ -178,6 +184,10 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter
 
     private static SemanticDetection<ConversationMatch> DetectConversation(string currentUrl, string expectedIdentity)
     {
+        if (string.Equals(expectedIdentity, "NEW", StringComparison.OrdinalIgnoreCase) &&
+            Uri.TryCreate(currentUrl, UriKind.Absolute, out var newUri) &&
+            (string.Equals(newUri.AbsolutePath.Trim('/'), string.Empty, StringComparison.Ordinal) || string.Equals(newUri.AbsolutePath.Trim('/'), "new", StringComparison.OrdinalIgnoreCase)))
+            return D(ConversationMatch.Match, .90, "provider-conversation:new-chat-surface");
         if (!Normalize(currentUrl, out var actual) || !Normalize(expectedIdentity, out var expected)) return D(ConversationMatch.Unknown, .3, "provider-conversation:unparseable");
         return StringComparer.OrdinalIgnoreCase.Equals(actual, expected) ? D(ConversationMatch.Match, .95, $"provider-conversation:{actual}") : D(ConversationMatch.Mismatch, .95, $"expected:{expected}", $"actual:{actual}");
     }

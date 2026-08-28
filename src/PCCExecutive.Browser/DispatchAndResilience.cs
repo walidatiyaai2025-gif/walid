@@ -60,7 +60,22 @@ public sealed class BrowserChatProvider
         await _ledger.UpdateAsync(request.DispatchId, DispatchState.Submitting, cancellationToken: cancellationToken).ConfigureAwait(false);
         var submission = await _adapter.SubmitAsync(runtime, expected, request.Prompt, cancellationToken).ConfigureAwait(false);
         if (submission.SubmittedUnknown) { await _ledger.UpdateAsync(request.DispatchId, DispatchState.SubmittedUnknown, string.Join(";", submission.Evidence), cancellationToken).ConfigureAwait(false); return new(request.DispatchId, BrowserDispatchOutcome.SubmittedUnknown, DispatchState.SubmittedUnknown, "SUBMITTED_UNKNOWN", submission.Evidence); }
-        if (submission.ProvenSubmitted) { await _ledger.UpdateAsync(request.DispatchId, DispatchState.Submitted, string.Join(";", submission.Evidence), cancellationToken).ConfigureAwait(false); return new(request.DispatchId, BrowserDispatchOutcome.Submitted, DispatchState.Submitted, submission.Reason, submission.Evidence); }
+        if (submission.ProvenSubmitted)
+        {
+            if (string.Equals(request.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
+            {
+                var providerIdentity = await _adapter.GetCurrentConversationIdentityAsync(runtime, cancellationToken).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(providerIdentity))
+                {
+                    await _ledger.UpdateAsync(request.DispatchId, DispatchState.SubmittedUnknown, "NEW_CONVERSATION_IDENTITY_NOT_PROVEN", cancellationToken).ConfigureAwait(false);
+                    return new(request.DispatchId, BrowserDispatchOutcome.SubmittedUnknown, DispatchState.SubmittedUnknown, "SUBMITTED_UNKNOWN", submission.Evidence.Append("new-conversation-identity:unproven").ToArray());
+                }
+                runtime = runtime with { ProviderConversationIdentity = providerIdentity, LastActivityAt = DateTimeOffset.UtcNow };
+                await _runtimes.UpsertAsync(runtime, cancellationToken).ConfigureAwait(false);
+            }
+            await _ledger.UpdateAsync(request.DispatchId, DispatchState.Submitted, string.Join(";", submission.Evidence), cancellationToken).ConfigureAwait(false);
+            return new(request.DispatchId, BrowserDispatchOutcome.Submitted, DispatchState.Submitted, submission.Reason, submission.Evidence);
+        }
         await _ledger.UpdateAsync(request.DispatchId, DispatchState.SafeRetry, string.Join(";", submission.Evidence), cancellationToken).ConfigureAwait(false);
         return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.SafeRetry, submission.Reason, submission.Evidence);
     }

@@ -54,6 +54,25 @@ public sealed class FirstBuildConvergenceTests
     }
 
     [Fact]
+    public void Save_settings_forwards_every_supported_operator_selection()
+    {
+        var gateway = new ProjectSelectionGateway(resolve: true);
+        var vm = new MainViewModel(gateway)
+        {
+            SelectedDispatchMode = DispatchMode.Assisted,
+            SelectedBaseIntervalSeconds = 17,
+            SelectedMaxWorkers = 3,
+            SelectedAdaptivePacing = false,
+            SelectedAutoResume = false
+        };
+
+        vm.SaveSettingsCommand.Execute(null);
+
+        Assert.Equal(UiAction.SaveSettings, gateway.LastExecution?.Action);
+        Assert.Equal("provider=BrowserWeb;dispatch=Assisted;interval=17;maxWorkers=3;adaptive=False;autoResume=False", gateway.LastExecution?.Target);
+    }
+
+    [Fact]
     public void Exact_built_app_completes_integrated_wpf_startup_smoke()
     {
         var repoRoot = FindRepositoryRoot();
@@ -115,7 +134,7 @@ public sealed class FirstBuildConvergenceTests
                     Assert.True(window.ActualWidth >= window.MinWidth, $"{viewport.Scale} viewport collapsed below minimum width.");
                     Assert.True(window.ActualHeight >= window.MinHeight, $"{viewport.Scale} viewport collapsed below minimum height.");
                     Assert.Equal(ScreenId.ProjectSelection, vm.SelectedScreen);
-                    Assert.Equal(15, vm.Navigation.Count);
+                    Assert.Equal(16, vm.Navigation.Count);
                     Assert.True(vm.RefreshCommand.CanExecute(null));
                     Assert.NotNull(vm.CurrentScreen);
 
@@ -162,7 +181,7 @@ public sealed class FirstBuildConvergenceTests
 
         public bool CanExecute(UiAction action, string? targetId = null) => action switch
         {
-            UiAction.SelectProject or UiAction.Refresh or UiAction.SaveSettings or UiAction.RunVerification => true,
+            UiAction.SelectProject or UiAction.Refresh or UiAction.SaveSettings or UiAction.RunVerification or UiAction.StartManager => true,
             UiAction.OpenSession or UiAction.BringSessionToFront or UiAction.HideSession or UiAction.RestartSession or UiAction.KillSession or UiAction.KillAllPccSessions => allowOwnedSessionActions,
             _ => false
         };

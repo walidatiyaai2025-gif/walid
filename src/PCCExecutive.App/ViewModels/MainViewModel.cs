@@ -18,6 +18,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string? _lastUiError;
     private DispatchMode _selectedDispatchMode;
     private ProviderMode _selectedProviderMode;
+    private int _selectedBaseIntervalSeconds;
+    private int _selectedMaxWorkers;
+    private bool _selectedAdaptivePacing;
+    private bool _selectedAutoResume;
 
     public MainViewModel(IPccExecutivePresentationGateway gateway, IConfirmationService? confirmation = null)
     {
@@ -26,6 +30,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _snapshot = gateway.Snapshot;
         _selectedDispatchMode = _snapshot.DispatchSettings.Mode;
         _selectedProviderMode = ProviderMode.BrowserWeb;
+        _selectedBaseIntervalSeconds = _snapshot.DispatchSettings.BaseIntervalSeconds;
+        _selectedMaxWorkers = _snapshot.DispatchSettings.MaxWorkers;
+        _selectedAdaptivePacing = _snapshot.DispatchSettings.AdaptivePacing;
+        _selectedAutoResume = _snapshot.DispatchSettings.AutoResume;
 
         Navigation = new ObservableCollection<NavigationItem>
         {
@@ -43,6 +51,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             new(ScreenId.ChromeConnection, "Chrome", "◉"),
             new(ScreenId.UpdateCenter, "Update Center", "↻"),
             new(ScreenId.AttentionCenter, "Attention", "!"),
+            new(ScreenId.ConversationHistory, "History", "↺"),
             new(ScreenId.Settings, "Settings", "⚙")
         };
 
@@ -62,7 +71,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             [ScreenId.SessionMonitor] = new SessionMonitorViewModel(this),
             [ScreenId.Settings] = new SettingsViewModel(this),
             [ScreenId.UpdateCenter] = new UpdateCenterViewModel(this),
-            [ScreenId.AttentionCenter] = new AttentionCenterViewModel(this)
+            [ScreenId.AttentionCenter] = new AttentionCenterViewModel(this),
+            [ScreenId.ConversationHistory] = new ConversationHistoryViewModel(this)
         };
         _selectedScreen = _snapshot.HasActiveRun ? ScreenId.Dashboard : ScreenId.ProjectSelection;
         _currentScreen = _screens[_selectedScreen];
@@ -84,6 +94,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         ConnectChromeCommand = GatewayCommand(UiAction.ConnectChrome);
         PauseAiCommand = GatewayCommand(UiAction.PauseAi);
         ResumeAiCommand = GatewayCommand(UiAction.ResumeAi);
+        StartManagerCommand = GatewayCommand(UiAction.StartManager);
         StartDispatchCommand = GatewayCommand(UiAction.StartDispatch, _ => SelectedDispatchMode.ToString());
         PauseDispatchCommand = GatewayCommand(UiAction.PauseDispatch);
         OpenSessionCommand = GatewayCommand(UiAction.OpenSession, p => p?.ToString());
@@ -106,8 +117,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OpenAttentionLocationCommand = GatewayCommand(UiAction.OpenAttentionLocation, p => p?.ToString());
         InstallUpdateCommand = GatewayCommand(UiAction.InstallUpdateAndRestart);
         CheckForUpdatesCommand = GatewayCommand(UiAction.CheckForUpdates);
-        SaveSettingsCommand = GatewayCommand(UiAction.SaveSettings, _ => $"provider={SelectedProviderMode};dispatch={SelectedDispatchMode}");
-        ConversationHistoryCommand = GatewayCommand(UiAction.OpenConversationHistory, p => p?.ToString());
+        SaveSettingsCommand = GatewayCommand(UiAction.SaveSettings, _ => $"provider={SelectedProviderMode};dispatch={SelectedDispatchMode};interval={SelectedBaseIntervalSeconds};maxWorkers={SelectedMaxWorkers};adaptive={SelectedAdaptivePacing};autoResume={SelectedAutoResume}");
+        ConversationHistoryCommand = new AsyncRelayCommand(
+            async p =>
+            {
+                LastUiError = null;
+                await _gateway.ExecuteAsync(UiAction.OpenConversationHistory, p?.ToString());
+                Navigate(ScreenId.ConversationHistory);
+            },
+            p => _gateway.CanExecute(UiAction.OpenConversationHistory, p?.ToString()),
+            ex => LastUiError = ex.Message);
 
         gateway.SnapshotChanged += OnSnapshotChanged;
     }
@@ -166,6 +185,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public IReadOnlyList<DispatchMode> DispatchModes { get; } = Enum.GetValues<DispatchMode>();
     public IReadOnlyList<ProviderMode> ProviderModes { get; } = Enum.GetValues<ProviderMode>();
+    public int SelectedBaseIntervalSeconds { get => _selectedBaseIntervalSeconds; set => Set(ref _selectedBaseIntervalSeconds, value); }
+    public int SelectedMaxWorkers { get => _selectedMaxWorkers; set => Set(ref _selectedMaxWorkers, value); }
+    public bool SelectedAdaptivePacing { get => _selectedAdaptivePacing; set => Set(ref _selectedAdaptivePacing, value); }
+    public bool SelectedAutoResume { get => _selectedAutoResume; set => Set(ref _selectedAutoResume, value); }
 
     public IEnumerable<TaskSummary> TodoTasks => Snapshot.Tasks.Where(t => string.Equals(t.State, "To Do", StringComparison.OrdinalIgnoreCase) || string.Equals(t.State, "Todo", StringComparison.OrdinalIgnoreCase));
     public IEnumerable<TaskSummary> InProgressTasks => Snapshot.Tasks.Where(t => string.Equals(t.State, "In Progress", StringComparison.OrdinalIgnoreCase) || string.Equals(t.State, "Running", StringComparison.OrdinalIgnoreCase));
@@ -188,6 +211,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public AsyncRelayCommand ConnectChromeCommand { get; }
     public AsyncRelayCommand PauseAiCommand { get; }
     public AsyncRelayCommand ResumeAiCommand { get; }
+    public AsyncRelayCommand StartManagerCommand { get; }
     public AsyncRelayCommand StartDispatchCommand { get; }
     public AsyncRelayCommand PauseDispatchCommand { get; }
     public AsyncRelayCommand OpenSessionCommand { get; }
@@ -269,6 +293,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         ConnectChromeCommand.RaiseCanExecuteChanged();
         PauseAiCommand.RaiseCanExecuteChanged();
         ResumeAiCommand.RaiseCanExecuteChanged();
+        StartManagerCommand.RaiseCanExecuteChanged();
         StartDispatchCommand.RaiseCanExecuteChanged();
         PauseDispatchCommand.RaiseCanExecuteChanged();
         OpenSessionCommand.RaiseCanExecuteChanged();

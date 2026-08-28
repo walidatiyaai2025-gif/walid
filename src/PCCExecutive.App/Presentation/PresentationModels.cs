@@ -18,7 +18,8 @@ public enum ScreenId
     SessionMonitor,
     Settings,
     UpdateCenter,
-    AttentionCenter
+    AttentionCenter,
+    ConversationHistory
 }
 
 public enum HealthState
@@ -105,6 +106,17 @@ public sealed record RecoveryEventSummary(
     string Description,
     bool Automatic);
 
+public sealed record ConversationHistorySummary(
+    string LogicalAgent,
+    int Sequence,
+    string State,
+    string ProviderIdentity,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? RetiredAt,
+    string? RolloverReason,
+    string? Predecessor,
+    string? Successor);
+
 public sealed record UpdateSummary(
     string CurrentVersion,
     string? NewVersion,
@@ -154,7 +166,8 @@ public sealed record RuntimeSnapshot(
     IReadOnlyList<TaskSummary> Tasks,
     IReadOnlyList<EvidenceGateSummary> EvidenceGates,
     IReadOnlyList<AttentionSummary> AttentionItems,
-    IReadOnlyList<RecoveryEventSummary> RecoveryEvents)
+    IReadOnlyList<RecoveryEventSummary> RecoveryEvents,
+    IReadOnlyList<ConversationHistorySummary>? ConversationHistory = null)
 {
     public int AttentionCount => AttentionItems.Count;
     public string AttentionCountText => GatewayBound ? AttentionCount.ToString() : "—";

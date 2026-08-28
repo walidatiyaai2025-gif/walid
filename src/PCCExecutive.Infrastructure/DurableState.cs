@@ -137,6 +137,12 @@ public sealed class SqliteStateStore : IDurableStateStore, IBrowserRuntimeRegist
     public Task<BrowserRuntimeRecord?> GetBrowserRuntimeAsync(string runtimeId, CancellationToken cancellationToken = default) =>
         LoadAsync<BrowserRuntimeRecord>("browser-runtime", runtimeId, cancellationToken);
 
+    public Task SaveBrowserConversationAsync(ConversationRecord conversation, CancellationToken cancellationToken = default) =>
+        SaveAsync("browser-conversation", conversation.ConversationId, conversation.ProjectRunId, conversation, cancellationToken);
+
+    public async Task<IReadOnlyList<ConversationRecord>> ListBrowserConversationsAsync(CancellationToken cancellationToken = default) =>
+        await ListKindAsync<ConversationRecord>("browser-conversation", cancellationToken).ConfigureAwait(false);
+
     public async Task<IReadOnlyList<BrowserRuntimeRecord>> ListBrowserRuntimesAsync(CancellationToken cancellationToken = default) =>
         await ListKindAsync<BrowserRuntimeRecord>("browser-runtime", cancellationToken).ConfigureAwait(false);
 
