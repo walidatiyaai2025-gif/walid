@@ -60,4 +60,8 @@ public sealed class ProductionRuntimeHostCompositionTests
 }
 
 [void](Require-Text 'tests/PCCExecutive.E2E/PCCExecutive.E2E.csproj' '../../src/PCCExecutive.App/PCCExecutive.App.csproj')
-Write-Host 'Final runtime closure invariants and production-host 32-stage composition gate are applied.'
+
+& (Join-Path $PSScriptRoot 'Apply-FinalInternalBlockers.ps1')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+Write-Host 'Final runtime closure invariants, production-host 32-stage composition, and final internal blockers are applied.'
