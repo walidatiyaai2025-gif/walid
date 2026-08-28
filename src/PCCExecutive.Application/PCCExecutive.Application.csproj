@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>PCCExecutive.Application</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\PCCExecutive.Domain\PCCExecutive.Domain.csproj" />
+  </ItemGroup>
+</Project>
