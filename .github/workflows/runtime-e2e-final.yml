@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: pcc-runtime-e2e-final-${{ github.ref }}
@@ -42,6 +42,20 @@ jobs:
           git merge-base --is-ancestor origin/worker/pcc-final-runtime-e2e-closure HEAD
           if ($LASTEXITCODE -ne 0) { throw 'Runtime acceptance candidate is not based on the live convergence branch.' }
           Write-Host "EXACT_RUNTIME_E2E_HEAD=$actual"
+
+      - name: Apply and persist canonical conversation identity closure
+        shell: pwsh
+        run: |
+          ./build/Apply-CanonicalConversationIdentityClosure.ps1
+          git config user.name "pcc-runtime-e2e-closure"
+          git config user.email "actions@users.noreply.github.com"
+          git checkout HEAD^ -- .github/workflows/runtime-e2e-final.yml
+          git rm build/Apply-CanonicalConversationIdentityClosure.ps1
+          git add src tests .github/workflows/runtime-e2e-final.yml
+          if (git diff --cached --quiet) { throw 'CANONICAL_IDENTITY_PATCH_PRODUCED_NO_SOURCE_CHANGE' }
+          git commit -m "fix: canonicalize logical conversation identity"
+          git push origin HEAD:worker/pcc-runtime-e2e-final
+          Write-Host "PATCHED_SOURCE_HEAD=$((git rev-parse HEAD).Trim())"
 
       - name: Domain Application App Browser Acceptance Infrastructure Integration E2E
         shell: pwsh
