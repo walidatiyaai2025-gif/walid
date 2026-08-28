@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "canonical": {
     "branch": "task/pcc-executive-t0001-v1",
-    "sha": "396a6465087a38713885f5448a4f375056266025"
+    "sha": "b77797cd7e96d59db8a9b41c0982081bc743cd68"
   },
   "databaseSchemaTarget": "1",
   "minimumUpgradeVersion": "NONE_FRESH_BASELINE",
@@ -13,7 +13,7 @@
     {
       "owner": "WORKER_1",
       "name": "FOUNDATION_PCC_GITHUB_MANAGER_AUTOPILOT",
-      "head": "396a6465087a38713885f5448a4f375056266025",
+      "head": "b77797cd7e96d59db8a9b41c0982081bc743cd68",
       "prs": [4, 7, 16, 18],
       "dependsOn": [],
       "state": "FOUND",
@@ -23,32 +23,32 @@
     {
       "owner": "WORKER_2",
       "name": "PERSISTENCE_RECOVERY_CANONICAL_INTEGRATION",
-      "head": "396a6465087a38713885f5448a4f375056266025",
+      "head": "b77797cd7e96d59db8a9b41c0982081bc743cd68",
       "prs": [19],
       "dependsOn": [],
       "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "Durable SQLite state, recovery integration, and the concrete Browser new-send pause port are present on canonical."
+      "reason": "Durable SQLite state, recovery integration, and concrete Browser new-send pause port are integrated on canonical."
     },
     {
       "owner": "WORKER_3",
       "name": "BROWSER_BUILD_CLOSURE",
       "head": "cee146dca074a5e5d6bd42876067d0c25d5651e6",
       "prs": [20],
-      "dependsOn": ["7cf4978875cce16fd2b422beb68d12b7d2e4ff4b"],
+      "dependsOn": [],
       "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "PR #20 Browser compiler repairs are present in canonical and terminal convergence."
+      "reason": "PR #20 Browser compiler repairs are integrated on canonical."
     },
     {
       "owner": "WORKER_4",
       "name": "PREMIUM_WPF_UI_TERMINAL_DELIVERY",
-      "head": "396a6465087a38713885f5448a4f375056266025",
-      "prs": [],
+      "head": "b77797cd7e96d59db8a9b41c0982081bc743cd68",
+      "prs": [23],
       "dependsOn": [],
       "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "Premium WPF shell plus terminal Application/HttpClient composition fixes are present on canonical."
+      "reason": "Worker 4 first-build WPF delivery, first-run project-selection behavior, runtime ownership gating and actual WPF smoke rendering are integrated on canonical."
     },
     {
       "owner": "WORKER_5",
