@@ -22,7 +22,7 @@ try {
     $record = & (Join-Path $repoRoot 'updater/Stage-Update.ps1') -PackagePath $package -ManifestPath $manifestPath -StageRoot $stageRoot
     if (-not (Test-Path $record)) { throw 'Valid update package did not stage.' }
     $staged = Get-Content $record -Raw | ConvertFrom-Json
-    if ($staged.State -ne 'VERIFIED_STAGED' -or $staged.AuthenticodeStatus -ne 'NotSigned') { throw 'Unsigned development staging classification mismatch.' }
+    if ($staged.State -ne 'VERIFIED_STAGED' -or $staged.SigningState -ne 'UNSIGNED_DEV' -or $staged.AuthenticodeStatus -eq 'Valid') { throw 'Unsigned development staging classification mismatch.' }
 
     foreach ($mutation in @('hash','product','architecture','source','signed-claim')) {
         $copy = ($base | ConvertTo-Json -Depth 8 | ConvertFrom-Json)
