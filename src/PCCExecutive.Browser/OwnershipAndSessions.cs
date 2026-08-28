@@ -275,7 +275,7 @@ public sealed class BrowserSessionController
             return new(false, runtimeId, proof.Reason, runtime);
 
         await _host.KillAsync(runtime, proof, cancellationToken).ConfigureAwait(false);
-        var updated = runtime with { State = BrowserSessionState.Killed, LastActivityAt = DateTimeOffset.UtcNow };
+        var updated = runtime with { State = BrowserSessionState.Killed, IsArchived = true, LastActivityAt = DateTimeOffset.UtcNow };
         await _registry.UpsertAsync(updated, cancellationToken).ConfigureAwait(false);
         return new(true, runtimeId, "PCC_OWNED_SESSION_KILLED", updated);
     }
