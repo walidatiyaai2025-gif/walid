@@ -41,8 +41,8 @@ public sealed class InMemoryDispatchLedger : IDispatchLedger
 
 public sealed class BrowserChatProvider
 {
-    private readonly IBrowserRuntimeRegistry _runtimes; private readonly IChatGptBrowserAdapter _adapter; private readonly IDispatchLedger _ledger; private readonly WrongChatGuard _wrongChatGuard; private readonly GlobalBrowserSendGate _globalGate; private readonly IOwnershipProofService? _ownership; private readonly bool _isolatedInMemoryProvider; private readonly ConcurrentDictionary<string, SemaphoreSlim> _dispatchGates = new(StringComparer.Ordinal);
-    public BrowserChatProvider(IBrowserRuntimeRegistry runtimes, IChatGptBrowserAdapter adapter, IDispatchLedger ledger, WrongChatGuard wrongChatGuard, GlobalBrowserSendGate globalGate, IOwnershipProofService? ownership = null) { _runtimes = runtimes; _adapter = adapter; _ledger = ledger; _wrongChatGuard = wrongChatGuard; _globalGate = globalGate; _ownership = ownership; _isolatedInMemoryProvider = runtimes is InMemoryBrowserRuntimeRegistry && ledger is InMemoryDispatchLedger; }
+    private readonly IBrowserRuntimeRegistry _runtimes; private readonly IChatGptBrowserAdapter _adapter; private readonly IDispatchLedger _ledger; private readonly WrongChatGuard _wrongChatGuard; private readonly GlobalBrowserSendGate _globalGate; private readonly IOwnershipProofService _ownership; private readonly ConcurrentDictionary<string, SemaphoreSlim> _dispatchGates = new(StringComparer.Ordinal);
+    public BrowserChatProvider(IBrowserRuntimeRegistry runtimes, IChatGptBrowserAdapter adapter, IDispatchLedger ledger, WrongChatGuard wrongChatGuard, GlobalBrowserSendGate globalGate, IOwnershipProofService ownership) { _runtimes = runtimes; _adapter = adapter; _ledger = ledger; _wrongChatGuard = wrongChatGuard; _globalGate = globalGate; _ownership = ownership ?? throw new ArgumentNullException(nameof(ownership)); }
 
     public async Task<BrowserDispatchResult> SendAsync(string runtimeId, BrowserDispatchRequest request, CancellationToken cancellationToken = default)
     {
@@ -54,13 +54,8 @@ public sealed class BrowserChatProvider
         var snapshot = await _adapter.InspectAsync(runtime, expected, cancellationToken).ConfigureAwait(false);
         var guard = _wrongChatGuard.Evaluate(runtime, expected, snapshot);
         if (!guard.MaySend) return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, guard.Reason, guard.Evidence);
-        if (_ownership is null && !_isolatedInMemoryProvider)
-            return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, "PCC_OWNERSHIP_PROOF_SERVICE_REQUIRED", guard.Evidence.Append("ownership-prover:missing").ToArray());
-        if (_ownership is not null)
-        {
-            var proof = await _ownership.ProveAsync(runtime, cancellationToken).ConfigureAwait(false);
-            if (!proof.IsProven) return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, "PCC_OWNERSHIP_NOT_PROVEN", guard.Evidence.Append(proof.Reason).ToArray());
-        }
+        var proof = await _ownership.ProveAsync(runtime, cancellationToken).ConfigureAwait(false);
+        if (!proof.IsProven) return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, "PCC_OWNERSHIP_NOT_PROVEN", guard.Evidence.Append(proof.Reason).ToArray());
         var contentHash = request.ContentHash ?? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(request.Prompt)));
         var dispatchGate = _dispatchGates.GetOrAdd(request.DispatchId, static _ => new SemaphoreSlim(1, 1));
         await dispatchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
