@@ -27,10 +27,11 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
     private readonly IProjectBaselineBuilder _baseline;
     private readonly BrowserSessionController _sessions;
     private readonly IBrowserRuntimeRegistry _runtimeRegistry;
+    private readonly IOwnershipProofService _ownership;
     private readonly HttpClient _pccHttp;
     private readonly HttpClient _githubHttp;
     private readonly List<RecoveryEventSummary> _recovery = [];
-    private ProjectRun _run;
+    private ProjectRun? _run;
     private string _projectDisplay = "PCC Executive";
     private string _projectRepository = "walidatiyaai2025-gif/walid";
     private string _pccState = "NOT_CHECKED";
@@ -44,9 +45,10 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
         IProjectBaselineBuilder baseline,
         BrowserSessionController sessions,
         IBrowserRuntimeRegistry runtimeRegistry,
+        IOwnershipProofService ownership,
         HttpClient pccHttp,
         HttpClient githubHttp,
-        ProjectRun run)
+        ProjectRun? run)
     {
         _store = store;
         _projectLock = projectLock;
@@ -54,10 +56,11 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
         _baseline = baseline;
         _sessions = sessions;
         _runtimeRegistry = runtimeRegistry;
+        _ownership = ownership;
         _pccHttp = pccHttp;
         _githubHttp = githubHttp;
         _run = run;
-        Snapshot = BuildSnapshot(Array.Empty<BrowserRuntimeRecord>());
+        Snapshot = BuildSnapshot(Array.Empty<BrowserRuntimeRecord>(), new HashSet<string>(StringComparer.Ordinal));
     }
 
     public RuntimeSnapshot Snapshot { get; private set; }
@@ -80,15 +83,14 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             if (!string.Equals(settings.Provider, "BrowserChat", StringComparison.Ordinal))
                 store.SaveSettingsAsync(settings with { Provider = "BrowserChat" }).GetAwaiter().GetResult();
 
-            var run = store.LoadProjectRunAsync(ProductRunId).GetAwaiter().GetResult()
-                ?? new ProjectRun(ProductRunId, ProductProjectId, ProjectRunState.Initializing, DateTimeOffset.UtcNow, new ManagerEstimate(0), new VerifiedCompletion(0), ProjectCompletionMode.Active);
-            store.SaveProjectRunAsync(run).GetAwaiter().GetResult();
-            PersistLogicalAgents(store, run.Id);
+            var run = store.LoadProjectRunAsync(ProductRunId).GetAwaiter().GetResult();
+            if (run is not null)
+                PersistLogicalAgents(store, run.Id);
 
             var profileRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PCC Executive", "browser-profiles");
             var markerStore = new FileOwnershipMarkerStore();
             var processInspector = new SystemProcessInspector();
-            var ownership = new OwnershipProofService(profileRoot, markerStore, processInspector);
+            IOwnershipProofService ownership = new OwnershipProofService(profileRoot, markerStore, processInspector);
             var runtimeHost = new PlaywrightChromeRuntimeHost(profileRoot);
             IBrowserRuntimeRegistry registry = store;
             var controller = new BrowserSessionController(registry, runtimeHost, ownership, markerStore, processInspector);
@@ -103,7 +105,7 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             var github = new GitHubRestEvidenceClient(githubHttp);
             var baseline = new ProjectBaselineBuilder(pcc, github);
 
-            var gateway = new IntegratedPresentationGateway(store, projectLock, pcc, baseline, controller, registry, pccHttp, githubHttp, run);
+            var gateway = new IntegratedPresentationGateway(store, projectLock, pcc, baseline, controller, registry, ownership, pccHttp, githubHttp, run);
             gateway.RefreshLocalSnapshotAsync().GetAwaiter().GetResult();
             return gateway;
         }
@@ -116,9 +118,11 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
 
     public bool CanExecute(UiAction action, string? targetId = null) => action switch
     {
-        UiAction.Refresh or UiAction.ConnectChrome or UiAction.SelectProject or UiAction.PauseAi or UiAction.ResumeAi or UiAction.SaveSettings or UiAction.RunVerification => true,
-        UiAction.OpenSession or UiAction.BringSessionToFront or UiAction.HideSession or UiAction.RestartSession or UiAction.KillSession => !string.IsNullOrWhiteSpace(targetId) && Snapshot.Sessions.Any(x => StringComparer.Ordinal.Equals(x.RuntimeId, targetId) && x.IsPccOwned),
-        UiAction.KillAllPccSessions => Snapshot.Sessions.Any(x => x.IsPccOwned),
+        UiAction.Refresh or UiAction.SelectProject or UiAction.SaveSettings or UiAction.RunVerification => true,
+        UiAction.ConnectChrome or UiAction.PauseAi or UiAction.ResumeAi => _run is not null,
+        UiAction.OpenSession or UiAction.BringSessionToFront or UiAction.HideSession or UiAction.RestartSession or UiAction.KillSession =>
+            _run is not null && !string.IsNullOrWhiteSpace(targetId) && Snapshot.Sessions.Any(x => StringComparer.Ordinal.Equals(x.RuntimeId, targetId) && x.IsPccOwned),
+        UiAction.KillAllPccSessions => _run is not null && Snapshot.Sessions.Any(x => x.IsPccOwned),
         _ => false
     };
 
@@ -134,10 +138,12 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
                 await ConnectManagerChromeAsync(cancellationToken).ConfigureAwait(false);
                 break;
             case UiAction.PauseAi:
+                RequireActiveRun();
                 _autopilot = "PAUSED";
                 await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
                 break;
             case UiAction.ResumeAi:
+                RequireActiveRun();
                 _autopilot = "READY";
                 await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
                 break;
@@ -157,6 +163,7 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
                 await RunSessionActionAsync(targetId, id => _sessions.KillAsync(id, cancellationToken), cancellationToken).ConfigureAwait(false);
                 break;
             case UiAction.KillAllPccSessions:
+                RequireActiveRun();
                 await _sessions.KillAllPccSessionsAsync(cancellationToken).ConfigureAwait(false);
                 await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
                 break;
@@ -172,6 +179,9 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
         }
     }
 
+    private ProjectRun RequireActiveRun() =>
+        _run ?? throw new InvalidOperationException("Select and resolve a project before using project runtime controls.");
+
     private static void PersistLogicalAgents(SqliteStateStore store, ProjectRunId runId)
     {
         var manager = new LogicalAgentSession(ManagerAgentId, runId, AgentRole.Manager, null, null, null, LogicalSessionState.Ready);
@@ -185,12 +195,13 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
 
     private async Task ConnectManagerChromeAsync(CancellationToken cancellationToken)
     {
+        var run = RequireActiveRun();
         try
         {
             var existing = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false))
-                .FirstOrDefault(x => StringComparer.Ordinal.Equals(x.ProjectRunId, _run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, ManagerAgentId.ToString()) && !x.IsArchived && x.State is not BrowserSessionState.Killed);
+                .FirstOrDefault(x => StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, ManagerAgentId.ToString()) && !x.IsArchived && x.State is not BrowserSessionState.Killed);
             if (existing is null)
-                await _sessions.CreateAsync(new BrowserSessionRequest(_run.Id.ToString(), ManagerAgentId.ToString(), DefaultVisibility: BrowserVisibility.Hidden), cancellationToken).ConfigureAwait(false);
+                await _sessions.CreateAsync(new BrowserSessionRequest(run.Id.ToString(), ManagerAgentId.ToString(), DefaultVisibility: BrowserVisibility.Hidden), cancellationToken).ConfigureAwait(false);
             _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "READY", "PCC-owned Manager Chrome runtime initialized; personal Chrome remains excluded.", true));
         }
         catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException or TimeoutException)
@@ -202,7 +213,10 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
 
     private async Task RunSessionActionAsync(string? targetId, Func<string, Task<SessionActionResult>> operation, CancellationToken cancellationToken)
     {
+        RequireActiveRun();
         if (string.IsNullOrWhiteSpace(targetId)) throw new InvalidOperationException("A PCC-owned runtime target is required.");
+        if (!Snapshot.Sessions.Any(x => StringComparer.Ordinal.Equals(x.RuntimeId, targetId) && x.IsPccOwned))
+            throw new InvalidOperationException("Session action refused because current PCC ownership proof is unavailable.");
         var result = await operation(targetId).ConfigureAwait(false);
         _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, result.Succeeded ? "READY" : "BLOCKED", result.Reason, result.Succeeded));
         await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
@@ -216,6 +230,14 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             _pccState = $"PASS@{result.Project.Provenance.SourceSha[..Math.Min(8, result.Project.Provenance.SourceSha.Length)]}";
             _projectDisplay = result.Project.DisplayName;
             _projectRepository = result.Project.Repository;
+
+            if (_run is null)
+            {
+                _run = new ProjectRun(ProductRunId, ProductProjectId, ProjectRunState.Initializing, DateTimeOffset.UtcNow, new ManagerEstimate(0), new VerifiedCompletion(0), ProjectCompletionMode.Active);
+                await _store.SaveProjectRunAsync(_run, cancellationToken).ConfigureAwait(false);
+                PersistLogicalAgents(_store, _run.Id);
+            }
+
             if (_run.State == ProjectRunState.Initializing)
             {
                 _run = _run with { State = ProjectRunState.ManagerPlanning };
@@ -251,69 +273,93 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
     private async Task RefreshLocalSnapshotAsync(CancellationToken cancellationToken = default)
     {
         var runtimes = await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false);
-        Snapshot = BuildSnapshot(runtimes);
+        var provenOwnedRuntimeIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var runtime in runtimes.Where(x => !x.IsArchived))
+        {
+            try
+            {
+                var proof = await _ownership.ProveAsync(runtime, cancellationToken).ConfigureAwait(false);
+                if (proof.IsProven)
+                    provenOwnedRuntimeIds.Add(runtime.RuntimeId);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "OWNERSHIP UNPROVEN", $"{runtime.RuntimeId}: {ex.Message}", true));
+            }
+        }
+
+        Snapshot = BuildSnapshot(runtimes, provenOwnedRuntimeIds);
         SnapshotChanged?.Invoke(this, Snapshot);
     }
 
-    private RuntimeSnapshot BuildSnapshot(IReadOnlyList<BrowserRuntimeRecord> runtimes)
+    private RuntimeSnapshot BuildSnapshot(IReadOnlyList<BrowserRuntimeRecord> runtimes, IReadOnlySet<string> provenOwnedRuntimeIds)
     {
-        var sessions = runtimes
-            .Where(x => !x.IsArchived)
-            .Select(x => new SessionSummary(
-                x.RuntimeId,
-                StringComparer.Ordinal.Equals(x.LogicalAgentId, ManagerAgentId.ToString()) ? "Manager" : "Worker",
-                StringComparer.Ordinal.Equals(x.LogicalAgentId, ManagerAgentId.ToString()) ? "Manager" : "Worker",
-                x.State.ToString().ToUpperInvariant(),
-                x.Visibility == BrowserVisibility.Hidden ? SessionVisibility.Hidden : SessionVisibility.Visible,
-                x.ConversationIdentity ?? x.TaskId ?? "Not bound to a conversation yet",
-                x.LastActivityAt,
-                x.CreatedByPcc || x.AdoptedExplicitly,
-                x.ProcessId,
-                x.State == BrowserSessionState.FailedRequiresAttention ? HealthState.Unknown : HealthState.Healthy))
-            .ToArray();
+        var run = _run;
+        var activeRunId = run?.Id.ToString();
+        var sessions = run is null
+            ? Array.Empty<SessionSummary>()
+            : runtimes
+                .Where(x => !x.IsArchived && StringComparer.Ordinal.Equals(x.ProjectRunId, activeRunId))
+                .Select(x => new SessionSummary(
+                    x.RuntimeId,
+                    LogicalNameFor(x),
+                    StringComparer.Ordinal.Equals(x.LogicalAgentId, ManagerAgentId.ToString()) ? "Manager" : "Worker",
+                    x.State.ToString().ToUpperInvariant(),
+                    x.Visibility == BrowserVisibility.Hidden ? SessionVisibility.Hidden : SessionVisibility.Visible,
+                    x.ConversationIdentity ?? x.TaskId ?? "Not bound to a conversation yet",
+                    x.LastActivityAt,
+                    provenOwnedRuntimeIds.Contains(x.RuntimeId),
+                    x.ProcessId,
+                    MapSessionHealth(x.State)))
+                .ToArray();
 
-        var workers = WorkerAgentIds.Select((id, index) => new WorkerSummary(
-            id.ToString(),
-            $"Worker {index + 1}",
-            "Worker",
-            "IDLE",
-            0,
-            "No task assigned",
-            HealthState.Unknown,
-            null)).ToArray();
+        var workers = run is null
+            ? Array.Empty<WorkerSummary>()
+            : WorkerAgentIds.Select((id, index) => new WorkerSummary(
+                id.ToString(),
+                $"Worker {index + 1}",
+                "Worker",
+                "IDLE",
+                0,
+                "No task assigned",
+                HealthState.Unknown,
+                null)).ToArray();
 
+        var schemaVersion = _store.GetSchemaVersionAsync().GetAwaiter().GetResult();
         var gates = new[]
         {
             new EvidenceGateSummary("Foundation", "PASS", 100, "Canonical Domain/Application contracts integrated"),
-            new EvidenceGateSummary("Persistence", "PASS", 100, $"SQLite schema v{_store.GetSchemaVersionAsync().GetAwaiter().GetResult()} · {_store.DatabasePath}"),
+            new EvidenceGateSummary("Persistence", "PASS", 100, $"SQLite schema v{schemaVersion} · {_store.DatabasePath}"),
             new EvidenceGateSummary("PCC Integration", _pccState.StartsWith("PASS", StringComparison.Ordinal) ? "PASS" : "PARTIAL", null, _pccState),
             new EvidenceGateSummary("GitHub Integration", _githubState.StartsWith("PASS", StringComparison.Ordinal) ? "PASS" : "PARTIAL", null, _githubState),
-            new EvidenceGateSummary("Browser Runtime", sessions.Length > 0 ? "PARTIAL" : "PARTIAL", null, sessions.Length > 0 ? "PCC-owned runtime boundary active; conversation/auth evidence pending" : "Runtime implementation integrated; no Chrome session started"),
+            new EvidenceGateSummary("Browser Runtime", sessions.Length > 0 ? "PARTIAL" : "PARTIAL", null, sessions.Length > 0 ? "PCC-owned runtime inventory available; ChatGPT semantic health remains evidence-driven" : "Runtime implementation integrated; no active project Browser session"),
             new EvidenceGateSummary("UI", "PARTIAL", null, "Premium WPF shell is bound to integrated services; end-to-end user QA remains")
         };
 
         return new RuntimeSnapshot(
             GatewayBound: true,
-            HasActiveRun: true,
-            RuntimeStatus: "Integrated runtime",
-            GlobalHealth: sessions.Length == 0 ? HealthState.Unknown : HealthState.Healthy,
-            AutopilotState: _autopilot,
-            CurrentWave: _run.State == ProjectRunState.ManagerPlanning ? "Manager planning" : _run.State.ToString(),
-            VerifiedCompletion: (int)_run.VerifiedCompletion.Percent,
-            ManagerEstimate: (int)_run.ManagerEstimate.Percent,
-            CompletionMode: CompletionMode.Running,
+            HasActiveRun: run is not null,
+            RuntimeStatus: run is null ? "Select a project to begin" : "Integrated runtime",
+            GlobalHealth: AggregateHealth(sessions),
+            AutopilotState: run is null ? "WAITING_FOR_PROJECT" : _autopilot,
+            CurrentWave: run is null ? "No project selected" : run.State == ProjectRunState.ManagerPlanning ? "Manager planning" : run.State.ToString(),
+            VerifiedCompletion: run is null ? null : (int)run.VerifiedCompletion.Percent,
+            ManagerEstimate: run is null ? null : (int)run.ManagerEstimate.Percent,
+            CompletionMode: run is null ? CompletionMode.Unknown : MapCompletionMode(run.CompletionMode),
             ActiveWorkers: 0,
-            P0Count: 1,
+            P0Count: 0,
             P1Count: 0,
             BlockerCount: 0,
-            LoopGuardState: "NORMAL",
-            LatestManagerHandoff: "Awaiting first live Manager plan",
-            CurrentExecutionFlow: "Project → Manager plan → validate → staged Workers → reconcile → Manager review",
+            LoopGuardState: run is null ? "WAITING_FOR_PROJECT" : "NORMAL",
+            LatestManagerHandoff: run is null ? "Select and resolve a project before Manager execution." : "Awaiting first live Manager plan",
+            CurrentExecutionFlow: run is null ? "Project Selection → resolve canonical project → Dashboard" : "Project → Manager plan → validate → staged Workers → reconcile → Manager review",
             ApiConfigured: false,
             ProviderMode: ProviderMode.BrowserWeb,
             DispatchSettings: DispatchSettingsSummary.ProductDefaults,
-            Update: new UpdateSummary("0.1.0", null, "Release hardening integrated", "Durable data path active", "Schema v1", "Updater rollback contract integrated", false),
-            Projects: [new ProjectSummary("PCCEXECUTIVE", _projectDisplay, _projectRepository, (int)_run.VerifiedCompletion.Percent, _run.State.ToString().ToUpperInvariant(), null, DateTimeOffset.UtcNow)],
+            Update: new UpdateSummary("0.1.0", null, "Release hardening integrated", "Durable data path active", $"Schema v{schemaVersion}", "Updater rollback contract integrated", false),
+            Projects: run is null
+                ? Array.Empty<ProjectSummary>()
+                : [new ProjectSummary("PCCEXECUTIVE", _projectDisplay, _projectRepository, (int)run.VerifiedCompletion.Percent, run.State.ToString().ToUpperInvariant(), null, DateTimeOffset.UtcNow)],
             Sessions: sessions,
             Workers: workers,
             Tasks: Array.Empty<TaskSummary>(),
@@ -321,6 +367,35 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             AttentionItems: Array.Empty<AttentionSummary>(),
             RecoveryEvents: _recovery.Take(20).ToArray());
     }
+
+    private static string LogicalNameFor(BrowserRuntimeRecord runtime)
+    {
+        if (StringComparer.Ordinal.Equals(runtime.LogicalAgentId, ManagerAgentId.ToString())) return "Manager";
+        if (int.TryParse(runtime.WorkerSlotId, out var slot) && slot is >= 1 and <= 5) return $"Worker {slot}";
+        return "Worker";
+    }
+
+    private static HealthState MapSessionHealth(BrowserSessionState state) => state switch
+    {
+        BrowserSessionState.Recovering => HealthState.Recovering,
+        BrowserSessionState.Degraded or BrowserSessionState.FailedRequiresAttention => HealthState.Unknown,
+        _ => HealthState.Unknown
+    };
+
+    private static HealthState AggregateHealth(IReadOnlyList<SessionSummary> sessions)
+    {
+        if (sessions.Any(x => x.Health == HealthState.Recovering)) return HealthState.Recovering;
+        return HealthState.Unknown;
+    }
+
+    private static CompletionMode MapCompletionMode(ProjectCompletionMode mode) => mode switch
+    {
+        ProjectCompletionMode.Active => CompletionMode.Running,
+        ProjectCompletionMode.ClosureMode => CompletionMode.ClosureMode,
+        ProjectCompletionMode.VerifiedComplete => CompletionMode.Verified,
+        ProjectCompletionMode.Blocked => CompletionMode.Blocked,
+        _ => CompletionMode.Unknown
+    };
 
     public async ValueTask DisposeAsync()
     {
