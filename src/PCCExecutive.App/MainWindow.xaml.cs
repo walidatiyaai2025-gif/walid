@@ -13,7 +13,33 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         DataContext = viewModel;
+        ApplyAuthorityNavigation(viewModel);
+        if (!viewModel.Snapshot.HasActiveRun)
+            viewModel.Navigate(ScreenId.ChromeConnection);
         Closing += MainWindow_Closing;
+    }
+
+    private static void ApplyAuthorityNavigation(MainViewModel viewModel)
+    {
+        MoveNavigationItem(viewModel, ScreenId.ChromeConnection, 0);
+        MoveNavigationItem(viewModel, ScreenId.ProjectSelection, 1);
+        MoveNavigationItem(viewModel, ScreenId.Dashboard, 2);
+    }
+
+    private static void MoveNavigationItem(MainViewModel viewModel, ScreenId id, int targetIndex)
+    {
+        var sourceIndex = -1;
+        for (var i = 0; i < viewModel.Navigation.Count; i++)
+        {
+            if (viewModel.Navigation[i].Id == id)
+            {
+                sourceIndex = i;
+                break;
+            }
+        }
+
+        if (sourceIndex >= 0 && sourceIndex != targetIndex)
+            viewModel.Navigation.Move(sourceIndex, targetIndex);
     }
 
     public void AllowCloseAndClose()
