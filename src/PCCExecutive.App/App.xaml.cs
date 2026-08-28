@@ -13,29 +13,32 @@ public partial class App : System.Windows.Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        var smokeTest = e.Args.Any(arg => string.Equals(arg, "--smoke-test", StringComparison.OrdinalIgnoreCase));
 
         try
         {
             _gateway = IntegratedPresentationGateway.Create();
-
-            if (e.Args.Any(arg => string.Equals(arg, "--smoke-test", StringComparison.OrdinalIgnoreCase)))
-            {
-                if (!_gateway.Snapshot.GatewayBound || !_gateway.Snapshot.HasActiveRun)
-                    throw new InvalidOperationException("Integrated runtime gateway did not initialize an active durable project run.");
-                Shutdown(0);
-                return;
-            }
-
             var viewModel = new MainViewModel(_gateway, new WpfConfirmationService());
             var window = new MainWindow(viewModel);
             MainWindow = window;
+
+            if (smokeTest)
+            {
+                window.Show();
+                window.Dispatcher.Invoke(window.UpdateLayout);
+                if (!window.IsLoaded || !window.IsVisible)
+                    throw new InvalidOperationException("PCC Executive WPF startup smoke did not create and render the main window.");
+                window.AllowCloseAndClose();
+                Shutdown(0);
+                return;
+            }
 
             _tray = new TrayIconService(window, viewModel);
             window.Show();
         }
         catch (Exception ex)
         {
-            if (!e.Args.Any(arg => string.Equals(arg, "--smoke-test", StringComparison.OrdinalIgnoreCase)))
+            if (!smokeTest)
                 System.Windows.MessageBox.Show(ex.Message, "PCC Executive startup failed", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(2);
         }
