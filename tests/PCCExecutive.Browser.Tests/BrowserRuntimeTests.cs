@@ -58,6 +58,85 @@ public sealed class BrowserRuntimeTests
     }
 
     [Fact]
+    public async Task Refused_endpoint_recovery_emits_one_correlated_detect_to_resume_timeline()
+    {
+        var root = Root();
+        var runtime = Runtime(root, "timeline");
+        var registry = new InMemoryBrowserRuntimeRegistry();
+        await registry.UpsertAsync(runtime);
+        var markers = new FakeMarkers(); markers.Set(Marker(runtime));
+        var processes = new FakeProcesses(); processes.Set(runtime.ProcessId!.Value, runtime.ProcessStartIdentity!, true);
+        var telemetry = new FakeRecoveryTelemetry();
+        var host = new FakeHost(root) { RecoverException = new InvalidOperationException("connect ECONNREFUSED 127.0.0.1:58760") };
+        var controller = new BrowserSessionController(registry, host, new OwnershipProofService(root, markers, processes), markers, processes, telemetry);
+
+        var result = await controller.RecoverOrphanAsync(runtime.RuntimeId);
+
+        Assert.True(result.Succeeded);
+        Assert.Single(telemetry.Events.Select(x => x.CorrelationId).Distinct());
+        Assert.Equal(BrowserRecoveryPhase.Detect, telemetry.Events.First().Phase);
+        Assert.Equal(BrowserRecoveryPhase.Resume, telemetry.Events.Last().Phase);
+        Assert.Contains(telemetry.Events, x => x.Phase == BrowserRecoveryPhase.Classify && x.ReasonCode == "ENDPOINT_CONNECTIONREFUSED");
+        Assert.Contains(telemetry.Events, x => x.Phase == BrowserRecoveryPhase.ProveOwnership && x.Succeeded);
+        Assert.Equal(result.Runtime!.RuntimeId, telemetry.Events.Last().ReplacementRuntimeId);
+    }
+
+    [Fact]
+    public async Task Dead_unproven_runtime_is_not_replaced_or_modified()
+    {
+        var root = Root();
+        var personal = Runtime(root, "personal-dead") with { CreatedByPcc = false, AdoptedExplicitly = false };
+        var registry = new InMemoryBrowserRuntimeRegistry(); await registry.UpsertAsync(personal);
+        var markers = new FakeMarkers();
+        var processes = new FakeProcesses(); processes.Set(personal.ProcessId!.Value, personal.ProcessStartIdentity!, false);
+        var host = new FakeHost(root);
+        var controller = new BrowserSessionController(registry, host, new OwnershipProofService(root, markers, processes), markers, processes);
+
+        var result = await controller.RecoverOrphanAsync(personal.RuntimeId);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("NO_PCC_OWNERSHIP_FLAG", result.Reason);
+        Assert.Empty(host.Killed);
+        Assert.False((await registry.GetAsync(personal.RuntimeId))!.IsArchived);
+    }
+
+    [Fact]
+    public async Task Startup_reconciliation_probes_recent_persisted_runtime_and_replaces_refused_endpoint()
+    {
+        var root = Root(); var runtime = Runtime(root, "startup-recent") with { LastHeartbeatAt = DateTimeOffset.UtcNow };
+        var registry = new InMemoryBrowserRuntimeRegistry(); await registry.UpsertAsync(runtime);
+        var markers = new FakeMarkers(); markers.Set(Marker(runtime));
+        var processes = new FakeProcesses(); processes.Set(runtime.ProcessId!.Value, runtime.ProcessStartIdentity!, true);
+        var host = new FakeHost(root) { RecoverException = new InvalidOperationException("ECONNREFUSED 127.0.0.1:50000") };
+        var sessions = new BrowserSessionController(registry, host, new OwnershipProofService(root, markers, processes), markers, processes);
+
+        var result = await new BrowserStartupRecoveryCoordinator(registry, sessions).ReconcileAsync(runtime.ProjectRunId);
+
+        Assert.True(result.StartupMayContinue);
+        Assert.Single(result.Reconciliations);
+        Assert.NotEqual(runtime.RuntimeId, result.Reconciliations[0].RuntimeId);
+        Assert.True((await registry.GetAsync(runtime.RuntimeId))!.IsArchived);
+    }
+
+    [Fact]
+    public async Task Startup_reconciliation_uses_one_active_runtime_per_logical_agent()
+    {
+        var root = Root();
+        var old = Runtime(root, "old") with { LastActivityAt = DateTimeOffset.UtcNow.AddMinutes(-5) };
+        var current = Runtime(root, "current") with { ProcessId = 5002, ProcessStartIdentity = "pid:5002:start:2", OwnershipNonce = "nonce-2", LastActivityAt = DateTimeOffset.UtcNow };
+        var registry = new InMemoryBrowserRuntimeRegistry(); await registry.UpsertAsync(old); await registry.UpsertAsync(current);
+        var markers = new FakeMarkers(); markers.Set(Marker(old)); markers.Set(Marker(current));
+        var processes = new FakeProcesses(); processes.Set(5001, old.ProcessStartIdentity!, true); processes.Set(5002, current.ProcessStartIdentity!, true);
+        var host = new FakeHost(root);
+        var sessions = new BrowserSessionController(registry, host, new OwnershipProofService(root, markers, processes), markers, processes);
+
+        var result = await new BrowserStartupRecoveryCoordinator(registry, sessions).ReconcileAsync(old.ProjectRunId);
+
+        Assert.Single(result.Reconciliations);
+        Assert.Equal(current.RuntimeId, result.Reconciliations[0].RuntimeId);
+    }
+
+    [Fact]
     public void Wrong_chat_guard_matches_exact_bindings_and_unknown_is_fail_safe()
     {
         var runtime=Runtime(Root(),"guard"); var expected=Expectation(runtime); var guard=new WrongChatGuard();
@@ -160,6 +239,7 @@ public sealed class BrowserRuntimeTests
         public Task<BrowserRuntimeTelemetry> GetTelemetryAsync(BrowserRuntimeRecord r,CancellationToken c=default)=>Task.FromResult(new BrowserRuntimeTelemetry(r.RuntimeId,true,1,1,TimeSpan.Zero,r.LastHeartbeatAt,false,r.IsArchived));
     }
     private sealed class FakeAdapter:IChatGptBrowserAdapter { public string AdapterVersion=>"test"; public ChatGptSemanticSnapshot Snapshot{get;init;}=BrowserRuntimeTests.Snapshot(); public AdapterSubmissionResult Submission{get;init;}=new(false,false,false,"not-triggered",Array.Empty<string>()); public string? CurrentConversationIdentity{get;init;} public int SubmitCalls{get;private set;} public Task<ChatGptSemanticSnapshot> InspectAsync(BrowserRuntimeRecord r,BrowserDispatchExpectation e,CancellationToken c=default)=>Task.FromResult(Snapshot); public Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord r,BrowserDispatchExpectation e,string p,CancellationToken c=default){SubmitCalls++;return Task.FromResult(Submission);} public Task<string?> GetCurrentConversationIdentityAsync(BrowserRuntimeRecord r,CancellationToken c=default)=>Task.FromResult(CurrentConversationIdentity); }
+    private sealed class FakeRecoveryTelemetry : IBrowserRecoveryTelemetrySink { public List<BrowserRecoveryTelemetryEvent> Events { get; } = []; public Task EmitAsync(BrowserRecoveryTelemetryEvent e, CancellationToken c = default) { Events.Add(e); return Task.CompletedTask; } }
     private sealed class FakeCheckpoint:IConversationCheckpointPort { public Task<string> CreateCheckpointAsync(ConversationRecord a,CancellationToken c=default)=>Task.FromResult("checkpoint"); }
     private sealed class FakeCreator:IConversationCreator { public Task<ConversationCreationResult> CreateAsync(ConversationRecord p,CancellationToken c=default)=>Task.FromResult(new ConversationCreationResult("new","https://chatgpt.com/c/new-provider")); }
     private sealed class FakeSender(bool result):IContinuationSender { public Task<bool> SendContinuationAsync(ConversationRecord c,string id,string p,CancellationToken ct=default)=>Task.FromResult(result); }

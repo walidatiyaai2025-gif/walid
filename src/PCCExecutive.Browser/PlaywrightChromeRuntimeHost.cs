@@ -151,6 +151,8 @@ public sealed class PlaywrightChromeRuntimeHost : IBrowserRuntimeHost, IPlaywrig
             }
         }
 
+        ClearStaleEndpointMetadata(profilePath);
+
         var chrome = _chromeLocator.LocateChrome();
         var startInfo = new ProcessStartInfo
         {
@@ -325,6 +327,19 @@ public sealed class PlaywrightChromeRuntimeHost : IBrowserRuntimeHost, IPlaywrig
             ? "manager"
             : $"worker-{SanitizePathSegment(request.WorkerSlotId)}";
         return Path.Combine(_profileRoot, slotName);
+    }
+
+    public static void ClearStaleEndpointMetadata(string managedProfilePath)
+    {
+        var endpointFile = Path.Combine(Path.GetFullPath(managedProfilePath), "DevToolsActivePort");
+        try
+        {
+            if (File.Exists(endpointFile)) File.Delete(endpointFile);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidOperationException("The stale PCC Chrome DevTools endpoint metadata could not be retired safely.", ex);
+        }
     }
 
     private async Task<IPlaywright> GetPlaywrightAsync(CancellationToken cancellationToken)

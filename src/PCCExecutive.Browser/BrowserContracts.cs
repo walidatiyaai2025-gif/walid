@@ -233,6 +233,8 @@ public interface IProcessInspector
 public interface IOwnershipProofService
 {
     Task<OwnershipProof> ProveAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default);
+    Task<OwnershipProof> ProveRecordedOwnershipAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default) =>
+        ProveAsync(runtime, cancellationToken);
 }
 
 public interface IBrowserRuntimeHost
