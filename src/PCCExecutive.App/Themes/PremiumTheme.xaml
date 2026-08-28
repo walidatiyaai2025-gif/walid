@@ -105,6 +105,7 @@
         <Setter Property="Padding" Value="14,8"/>
         <Setter Property="MinHeight" Value="34"/>
         <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="ToolTipService.ShowOnDisabled" Value="True"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
@@ -120,6 +121,11 @@
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="ToolTip" Value="Unavailable right now. Complete the required project, runtime, ownership, or configuration prerequisites; unsupported mutations stay disabled rather than simulated."/>
+            </Trigger>
+        </Style.Triggers>
     </Style>
 
     <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
