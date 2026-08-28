@@ -26,17 +26,23 @@ public enum HealthState
 {
     Unknown,
     Healthy,
+    Sending,
+    Generating,
     Slow,
     Throttled,
     RateLimited,
     Cooldown,
     TemporaryError,
     PartialResponse,
+    SessionExpired,
     LoginRequired,
     Challenge,
     Offline,
     Stuck,
     Recovering,
+    Paused,
+    Failed,
+    Done,
     AdapterUncertain
 }
 
@@ -90,7 +96,32 @@ public sealed record EvidenceGateSummary(
     string Name,
     string State,
     int? Score,
-    string Evidence);
+    string Evidence)
+{
+    private bool HasProvenPass =>
+        string.Equals(State, "VERIFIED", StringComparison.OrdinalIgnoreCase) ||
+        (string.Equals(State, "PASS", StringComparison.OrdinalIgnoreCase) &&
+         Evidence.StartsWith("PASS@", StringComparison.OrdinalIgnoreCase));
+
+    public string VisibleState
+    {
+        get
+        {
+            if (HasProvenPass) return "VERIFIED";
+
+            return State.Trim().ToUpperInvariant() switch
+            {
+                "PARTIAL" or "PENDING" or "PASS" => "PENDING",
+                "BLOCKED" or "BLOCKED_EXTERNAL" or "FAIL" or "FAILED" => "BLOCKED",
+                "NOT_RUN" or "NOT RUN" or "NOT_CHECKED" or "NOT CHECKED" => "NOT RUN",
+                _ => "UNKNOWN"
+            };
+        }
+    }
+
+    public string VisibleScoreText =>
+        HasProvenPass && Score is not null ? $"{Score}%" : "—";
+}
 
 public sealed record AttentionSummary(
     string Id,
@@ -115,7 +146,16 @@ public sealed record ConversationHistorySummary(
     DateTimeOffset? RetiredAt,
     string? RolloverReason,
     string? Predecessor,
-    string? Successor);
+    string? Successor,
+    string? ConversationIdentity = null,
+    string? Health = null)
+{
+    public string ConversationIdentityText =>
+        string.IsNullOrWhiteSpace(ConversationIdentity) ? "NOT AVAILABLE" : ConversationIdentity;
+
+    public string HealthText =>
+        string.IsNullOrWhiteSpace(Health) ? "NOT AVAILABLE" : Health;
+}
 
 public sealed record UpdateSummary(
     string CurrentVersion,
@@ -124,7 +164,9 @@ public sealed record UpdateSummary(
     string BackupState,
     string MigrationState,
     string RollbackState,
-    bool InstallReady);
+    bool InstallReady,
+    string UpdateSourceStatus = "NO GOVERNED UPDATE SOURCE CONFIGURED",
+    string InstallAvailabilityStatus = "NO VERIFIED STAGED UPDATE AVAILABLE");
 
 public sealed record DispatchSettingsSummary(
     DispatchMode Mode,
@@ -170,15 +212,19 @@ public sealed record RuntimeSnapshot(
     IReadOnlyList<ConversationHistorySummary>? ConversationHistory = null)
 {
     public int AttentionCount => AttentionItems.Count;
-    public string AttentionCountText => GatewayBound ? AttentionCount.ToString() : "—";
-    public string AttentionSummaryText => GatewayBound ? $"{AttentionCount} required" : "— unavailable";
-    public string AttentionHeadline => !GatewayBound
-        ? "Attention state unavailable until runtime binding"
+
+    public bool AttentionStateKnown =>
+        GatewayBound && (AttentionCount > 0 || GlobalHealth != HealthState.Unknown);
+
+    public string AttentionCountText => AttentionStateKnown ? AttentionCount.ToString() : "—";
+    public string AttentionSummaryText => AttentionStateKnown ? $"{AttentionCount} required" : "— unavailable";
+    public string AttentionHeadline => !AttentionStateKnown
+        ? "Attention state is not yet verified"
         : AttentionCount == 0
             ? "0 — Nothing needs you"
             : $"{AttentionCount} required operator action{(AttentionCount == 1 ? string.Empty : "s")}";
-    public string AttentionSubhead => !GatewayBound
-        ? "No healthy-state claim is made until the canonical runtime supplies evidence."
+    public string AttentionSubhead => !AttentionStateKnown
+        ? "PCC Executive will not claim zero attention until runtime health/attention projection is available."
         : AttentionCount == 0
             ? "Routine recovery remains automatic and unobtrusive."
             : "Each item below has one clear action and opens the exact location required.";
@@ -191,9 +237,12 @@ public sealed record RuntimeSnapshot(
     public string ManagerEstimateText => ManagerEstimate is null ? "—" : $"{ManagerEstimate}%";
     public string HealthText => GlobalHealth switch
     {
+        HealthState.Sending => "SENDING",
+        HealthState.Generating => "GENERATING",
         HealthState.RateLimited => "RATE LIMITED",
         HealthState.TemporaryError => "TEMPORARY ERROR",
         HealthState.PartialResponse => "PARTIAL RESPONSE",
+        HealthState.SessionExpired => "SESSION EXPIRED",
         HealthState.LoginRequired => "LOGIN REQUIRED",
         HealthState.AdapterUncertain => "ADAPTER UNCERTAIN",
         _ => GlobalHealth.ToString().ToUpperInvariant()
@@ -201,19 +250,20 @@ public sealed record RuntimeSnapshot(
 
     public string HealthAccent => GlobalHealth switch
     {
-        HealthState.Healthy => "#6EE7B7",
+        HealthState.Healthy or HealthState.Done => "#6EE7B7",
+        HealthState.Sending or HealthState.Generating => "#38BDF8",
         HealthState.Slow or HealthState.Throttled or HealthState.RateLimited or HealthState.Cooldown => "#FBBF24",
-        HealthState.Recovering => "#8B5CF6",
+        HealthState.Recovering or HealthState.Paused => "#8B5CF6",
         HealthState.Unknown => "#8FA3B8",
         _ => "#FB7185"
     };
 
-    public string AttentionAccent => !GatewayBound ? "#8FA3B8" : AttentionCount == 0 ? "#6EE7B7" : "#FBBF24";
+    public string AttentionAccent => !AttentionStateKnown ? "#8FA3B8" : AttentionCount == 0 ? "#6EE7B7" : "#FBBF24";
 
-    public bool NoActionRequired => GatewayBound && AttentionCount == 0 &&
+    public bool NoActionRequired => AttentionStateKnown && AttentionCount == 0 &&
         GlobalHealth is HealthState.Healthy or HealthState.Slow or HealthState.Throttled or HealthState.RateLimited
             or HealthState.Cooldown or HealthState.TemporaryError or HealthState.PartialResponse or HealthState.Offline
-            or HealthState.Stuck or HealthState.Recovering;
+            or HealthState.Stuck or HealthState.Recovering or HealthState.Done;
 
     public string OperatorMessage => !GatewayBound
         ? "Runtime contracts are not bound yet. Operational controls stay disabled."
@@ -221,15 +271,21 @@ public sealed record RuntimeSnapshot(
             ? $"{AttentionCount} action{(AttentionCount == 1 ? string.Empty : "s")} require operator attention."
             : GlobalHealth switch
             {
+                HealthState.Sending => "SENDING · DISPATCH IS IN PROGRESS",
+                HealthState.Generating => "GENERATING · WAITING FOR CHATGPT RESPONSE",
                 HealthState.Slow => "SLOW RESPONSE DETECTED · MONITORING ACTIVE · NO ACTION REQUIRED",
                 HealthState.Throttled => "THROTTLING DETECTED · NEW SENDS PACED · NO ACTION REQUIRED",
                 HealthState.RateLimited => "RATE LIMIT DETECTED · NEW SENDS PAUSED · AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
                 HealthState.Cooldown => "COOLDOWN ACTIVE · AUTO RESUME ENABLED · NO ACTION REQUIRED",
                 HealthState.TemporaryError => "TEMPORARY ERROR · AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
                 HealthState.PartialResponse => "PARTIAL RESPONSE · RECONCILIATION ACTIVE · NO ACTION REQUIRED",
+                HealthState.SessionExpired => "SESSION EXPIRED · RECOVERY OR LOGIN MAY BE REQUIRED",
                 HealthState.Offline => "OFFLINE · RECOVERY WATCH ACTIVE · NO ACTION REQUIRED",
                 HealthState.Stuck => "STUCK SESSION DETECTED · RECOVERY ACTIVE · NO ACTION REQUIRED",
                 HealthState.Recovering => "AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
+                HealthState.Paused => "AI IS PAUSED · RESUME WHEN READY",
+                HealthState.Failed => "RUNTIME FAILED · REVIEW ATTENTION AND RECOVERY STATE",
+                HealthState.Done => "CURRENT CHATGPT OPERATION IS DONE",
                 HealthState.Healthy => "AUTOPILOT · HEALTHY · NO ACTION REQUIRED",
                 HealthState.LoginRequired => "LOGIN REQUIRED · OPEN ATTENTION CENTER",
                 HealthState.Challenge => "ACCOUNT CHALLENGE · OPEN ATTENTION CENTER",
