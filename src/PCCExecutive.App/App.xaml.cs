@@ -15,7 +15,9 @@ public partial class App : System.Windows.Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
-        var smokeTest = e.Args.Any(arg => string.Equals(arg, "--smoke-test", StringComparison.OrdinalIgnoreCase));
+        var smokeTest = e.Args.Any(arg =>
+            string.Equals(arg, "--smoke-test", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(arg, "--installer-smoke", StringComparison.OrdinalIgnoreCase));
 
         try
         {
