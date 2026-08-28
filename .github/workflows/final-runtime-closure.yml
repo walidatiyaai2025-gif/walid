@@ -23,13 +23,25 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Normalize closure launcher interpolation
+      - name: Normalize closure launcher idempotency
         shell: pwsh
         run: |
+          $utf8 = [Text.UTF8Encoding]::new($false)
           $path = './build/Apply-FinalRuntimeClosure.ps1'
           $text = [IO.File]::ReadAllText($path)
           $text = $text.Replace('$Path:', '${Path}:')
-          [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false))
+          $old = '$chat = $chat.Replace(''public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter'', ''public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter'')'
+          $new = 'if (-not $chat.Contains(''public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter'')) {`r`n    $chat = $chat.Replace(''public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter'', ''public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter'')`r`n}'
+          if ($text.Contains($old)) { $text = $text.Replace($old, $new) }
+          [IO.File]::WriteAllText($path, $text, $utf8)
+
+          $sourcePath = './src/PCCExecutive.Browser/ChatGptBrowserAdapter.cs'
+          $source = [IO.File]::ReadAllText($sourcePath)
+          $duplicate = 'IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter, IPhysicalSubmitAuthorizationAdapter'
+          while ($source.Contains($duplicate)) {
+            $source = $source.Replace($duplicate, 'IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter')
+          }
+          [IO.File]::WriteAllText($sourcePath, $source, $utf8)
 
       - name: Apply production runtime closure patch
         shell: pwsh
