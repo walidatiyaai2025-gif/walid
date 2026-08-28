@@ -188,7 +188,7 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
         store.SaveLogicalAgentAsync(manager).GetAwaiter().GetResult();
         for (var i = 0; i < WorkerAgentIds.Length; i++)
         {
-            var worker = new LogicalAgentSession(WorkerAgentIds[i], runId, AgentRole.Worker, new WorkerSlotId(i + 1), null, null, LogicalSessionState.Idle);
+            var worker = new LogicalAgentSession(WorkerAgentIds[i], runId, AgentRole.Worker, new WorkerSlotId(i + 1), null, null, LogicalSessionState.Ready);
             store.SaveLogicalAgentAsync(worker).GetAwaiter().GetResult();
         }
     }
