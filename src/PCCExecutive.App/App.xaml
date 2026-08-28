@@ -12,6 +12,8 @@
                 <ResourceDictionary Source="Views/Screens07_09.xaml"/>
                 <ResourceDictionary Source="Views/Screens10_12.xaml"/>
                 <ResourceDictionary Source="Views/Screens13_15.xaml"/>
+                <ResourceDictionary Source="Views/VisibleTruthOverrides.xaml"/>
+                <ResourceDictionary Source="Views/ControlTruthOverrides.xaml"/>
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>
     </Application.Resources>
