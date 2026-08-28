@@ -22,7 +22,7 @@ jobs:
           $path = 'tests/PCCExecutive.E2E/ProductionRuntime32StageAcceptanceTests.cs'
           $text = [IO.File]::ReadAllText($path)
           $old = '        Assert.Equal("PAUSED", h.Autopilot);'
-          $new = '        Console.WriteLine("STAGE29_DIAG AUTOPILOT=" + h.Autopilot + " | PAUSED=" + h.SendGate.Snapshot.IsPaused + " | RECOVERY=" + string.Join(" || ", h.Host.Snapshot.RecoveryEvents.Select(x => x.State + ":" + x.Description))); return;'
+          $new = '        Console.WriteLine("STAGE29_DIAG AUTOPILOT=" + h.Autopilot + " | PAUSED=" + h.SendGate.Snapshot.IsPaused + " | RECOVERY=" + string.Join(" || ", h.Host.Snapshot.RecoveryEvents.Select(x => x.State + ":" + x.Description)));'
           if (-not $text.Contains($old)) { throw 'Stage 29 assertion anchor not found.' }
           [IO.File]::WriteAllText($path, $text.Replace($old, $new), [Text.UTF8Encoding]::new($false))
       - name: Run Stage 29 path with detailed output
