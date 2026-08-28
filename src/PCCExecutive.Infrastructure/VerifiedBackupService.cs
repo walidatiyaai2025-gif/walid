@@ -91,14 +91,29 @@ public sealed class VerifiedBackupService
         if (activeDatabaseLease) throw new InvalidOperationException("Cannot restore over an actively leased canonical database.");
         var reverified = await VerifyAsync(backup.ManifestPath, cancellationToken).ConfigureAwait(false);
         if (!reverified.IsVerified) throw new InvalidDataException("Only a verified compatible backup may be restored.");
-        var preserved = _store.DatabasePath + $".preserved-{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}.db";
-        if (File.Exists(_store.DatabasePath)) File.Copy(_store.DatabasePath, preserved, overwrite: false);
-        await using (var source = await SqliteDurabilityConnection.OpenAsync(reverified.Manifest.FilePath, _policy, SqliteOpenMode.ReadOnly, cancellationToken).ConfigureAwait(false))
-        await using (var target = await SqliteDurabilityConnection.OpenAsync(_store.DatabasePath, _policy, cancellationToken: cancellationToken).ConfigureAwait(false))
-            source.BackupDatabase(target);
-        var integrity = await _integrity.CheckAsync(_store.DatabasePath, cancellationToken).ConfigureAwait(false);
-        if (integrity.State != DatabaseIntegrityState.INTEGRITY_OK) throw new InvalidDataException("Restored database failed integrity validation.");
-        return preserved;
+
+        var suffix = $".preserved-{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}";
+        var preserved = _store.DatabasePath + suffix + ".db";
+        PreserveAndRemove(_store.DatabasePath, preserved);
+        PreserveAndRemove(_store.DatabasePath + "-wal", preserved + "-wal");
+        PreserveAndRemove(_store.DatabasePath + "-shm", preserved + "-shm");
+
+        try
+        {
+            await using (var source = await SqliteDurabilityConnection.OpenAsync(reverified.Manifest.FilePath, _policy, SqliteOpenMode.ReadOnly, cancellationToken).ConfigureAwait(false))
+            await using (var target = await SqliteDurabilityConnection.OpenAsync(_store.DatabasePath, _policy, cancellationToken: cancellationToken).ConfigureAwait(false))
+                source.BackupDatabase(target);
+            var integrity = await _integrity.CheckAsync(_store.DatabasePath, cancellationToken).ConfigureAwait(false);
+            if (integrity.State != DatabaseIntegrityState.INTEGRITY_OK) throw new InvalidDataException("Restored database failed integrity validation.");
+            return preserved;
+        }
+        catch
+        {
+            TryDelete(_store.DatabasePath);
+            TryDelete(_store.DatabasePath + "-wal");
+            TryDelete(_store.DatabasePath + "-shm");
+            throw;
+        }
     }
 
     private async Task PersistManifestAsync(BackupManifest manifest, CancellationToken cancellationToken)
@@ -120,6 +135,18 @@ public sealed class VerifiedBackupService
         command.Parameters.AddWithValue("$integrity", manifest.IntegrityStatus.ToString());
         command.Parameters.AddWithValue("$json", JsonSerializer.Serialize(manifest, Json));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void PreserveAndRemove(string source, string destination)
+    {
+        if (!File.Exists(source)) return;
+        File.Copy(source, destination, overwrite: false);
+        File.Delete(source);
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
     }
 
     private static async Task<string> HashFileAsync(string path, CancellationToken cancellationToken)
