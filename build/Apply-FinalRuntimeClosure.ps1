@@ -14,14 +14,11 @@ function Require-Text([string]$Path, [string]$Needle) {
 $browser = Require-Text 'src/PCCExecutive.Browser/DispatchAndResilience.cs' 'Func<CancellationToken, Task>? beforeSubmit = null'
 $proofIndex = $browser.IndexOf('var proof = await _ownership.ProveAsync', [StringComparison]::Ordinal)
 $callbackIndex = $browser.IndexOf('if (beforeSubmit is not null) await beforeSubmit', [StringComparison]::Ordinal)
-if ($proofIndex -lt 0 -or $callbackIndex -lt 0 -or $proofIndex -gt $callbackIndex) {
-    throw 'Ownership proof must precede the durable pre-submit callback.'
-}
+if ($proofIndex -lt 0 -or $callbackIndex -lt 0 -or $proofIndex -gt $callbackIndex) { throw 'Ownership proof must precede the durable pre-submit callback.' }
 
 $adapter = Require-Text 'src/PCCExecutive.Infrastructure/BrowserAgentProviderAdapter.cs' 'beforeSubmit = ct => journal.SaveAsync(prepared, ct);'
 $count = ([regex]::Matches($adapter, [regex]::Escape('Func<CancellationToken, Task>? beforeSubmit = null;'))).Count
 if ($count -ne 1) { throw "Expected exactly one durable beforeSubmit callback declaration; found $count." }
-
 [void](Require-Text 'src/PCCExecutive.Infrastructure/CrashConsistentOrchestrationStore.cs' 'snapshot = await DispatchMergedOrchestrationStateStore.MergeAsync(_store, snapshot, cancellationToken).ConfigureAwait(false);')
 [void](Require-Text 'tests/PCCExecutive.Browser.Acceptance/AcceptanceHarness.cs' 'AcceptanceOwnershipProofService')
 [void](Require-Text 'tests/PCCExecutive.Integration/PCCExecutive.Integration.csproj' '<IsTestProject>true</IsTestProject>')
@@ -29,10 +26,13 @@ if ($count -ne 1) { throw "Expected exactly one durable beforeSubmit callback de
 $e2eProjectPath = Join-Path $root 'tests/PCCExecutive.E2E/PCCExecutive.E2E.csproj'
 $e2eProject = [IO.File]::ReadAllText($e2eProjectPath)
 if (-not $e2eProject.Contains('net10.0-windows')) {
-    $e2eProject = $e2eProject.Replace('<TargetFramework>net10.0</TargetFramework>', "<TargetFramework>net10.0-windows</TargetFramework>`n    <EnableWindowsTargeting>true</EnableWindowsTargeting>")
+    $e2eProject = $e2eProject.Replace('<TargetFramework>net10.0</TargetFramework>', "<TargetFramework>net10.0-windows</TargetFramework>`r`n    <EnableWindowsTargeting>true</EnableWindowsTargeting>")
 }
 if (-not $e2eProject.Contains('../../src/PCCExecutive.App/PCCExecutive.App.csproj')) {
-    $e2eProject = $e2eProject.Replace('<ItemGroup>`n    <ProjectReference Include="../../src/PCCExecutive.Domain/PCCExecutive.Domain.csproj" />', '<ItemGroup>`n    <ProjectReference Include="../../src/PCCExecutive.App/PCCExecutive.App.csproj" />`n    <ProjectReference Include="../../src/PCCExecutive.Domain/PCCExecutive.Domain.csproj" />')
+    $domainReference = '    <ProjectReference Include="../../src/PCCExecutive.Domain/PCCExecutive.Domain.csproj" />'
+    $appAndDomain = "    <ProjectReference Include=`"../../src/PCCExecutive.App/PCCExecutive.App.csproj`" />`r`n$domainReference"
+    if (-not $e2eProject.Contains($domainReference)) { throw 'E2E Domain project reference anchor missing.' }
+    $e2eProject = $e2eProject.Replace($domainReference, $appAndDomain)
 }
 [IO.File]::WriteAllText($e2eProjectPath, $e2eProject, [Text.UTF8Encoding]::new($false))
 
@@ -59,5 +59,5 @@ public sealed class ProductionRuntimeHostCompositionTests
 '@, [Text.UTF8Encoding]::new($false))
 }
 
-[void](Require-Text 'tests/PCCExecutive.E2E/PCCExecutive.E2E.csproj' '<IsTestProject>true</IsTestProject>')
+[void](Require-Text 'tests/PCCExecutive.E2E/PCCExecutive.E2E.csproj' '../../src/PCCExecutive.App/PCCExecutive.App.csproj')
 Write-Host 'Final runtime closure invariants and production-host 32-stage composition gate are applied.'
