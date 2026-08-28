@@ -41,7 +41,7 @@ jobs:
         shell: pwsh
         run: dotnet build PCCExecutive.sln -c Release
 
-      - name: Build deterministic test projects
+      - name: Restore and build deterministic test projects
         shell: pwsh
         run: |
           $projects = @(
@@ -53,7 +53,7 @@ jobs:
             'tests/PCCExecutive.Infrastructure.Tests/PCCExecutive.Infrastructure.Tests.csproj'
           )
           foreach ($project in $projects) {
-            dotnet build $project -c Release --no-restore
+            dotnet build $project -c Release
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
