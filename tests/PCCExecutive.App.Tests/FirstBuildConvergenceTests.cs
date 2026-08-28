@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using PCCExecutive.App.Presentation;
 using PCCExecutive.App.ViewModels;
 using Xunit;
@@ -75,6 +76,51 @@ public sealed class FirstBuildConvergenceTests
         }
 
         Assert.Equal(0, process.ExitCode);
+    }
+
+    [Theory]
+    [InlineData(1920d, 1080d, "100%")]
+    [InlineData(1536d, 864d, "125%")]
+    [InlineData(1280d, 720d, "150%")]
+    public void Premium_shell_survives_1920x1080_dpi_equivalent_viewport(double width, double height, string scale)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var vm = new MainViewModel(new ProjectSelectionGateway(resolve: false));
+                var window = new MainWindow(vm)
+                {
+                    Width = width,
+                    Height = height,
+                    WindowStartupLocation = System.Windows.WindowStartupLocation.Manual,
+                    Left = 0,
+                    Top = 0
+                };
+                window.Show();
+                window.Dispatcher.Invoke(window.UpdateLayout);
+
+                Assert.True(window.IsLoaded, $"{scale} viewport did not load MainWindow.");
+                Assert.True(window.IsVisible, $"{scale} viewport did not show MainWindow.");
+                Assert.True(window.ActualWidth >= window.MinWidth, $"{scale} viewport collapsed below minimum width.");
+                Assert.True(window.ActualHeight >= window.MinHeight, $"{scale} viewport collapsed below minimum height.");
+                Assert.Equal(ScreenId.ProjectSelection, vm.SelectedScreen);
+                Assert.Equal(15, vm.Navigation.Count);
+                Assert.True(vm.RefreshCommand.CanExecute(null));
+                Assert.NotNull(vm.CurrentScreen);
+
+                window.AllowCloseAndClose();
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(20_000), $"{scale} viewport layout smoke timed out.");
+        if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
     private static string FindRepositoryRoot()
