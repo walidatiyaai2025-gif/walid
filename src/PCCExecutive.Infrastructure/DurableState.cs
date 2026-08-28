@@ -10,6 +10,7 @@ namespace PCCExecutive.Infrastructure;
 
 public sealed record PccExecutiveSettings(
     string Provider = "BrowserChat",
+    string DispatchMode = "AutomaticStaged",
     int MaxWorkers = 5,
     int BaseDispatchIntervalSeconds = 10,
     bool AdaptivePacing = true,

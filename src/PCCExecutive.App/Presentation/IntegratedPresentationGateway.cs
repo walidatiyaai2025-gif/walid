@@ -28,6 +28,7 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
     private readonly BrowserSessionController _sessions;
     private readonly IBrowserRuntimeRegistry _runtimeRegistry;
     private readonly IOwnershipProofService _ownership;
+    private readonly INewSendPausePort _newSendPause;
     private readonly HttpClient _pccHttp;
     private readonly HttpClient _githubHttp;
     private readonly List<RecoveryEventSummary> _recovery = [];
@@ -37,6 +38,7 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
     private string _pccState = "NOT_CHECKED";
     private string _githubState = "NOT_CHECKED";
     private string _autopilot = "READY";
+    private PccExecutiveSettings _settings;
 
     private IntegratedPresentationGateway(
         SqliteStateStore store,
@@ -46,6 +48,7 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
         BrowserSessionController sessions,
         IBrowserRuntimeRegistry runtimeRegistry,
         IOwnershipProofService ownership,
+        INewSendPausePort newSendPause,
         HttpClient pccHttp,
         HttpClient githubHttp,
         ProjectRun? run)
@@ -57,9 +60,20 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
         _sessions = sessions;
         _runtimeRegistry = runtimeRegistry;
         _ownership = ownership;
+        _newSendPause = newSendPause;
         _pccHttp = pccHttp;
         _githubHttp = githubHttp;
         _run = run;
+        _settings = store.LoadSettingsAsync().GetAwaiter().GetResult();
+        if (run is not null)
+        {
+            var pause = store.LoadCheckpointAsync($"autopilot-pause:{run.Id}").GetAwaiter().GetResult();
+            if (pause is not null && pause.Payload.Contains("\"paused\":true", StringComparison.Ordinal))
+            {
+                _autopilot = "PAUSED";
+                _newSendPause.PauseNewSendsAsync("Restored persisted operator pause.").GetAwaiter().GetResult();
+            }
+        }
         Snapshot = BuildSnapshot(Array.Empty<BrowserRuntimeRecord>(), new HashSet<string>(StringComparer.Ordinal));
     }
 
@@ -96,8 +110,10 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             var controller = new BrowserSessionController(registry, runtimeHost, ownership, markerStore, processInspector);
 
             var adapter = new PlaywrightChatGptBrowserAdapter(runtimeHost);
-            var browserProvider = new PCCExecutive.Browser.BrowserChatProvider(registry, adapter, store, new WrongChatGuard(), new GlobalBrowserSendGate());
+            var sendGate = new GlobalBrowserSendGate();
+            var browserProvider = new PCCExecutive.Browser.BrowserChatProvider(registry, adapter, store, new WrongChatGuard(), sendGate);
             _ = new BrowserAgentProviderAdapter(registry, browserProvider);
+            INewSendPausePort newSendPause = new BrowserNewSendPausePort(sendGate);
 
             var pccHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
             var githubHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
@@ -105,7 +121,7 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             var github = new GitHubRestEvidenceClient(githubHttp);
             var baseline = new ProjectBaselineBuilder(pcc, github);
 
-            var gateway = new IntegratedPresentationGateway(store, projectLock, pcc, baseline, controller, registry, ownership, pccHttp, githubHttp, run);
+            var gateway = new IntegratedPresentationGateway(store, projectLock, pcc, baseline, controller, registry, ownership, newSendPause, pccHttp, githubHttp, run);
             gateway.RefreshLocalSnapshotAsync().GetAwaiter().GetResult();
             return gateway;
         }
@@ -138,12 +154,16 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
                 await ConnectManagerChromeAsync(cancellationToken).ConfigureAwait(false);
                 break;
             case UiAction.PauseAi:
-                RequireActiveRun();
+                var pausedRun = RequireActiveRun();
+                await _newSendPause.PauseNewSendsAsync("Operator paused AI from PCC Executive.", cancellationToken).ConfigureAwait(false);
+                await _store.SaveCheckpointAsync(new DurableCheckpoint($"autopilot-pause:{pausedRun.Id}", pausedRun.Id.ToString(), "autopilot-pause-v1", "{\"paused\":true}", DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
                 _autopilot = "PAUSED";
                 await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
                 break;
             case UiAction.ResumeAi:
-                RequireActiveRun();
+                var resumedRun = RequireActiveRun();
+                await _newSendPause.ResumeNewSendsAsync("Operator resumed AI from PCC Executive.", cancellationToken).ConfigureAwait(false);
+                await _store.SaveCheckpointAsync(new DurableCheckpoint($"autopilot-pause:{resumedRun.Id}", resumedRun.Id.ToString(), "autopilot-pause-v1", "{\"paused\":false}", DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
                 _autopilot = "READY";
                 await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
                 break;
@@ -168,7 +188,8 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
                 await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
                 break;
             case UiAction.SaveSettings:
-                await _store.SaveSettingsAsync(new PccExecutiveSettings(), cancellationToken).ConfigureAwait(false);
+                _settings = ParseSettings(targetId, _settings);
+                await _store.SaveSettingsAsync(_settings, cancellationToken).ConfigureAwait(false);
                 await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
                 break;
             case UiAction.RunVerification:
@@ -181,6 +202,21 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
 
     private ProjectRun RequireActiveRun() =>
         _run ?? throw new InvalidOperationException("Select and resolve a project before using project runtime controls.");
+
+    private static PccExecutiveSettings ParseSettings(string? target, PccExecutiveSettings current)
+    {
+        if (string.IsNullOrWhiteSpace(target)) throw new InvalidOperationException("Selected settings are required.");
+        var values = target.Split(';', StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => x.Split('=', 2))
+            .Where(x => x.Length == 2)
+            .ToDictionary(x => x[0], x => x[1], StringComparer.OrdinalIgnoreCase);
+        var provider = values.GetValueOrDefault("provider") ?? throw new InvalidOperationException("Provider selection is required.");
+        if (!StringComparer.Ordinal.Equals(provider, "BrowserWeb"))
+            throw new InvalidOperationException("Only the Browser Web provider is currently configured.");
+        var dispatch = values.GetValueOrDefault("dispatch") ?? throw new InvalidOperationException("Dispatch mode selection is required.");
+        if (!Enum.TryParse<DispatchMode>(dispatch, out _)) throw new InvalidOperationException("Unsupported dispatch mode.");
+        return current with { Provider = "BrowserChat", DispatchMode = dispatch };
+    }
 
     private static void PersistLogicalAgents(SqliteStateStore store, ProjectRunId runId)
     {
@@ -355,7 +391,7 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             CurrentExecutionFlow: run is null ? "Project Selection → resolve canonical project → Dashboard" : "Project → Manager plan → validate → staged Workers → reconcile → Manager review",
             ApiConfigured: false,
             ProviderMode: ProviderMode.BrowserWeb,
-            DispatchSettings: DispatchSettingsSummary.ProductDefaults,
+            DispatchSettings: new DispatchSettingsSummary(Enum.TryParse<DispatchMode>(_settings.DispatchMode, out var mode) ? mode : DispatchMode.AutomaticStaged, _settings.BaseDispatchIntervalSeconds, _settings.AdaptivePacing, _settings.MaxWorkers, true, _settings.AutoResume, true),
             Update: new UpdateSummary("0.1.0", null, "Release hardening integrated", "Durable data path active", $"Schema v{schemaVersion}", "Updater rollback contract integrated", false),
             Projects: run is null
                 ? Array.Empty<ProjectSummary>()
