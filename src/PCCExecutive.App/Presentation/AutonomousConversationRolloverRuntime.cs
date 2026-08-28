@@ -307,10 +307,29 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
 
     private async Task CommitSuccessorAsync(ConversationRecord predecessor, ConversationRecord candidate, BrowserRuntimeRecord candidateRuntime, string checkpointId, string reason, CancellationToken cancellationToken)
     {
+        var provenCandidate = candidate with
+        {
+            UrlOrProviderIdentity = candidateRuntime.ProviderConversationIdentity ?? candidate.UrlOrProviderIdentity
+        };
+        var lifecycleResult = await RecoveryRolloverLifecycleBridge.CommitWithExistingConversationLifecycleManagerAsync(
+            predecessor,
+            provenCandidate,
+            checkpointId,
+            reason,
+            (archived, successor, committedCheckpointId, ct) => _store.CommitRolloverAsync(archived, successor, committedCheckpointId, ct),
+            cancellationToken).ConfigureAwait(false);
+
+        if (!lifecycleResult.Succeeded)
+        {
+            await SaveJournalAsync(predecessor, candidate, checkpointId, "LIFECYCLE_FINALIZATION_FAILED", lifecycleResult.Reason, cancellationToken).ConfigureAwait(false);
+            await PccHostRecoveryAccess.NewSendPause(_host).PauseNewSendsAsync($"ROLLOVER_LIFECYCLE_FINALIZATION_FAILED:{lifecycleResult.Reason}", cancellationToken).ConfigureAwait(false);
+            await RecordRuntimeEventAsync("ROLLOVER_LIFECYCLE_FINALIZATION_FAILED", lifecycleResult.Reason, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         var now = DateTimeOffset.UtcNow;
         var archived = predecessor with { State = ConversationLifecycleState.Archived, RetiredAt = now, SuccessorConversationId = candidate.ConversationId, RolloverReason = reason };
-        var successor = candidate with { State = ConversationLifecycleState.Active, UrlOrProviderIdentity = candidateRuntime.ProviderConversationIdentity ?? candidate.UrlOrProviderIdentity };
-        await _store.CommitRolloverAsync(archived, successor, checkpointId, cancellationToken).ConfigureAwait(false);
+        var successor = provenCandidate with { State = ConversationLifecycleState.Active };
         await SaveJournalAsync(archived, successor, checkpointId, "COMMITTED", reason, cancellationToken).ConfigureAwait(false);
 
         var oldRuntime = (await PccHostConversationAccess.RuntimeRegistry(_host).ListAsync(cancellationToken).ConfigureAwait(false))
