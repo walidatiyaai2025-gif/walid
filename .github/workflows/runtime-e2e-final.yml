@@ -1,0 +1,91 @@
+name: PCC Runtime E2E Final Acceptance
+
+on:
+  push:
+    branches:
+      - worker/pcc-runtime-e2e-final
+  pull_request:
+    branches:
+      - worker/pcc-final-runtime-e2e-closure
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pcc-runtime-e2e-final-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  convergence-proof:
+    name: 32-stage security convergence proof
+    runs-on: windows-latest
+    env:
+      PCCEXECUTIVE_LIVE_BROWSER: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Prove exact candidate and base ancestry
+        shell: pwsh
+        run: |
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = '${{ github.event.pull_request.head.sha || github.sha }}'.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "EXACT_HEAD_MISMATCH expected=$expected actual=$actual" }
+          git fetch origin worker/pcc-final-runtime-e2e-closure --no-tags
+          git merge-base --is-ancestor origin/worker/pcc-final-runtime-e2e-closure HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime acceptance candidate is not based on the live convergence branch.' }
+          Write-Host "EXACT_RUNTIME_E2E_HEAD=$actual"
+
+      - name: Domain Application App Browser Acceptance Infrastructure Integration E2E
+        shell: pwsh
+        run: ./build/Build.ps1 -Configuration Release -RequireProduct
+
+      - name: Assert tracked generated outputs are zero
+        shell: pwsh
+        run: ./build/Test-GeneratedOutputHygiene.ps1
+
+      - name: Prove release payload rejects SQLite sidecars and development contamination
+        shell: pwsh
+        run: |
+          $payload = Join-Path $env:RUNNER_TEMP 'pcc-release-payload-negative'
+          Remove-Item $payload -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $payload -Force | Out-Null
+          Set-Content (Join-Path $payload 'PCCExecutive.exe') 'safe-placeholder' -Encoding ascii
+          ./build/Test-ReleasePayload.ps1 -PayloadRoot $payload
+
+          function Assert-Rejected([string]$name) {
+            $path = Join-Path $payload $name
+            Set-Content $path 'forbidden-acceptance-fixture' -Encoding ascii
+            $rejected = $false
+            try { ./build/Test-ReleasePayload.ps1 -PayloadRoot $payload } catch { $rejected = $true }
+            Remove-Item $path -Force
+            if (-not $rejected) { throw "RELEASE_SCANNER_FAILED_TO_REJECT:$name" }
+            Write-Host "REJECTED:$name"
+          }
+
+          @(
+            'state.db-wal',
+            'state.db-shm',
+            'state.sqlite-wal',
+            'state.sqlite-shm',
+            'development-source.cs',
+            'developer.log'
+          ) | ForEach-Object { Assert-Rejected $_ }
+
+      - name: Upload deterministic test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-e2e-final-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            artifacts/test-results/**
+            artifacts/build/source-sha.txt
+          if-no-files-found: warn
+          retention-days: 14
