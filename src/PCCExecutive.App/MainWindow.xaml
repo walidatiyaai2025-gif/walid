@@ -13,7 +13,6 @@
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
-            <!-- premium custom chrome -->
             <Grid Grid.Row="0" Background="#07101C" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="250"/>
@@ -99,8 +98,32 @@
                                 <TextBlock Text="{Binding Snapshot.OperatorMessage}" FontWeight="SemiBold"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                <Button Content="Pause AI" Margin="0,0,8,0" Command="{Binding PauseAiCommand}" ToolTip="Checkpoints state and stops new dispatches; no session is destroyed."/>
-                                <Button Content="Resume" Command="{Binding ResumeAiCommand}"/>
+                                <Button Content="Pause AI" Margin="0,0,8,0" Command="{Binding PauseAiCommand}"
+                                        ToolTip="Stops new AI sends after checkpointing state. Disabled while AI is already paused or no project runtime is active."
+                                        ToolTipService.ShowOnDisabled="True">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Snapshot.AutopilotState}" Value="PAUSED">
+                                                    <Setter Property="IsEnabled" Value="False"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                                <Button Content="Resume" Command="{Binding ResumeAiCommand}"
+                                        ToolTip="Available only while the runtime is PAUSED." ToolTipService.ShowOnDisabled="True">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                            <Setter Property="IsEnabled" Value="False"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Snapshot.AutopilotState}" Value="PAUSED">
+                                                    <Setter Property="IsEnabled" Value="True"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
                             </StackPanel>
                         </Grid>
                     </Border>
