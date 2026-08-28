@@ -1,0 +1,18 @@
+artifacts/
+.vs/
+*.user
+*.suo
+
+# .NET generated build outputs
+**/bin/
+**/obj/
+*.dll
+*.pdb
+
+# Test-generated outputs
+TestResults/
+*.trx
+
+# Local/runtime validation transcripts and triggers
+build/final-runtime-closure.last.log
+build/runtime-closure.request
