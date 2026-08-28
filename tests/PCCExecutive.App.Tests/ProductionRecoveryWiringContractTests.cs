@@ -12,8 +12,8 @@ public sealed class ProductionRecoveryWiringContractTests
         var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
 
         AssertOrdered(source,
-            "startup.BeginStartupAsync(run.Id)",
-            "startup.ReconstructAsync(run.Id)",
+            "startupRecovery.BeginStartupAsync(run.Id)",
+            "startupRecovery.ReconstructAsync(run.Id)",
             "gateway.RecoverStartupBrowserStateAsync()",
             "AutonomousConversationRolloverRuntime.Attach(gateway)",
             "gateway.EnsureAutopilotLoop()");
@@ -63,10 +63,26 @@ public sealed class ProductionRecoveryWiringContractTests
     }
 
     [Fact]
+    public void Loop_guard_restart_restores_durable_repetition_state_before_auto_resume()
+    {
+        var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
+
+        AssertOrdered(source,
+            "store.LoadCheckpointAsync($\"loop-guard:{run.Id}\")",
+            "loop.PlanFingerprints.TakeLast(3)",
+            "loop.VerifiedCompletion.TakeLast(3)",
+            "_runtimeErrorFingerprint = loop.RuntimeErrorFingerprint",
+            "_runtimeErrorCount = loop.RuntimeErrorCount",
+            "if (loop.AutoStopped)",
+            "AutonomousConversationRolloverRuntime.Attach(gateway)",
+            "gateway.EnsureAutopilotLoop()");
+    }
+
+    [Fact]
     public void Normal_disposal_invokes_safe_shutdown_coordinator()
     {
         var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
-        var method = Slice(source, "public async ValueTask DisposeAsync()", "private static string StableHash");
+        var method = Slice(source, "public async ValueTask DisposeAsync()", "private OrchestrationPhase CurrentOrchestrationPhase");
 
         AssertOrdered(method,
             "_rolloverRuntime.DisposeAsync()",
