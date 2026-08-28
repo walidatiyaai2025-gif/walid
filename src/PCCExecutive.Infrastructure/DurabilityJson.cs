@@ -17,6 +17,7 @@ internal static class DurabilityJson
         options.Converters.Add(new ManagerEstimateJsonConverter());
         options.Converters.Add(new VerifiedCompletionJsonConverter());
         options.Converters.Add(new ReadOnlySetJsonConverterFactory());
+        options.Converters.Add(new ReadOnlyListJsonConverterFactory());
         return options;
     }
 
@@ -128,6 +129,24 @@ internal static class DurabilityJson
             JsonSerializer.Deserialize<HashSet<T>>(ref reader, options) ?? new HashSet<T>();
 
         public override void Write(Utf8JsonWriter writer, IReadOnlySet<T> value, JsonSerializerOptions options) =>
+            JsonSerializer.Serialize(writer, value.ToArray(), options);
+    }
+
+    private sealed class ReadOnlyListJsonConverterFactory : JsonConverterFactory
+    {
+        public override bool CanConvert(Type typeToConvert) =>
+            typeToConvert.IsGenericType && typeToConvert.GetGenericTypeDefinition() == typeof(IReadOnlyList<>);
+
+        public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options) =>
+            (JsonConverter)Activator.CreateInstance(typeof(ReadOnlyListJsonConverter<>).MakeGenericType(typeToConvert.GetGenericArguments()[0]))!;
+    }
+
+    private sealed class ReadOnlyListJsonConverter<T> : JsonConverter<IReadOnlyList<T>>
+    {
+        public override IReadOnlyList<T> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            JsonSerializer.Deserialize<T[]>(ref reader, options) ?? Array.Empty<T>();
+
+        public override void Write(Utf8JsonWriter writer, IReadOnlyList<T> value, JsonSerializerOptions options) =>
             JsonSerializer.Serialize(writer, value.ToArray(), options);
     }
 
