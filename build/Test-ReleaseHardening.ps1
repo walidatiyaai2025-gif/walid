@@ -94,7 +94,9 @@ try {
     if (-not $missingFailed) { throw 'Missing-module production failure self-test failed.' }
 
     Write-Host 'RELEASE_HARDENING_TESTS_PASS'
+    $global:LASTEXITCODE = 0
 }
 finally {
     Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
 }
+exit 0
