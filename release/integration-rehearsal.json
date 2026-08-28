@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "canonical": {
     "branch": "task/pcc-executive-t0001-v1",
-    "sha": "8d23b936b79d7f2419981e830ffbe7ee5ac99547"
+    "sha": "6c0895736777c461c884b5608451bda66e646711"
   },
   "databaseSchemaTarget": "UNRESOLVED",
   "minimumUpgradeVersion": "NONE_FRESH_BASELINE",
@@ -12,13 +12,13 @@
   "chains": [
     {
       "owner": "WORKER_1",
-      "name": "FOUNDATION_PCC_GITHUB",
-      "head": "032058791bd009c22691c4db437f02e369057811",
+      "name": "FOUNDATION_PCC_GITHUB_MANAGER_ORCHESTRATION",
+      "head": "eff2ed24c09952f703541695a9925414dc1797fb",
       "prs": [4, 7],
-      "dependsOn": ["f807c0978d93f06f930108081eaf0ec118f91d06"],
+      "dependsOn": ["032058791bd009c22691c4db437f02e369057811"],
       "state": "PENDING_PR",
-      "includeInPartialCandidate": true,
-      "reason": "Foundation plus PCC/GitHub child PR content is available but not canonical."
+      "includeInPartialCandidate": false,
+      "reason": "Foundation and PCC/GitHub are canonical; current Manager orchestration follow-on is two commits beyond PR #7 and has no accepted PR yet, so validate it independently but do not merge it into the rehearsal candidate."
     },
     {
       "owner": "WORKER_2",
@@ -28,27 +28,27 @@
       "dependsOn": [],
       "state": "BLOCKED",
       "includeInPartialCandidate": false,
-      "reason": "Current Worker 2 branch is still at the canonical baseline; PCCExecutive.Infrastructure/persistence implementation is not consumable yet."
+      "reason": "Current Worker 2 branch remains at the pre-implementation baseline; PCCExecutive.Infrastructure/persistence is not consumable and databaseSchemaTarget remains UNRESOLVED."
     },
     {
       "owner": "WORKER_3",
-      "name": "BROWSER_RESILIENCE",
+      "name": "BROWSER_RESILIENCE_E2E",
       "head": "df1254161311cecf2147bde09458c0893952fee8",
       "prs": [5, 8],
       "dependsOn": ["97b4134ccfef67d2c534f774c8a4852ce5cde0ae"],
-      "state": "PENDING_PR",
-      "includeInPartialCandidate": true,
-      "reason": "Browser runtime plus resilience child PR content is available but not canonical."
+      "state": "FOUND",
+      "includeInPartialCandidate": false,
+      "reason": "Browser runtime and resilience are integrated on canonical; current browser-e2e branch has not advanced beyond the integrated resilience head."
     },
     {
       "owner": "WORKER_4",
       "name": "PREMIUM_WPF_UI",
-      "head": "8d23b936b79d7f2419981e830ffbe7ee5ac99547",
+      "head": "af5f2b3d783752b4272f521f192ab6068bda86ac",
       "prs": [],
       "dependsOn": [],
-      "state": "BLOCKED",
+      "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "Current Worker 4 branch is still at the canonical baseline; PCCExecutive.App is not consumable yet."
+      "reason": "Premium WPF shell exact head is integrated on canonical at 6c0895736777c461c884b5608451bda66e646711."
     },
     {
       "owner": "WORKER_5",
@@ -56,9 +56,9 @@
       "head": "2524ada71367da112e55b648820c3f30ce738546",
       "prs": [6, 9],
       "dependsOn": ["ddebed8704a508b16186e19441aa1dcb9fcf278c"],
-      "state": "PENDING_PR",
-      "includeInPartialCandidate": true,
-      "reason": "Installer foundation plus release-hardening child PR content is available but not canonical."
+      "state": "FOUND",
+      "includeInPartialCandidate": false,
+      "reason": "Installer foundation and release hardening are integrated on canonical; this Wave validates the integrated result without restacking the historical child heads."
     }
   ],
   "expectedModules": [
