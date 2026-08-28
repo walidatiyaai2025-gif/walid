@@ -4,46 +4,27 @@
   "title": "PCC Executive Update Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schemaVersion",
-    "product",
-    "repository",
-    "task",
-    "version",
-    "sourceSha",
-    "artifactHash",
-    "targetArchitecture",
-    "generatedAt",
-    "workflowRun",
-    "buildId",
-    "packageIdentity",
-    "fileName"
-  ],
+  "required": ["schemaVersion","product","repository","task","version","sourceSha","artifactHash","targetArchitecture","runtime","selfContained","generatedAt","workflowRun","buildId","packageIdentity","fileName","applicationFileHash","databaseSchemaTarget","minimumUpgradeVersion","signingState","sbomReference"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "product": { "const": "PCC Executive" },
     "repository": { "const": "walidatiyaai2025-gif/walid" },
     "task": { "const": "PCCEXECUTIVE-T0001" },
-    "version": {
-      "type": "string",
-      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
-    },
-    "sourceSha": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{40}$"
-    },
-    "artifactHash": {
-      "type": "string",
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$" },
+    "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "artifactHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "targetArchitecture": { "const": "win-x64" },
+    "runtime": { "const": "win-x64" },
+    "selfContained": { "const": true },
     "generatedAt": { "type": "string", "format": "date-time" },
     "workflowRun": { "type": "string", "minLength": 1 },
     "buildId": { "type": "string", "minLength": 1 },
     "packageIdentity": { "type": "string", "minLength": 1 },
-    "fileName": {
-      "type": "string",
-      "pattern": "^PCCExecutive-[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?-Setup-x64\\.exe$"
-    }
+    "fileName": { "type": "string", "pattern": "^PCCExecutive-[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?-Setup-x64\\.exe$" },
+    "applicationFileHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "databaseSchemaTarget": { "type": "string", "minLength": 1 },
+    "minimumUpgradeVersion": { "type": "string", "minLength": 1 },
+    "signingState": { "enum": ["UNSIGNED_DEV","SIGNING_NOT_CONFIGURED","SIGNED","SIGNATURE_INVALID"] },
+    "sbomReference": { "type": "string", "minLength": 1 }
   }
 }

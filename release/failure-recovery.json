@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "rollbackClaimPolicy": "PROVE_BEFORE_SUCCESS",
+  "scenarios": [
+    { "failure": "PACKAGE_HASH_MISMATCH", "action": "REJECT_PACKAGE_BEFORE_EXECUTION", "preserveBackup": true, "rollbackExpectation": "NOT_STARTED" },
+    { "failure": "INSTALLER_LAUNCH_FAILURE", "action": "SURFACE_INSTALLER_START_FAILURE", "preserveBackup": true, "rollbackExpectation": "EXISTING_INSTALL_REMAINS_AUTHORITATIVE" },
+    { "failure": "SAFE_SHUTDOWN_REFUSED", "action": "ABORT_BEFORE_BINARY_REPLACEMENT", "preserveBackup": true, "rollbackExpectation": "NOT_REQUIRED_NO_REPLACEMENT" },
+    { "failure": "MIGRATION_FAILURE", "action": "RESTORE_CHECKPOINT_AND_ROLLBACK_BINARIES_WHEN_AVAILABLE", "preserveBackup": true, "rollbackExpectation": "VERIFY_OR_REPORT_ROLLBACK_FAILED" },
+    { "failure": "APPLICATION_START_FAILURE", "action": "ROLLBACK_TO_PREVIOUS_KNOWN_GOOD", "preserveBackup": true, "rollbackExpectation": "VERIFY_OR_REPORT_ROLLBACK_FAILED" },
+    { "failure": "HEALTH_VERIFICATION_FAILURE", "action": "ROLLBACK_TO_PREVIOUS_KNOWN_GOOD", "preserveBackup": true, "rollbackExpectation": "VERIFY_OR_REPORT_ROLLBACK_FAILED" }
+  ]
+}
