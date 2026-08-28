@@ -51,7 +51,17 @@ public sealed class VerifiedBackupService
             source.BackupDatabase(target);
         var hash = await HashFileAsync(path, cancellationToken).ConfigureAwait(false);
         var integrity = await _integrity.CheckAsync(path, cancellationToken).ConfigureAwait(false);
-        var manifest = new BackupManifest(backupId, await _schema.GetDatabaseIdAsync(cancellationToken).ConfigureAwait(false), await _store.GetSchemaVersionAsync(cancellationToken).ConfigureAwait(false), applicationVersion, sourceSha, DateTimeOffset.UtcNow, reason, path, hash, integrity.State);
+        var manifest = new BackupManifest(
+            backupId,
+            await _schema.GetDatabaseIdAsync(cancellationToken).ConfigureAwait(false),
+            await _store.GetSchemaVersionAsync(cancellationToken).ConfigureAwait(false),
+            applicationVersion,
+            sourceSha,
+            DateTimeOffset.UtcNow,
+            reason,
+            path,
+            hash,
+            integrity.State);
         var manifestPath = path + ".manifest.json";
         await File.WriteAllTextAsync(manifestPath, JsonSerializer.Serialize(manifest, Json), cancellationToken).ConfigureAwait(false);
         var verified = await VerifyAsync(manifestPath, cancellationToken).ConfigureAwait(false);
@@ -63,10 +73,35 @@ public sealed class VerifiedBackupService
     {
         var findings = new List<string>();
         BackupManifest? manifest;
-        try { manifest = JsonSerializer.Deserialize<BackupManifest>(await File.ReadAllTextAsync(manifestPath, cancellationToken).ConfigureAwait(false), Json); }
-        catch (Exception ex) when (ex is IOException or JsonException) { return new(new("INVALID", "INVALID", 0, "", null, DateTimeOffset.MinValue, "", "", "", DatabaseIntegrityState.INTEGRITY_FAILED), manifestPath, false, [$"manifest:{ex.GetType().Name}"]); }
-        if (manifest is null) return new(new("INVALID", "INVALID", 0, "", null, DateTimeOffset.MinValue, "", "", "", DatabaseIntegrityState.INTEGRITY_FAILED), manifestPath, false, ["manifest:null"]);
-        if (!File.Exists(manifest.FilePath)) findings.Add("backup-file:missing");
+        try
+        {
+            manifest = JsonSerializer.Deserialize<BackupManifest>(
+                await File.ReadAllTextAsync(manifestPath, cancellationToken).ConfigureAwait(false), Json);
+        }
+        catch (Exception ex) when (ex is IOException or JsonException)
+        {
+            return new(
+                new("INVALID", "INVALID", 0, "", null, DateTimeOffset.MinValue, "", "", "", DatabaseIntegrityState.INTEGRITY_FAILED),
+                manifestPath,
+                false,
+                [$"manifest:{ex.GetType().Name}"]);
+        }
+
+        if (manifest is null)
+            return new(
+                new("INVALID", "INVALID", 0, "", null, DateTimeOffset.MinValue, "", "", "", DatabaseIntegrityState.INTEGRITY_FAILED),
+                manifestPath,
+                false,
+                ["manifest:null"]);
+
+        if (string.IsNullOrWhiteSpace(manifest.SourceDatabaseId) || string.Equals(manifest.SourceDatabaseId, "INVALID", StringComparison.OrdinalIgnoreCase))
+            findings.Add("database-id:missing");
+        if (manifest.SchemaVersion > DurabilitySchemaManager.TargetSchemaVersion)
+            findings.Add("schema-version:newer-than-application");
+        if (!File.Exists(manifest.FilePath))
+        {
+            findings.Add("backup-file:missing");
+        }
         else
         {
             var hash = await HashFileAsync(manifest.FilePath, cancellationToken).ConfigureAwait(false);
@@ -81,9 +116,17 @@ public sealed class VerifiedBackupService
                 var schemaVersion = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
                 if (schemaVersion != manifest.SchemaVersion) findings.Add("schema-version:mismatch");
             }
-            catch (SqliteException ex) { findings.Add($"schema:{ex.SqliteErrorCode}"); }
+            catch (SqliteException ex)
+            {
+                findings.Add($"schema:{ex.SqliteErrorCode}");
+            }
         }
-        return new(manifest, manifestPath, findings.Count == 0 && manifest.IntegrityStatus == DatabaseIntegrityState.INTEGRITY_OK, findings);
+
+        return new(
+            manifest,
+            manifestPath,
+            findings.Count == 0 && manifest.IntegrityStatus == DatabaseIntegrityState.INTEGRITY_OK,
+            findings);
     }
 
     public async Task<string> RestoreAsync(VerifiedBackup backup, bool activeDatabaseLease, CancellationToken cancellationToken = default)
@@ -91,6 +134,8 @@ public sealed class VerifiedBackupService
         if (activeDatabaseLease) throw new InvalidOperationException("Cannot restore over an actively leased canonical database.");
         var reverified = await VerifyAsync(backup.ManifestPath, cancellationToken).ConfigureAwait(false);
         if (!reverified.IsVerified) throw new InvalidDataException("Only a verified compatible backup may be restored.");
+
+        await EnsureTargetIdentityCompatibleAsync(reverified.Manifest, cancellationToken).ConfigureAwait(false);
 
         var suffix = $".preserved-{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}";
         var preserved = _store.DatabasePath + suffix + ".db";
@@ -116,10 +161,29 @@ public sealed class VerifiedBackupService
         }
     }
 
+    private async Task EnsureTargetIdentityCompatibleAsync(BackupManifest manifest, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(_store.DatabasePath)) return;
+
+        var integrity = await _integrity.CheckAsync(_store.DatabasePath, cancellationToken).ConfigureAwait(false);
+        if (integrity.State != DatabaseIntegrityState.INTEGRITY_OK)
+        {
+            // Corruption recovery may not be able to read the target identity. The verified
+            // backup still carries the source identity and the corrupt source is preserved.
+            return;
+        }
+
+        await _schema.InitializeMetadataAsync(cancellationToken).ConfigureAwait(false);
+        var currentDatabaseId = await _schema.GetDatabaseIdAsync(cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(currentDatabaseId, manifest.SourceDatabaseId, StringComparison.Ordinal))
+            throw new InvalidDataException("Backup database identity does not match the canonical database being restored.");
+    }
+
     private async Task PersistManifestAsync(BackupManifest manifest, CancellationToken cancellationToken)
     {
         await _schema.InitializeMetadataAsync(cancellationToken).ConfigureAwait(false);
-        if (await _schema.ClassifyAsync(cancellationToken).ConfigureAwait(false) == SchemaCompatibility.UPGRADE_REQUIRED) await _schema.MigrateAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (await _schema.ClassifyAsync(cancellationToken).ConfigureAwait(false) == SchemaCompatibility.UPGRADE_REQUIRED)
+            await _schema.MigrateAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
         await using var connection = await SqliteDurabilityConnection.OpenAsync(_store.DatabasePath, _policy, cancellationToken: cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.CommandText = "INSERT OR REPLACE INTO durability_backups(backup_id,source_database_id,schema_version,application_version,source_sha,created_at,reason,file_path,file_hash,integrity_status,manifest_json) VALUES($id,$source,$schema,$app,$sha,$at,$reason,$path,$hash,$integrity,$json);";
