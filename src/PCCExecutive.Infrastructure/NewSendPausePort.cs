@@ -43,6 +43,12 @@ public sealed class BrowserNewSendPausePort : INewSendPausePort
         lock (_sync)
         {
             var resumedKind = ClassifyResume(reason);
+            if (resumedKind == PauseKind.Operator && _blockers.ContainsKey(PauseKind.StartupRecovery))
+            {
+                ApplyEffectivePauseLocked();
+                throw new InvalidOperationException("STARTUP_RECOVERY_REQUIRED: operator Resume AI cannot clear the startup Browser recovery fence.");
+            }
+
             _blockers.Remove(resumedKind);
             if (_blockers.Count == 0)
             {
@@ -51,8 +57,6 @@ public sealed class BrowserNewSendPausePort : INewSendPausePort
             }
 
             ApplyEffectivePauseLocked();
-            if (resumedKind == PauseKind.Operator && _blockers.ContainsKey(PauseKind.StartupRecovery))
-                throw new InvalidOperationException("STARTUP_RECOVERY_REQUIRED: operator Resume AI cannot clear the startup Browser recovery fence.");
         }
         return Task.CompletedTask;
     }
@@ -74,7 +78,7 @@ public sealed class BrowserNewSendPausePort : INewSendPausePort
 
     private static PauseKind ClassifyPause(string reason)
     {
-        if (reason.StartsWith("Operator paused dispatch", StringComparison.Ordinal) ||
+        if (reason.StartsWith("Operator paused", StringComparison.Ordinal) ||
             reason.StartsWith("Restored persisted operator pause", StringComparison.Ordinal))
             return PauseKind.Operator;
         if (reason.StartsWith("STARTUP_BROWSER_RECONCILIATION:", StringComparison.Ordinal))
