@@ -79,39 +79,47 @@ public sealed class FirstBuildConvergenceTests
         Assert.Equal(0, process.ExitCode);
     }
 
-    [Theory]
-    [InlineData(1920d, 1080d, "100%")]
-    [InlineData(1536d, 864d, "125%")]
-    [InlineData(1280d, 720d, "150%")]
-    public void Premium_shell_survives_1920x1080_dpi_equivalent_viewport(double width, double height, string scale)
+    [Fact]
+    public void Premium_shell_survives_1920x1080_dpi_equivalent_viewports()
     {
         Exception? failure = null;
         var thread = new Thread(() =>
         {
             try
             {
-                var vm = new MainViewModel(new ProjectSelectionGateway(resolve: false));
-                var window = new MainWindow(vm)
+                var application = new PCCExecutive.App.App();
+                application.InitializeComponent();
+
+                foreach (var viewport in new[]
                 {
-                    Width = width,
-                    Height = height,
-                    WindowStartupLocation = System.Windows.WindowStartupLocation.Manual,
-                    Left = 0,
-                    Top = 0
-                };
-                window.Show();
-                window.Dispatcher.Invoke(window.UpdateLayout);
+                    (Width: 1920d, Height: 1080d, Scale: "100%"),
+                    (Width: 1536d, Height: 864d, Scale: "125%"),
+                    (Width: 1280d, Height: 720d, Scale: "150%")
+                })
+                {
+                    var vm = new MainViewModel(new ProjectSelectionGateway(resolve: false));
+                    var window = new MainWindow(vm)
+                    {
+                        Width = viewport.Width,
+                        Height = viewport.Height,
+                        WindowStartupLocation = System.Windows.WindowStartupLocation.Manual,
+                        Left = 0,
+                        Top = 0
+                    };
+                    window.Show();
+                    window.Dispatcher.Invoke(window.UpdateLayout);
 
-                Assert.True(window.IsLoaded, $"{scale} viewport did not load MainWindow.");
-                Assert.True(window.IsVisible, $"{scale} viewport did not show MainWindow.");
-                Assert.True(window.ActualWidth >= window.MinWidth, $"{scale} viewport collapsed below minimum width.");
-                Assert.True(window.ActualHeight >= window.MinHeight, $"{scale} viewport collapsed below minimum height.");
-                Assert.Equal(ScreenId.ProjectSelection, vm.SelectedScreen);
-                Assert.Equal(15, vm.Navigation.Count);
-                Assert.True(vm.RefreshCommand.CanExecute(null));
-                Assert.NotNull(vm.CurrentScreen);
+                    Assert.True(window.IsLoaded, $"{viewport.Scale} viewport did not load MainWindow.");
+                    Assert.True(window.IsVisible, $"{viewport.Scale} viewport did not show MainWindow.");
+                    Assert.True(window.ActualWidth >= window.MinWidth, $"{viewport.Scale} viewport collapsed below minimum width.");
+                    Assert.True(window.ActualHeight >= window.MinHeight, $"{viewport.Scale} viewport collapsed below minimum height.");
+                    Assert.Equal(ScreenId.ProjectSelection, vm.SelectedScreen);
+                    Assert.Equal(15, vm.Navigation.Count);
+                    Assert.True(vm.RefreshCommand.CanExecute(null));
+                    Assert.NotNull(vm.CurrentScreen);
 
-                window.AllowCloseAndClose();
+                    window.AllowCloseAndClose();
+                }
             }
             catch (Exception ex)
             {
@@ -120,7 +128,7 @@ public sealed class FirstBuildConvergenceTests
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        Assert.True(thread.Join(20_000), $"{scale} viewport layout smoke timed out.");
+        Assert.True(thread.Join(30_000), "DPI-equivalent viewport layout smoke timed out.");
         if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
