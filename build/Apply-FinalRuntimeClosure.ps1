@@ -5,14 +5,16 @@ Set-Location $root
 
 function Require-Text([string]$Path, [string]$Needle) {
     $full = Join-Path $root $Path
-    if (-not (Test-Path $full)) { throw "Required runtime closure file missing: $Path" }
+    if (-not (Test-Path $full)) { throw "Required runtime closure file missing: ${Path}" }
     $text = [IO.File]::ReadAllText($full)
-    if (-not $text.Contains($Needle)) { throw "Required runtime closure invariant missing from $Path: $Needle" }
+    if (-not $text.Contains($Needle)) { throw "Required runtime closure invariant missing from ${Path}: $Needle" }
     return $text
 }
 
 $browser = Require-Text 'src/PCCExecutive.Browser/DispatchAndResilience.cs' 'Func<CancellationToken, Task>? beforeSubmit = null'
-if ($browser.IndexOf('var proof = await _ownership.ProveAsync', [StringComparison]::Ordinal) -gt $browser.IndexOf('if (beforeSubmit is not null) await beforeSubmit', [StringComparison]::Ordinal)) {
+$proofIndex = $browser.IndexOf('var proof = await _ownership.ProveAsync', [StringComparison]::Ordinal)
+$callbackIndex = $browser.IndexOf('if (beforeSubmit is not null) await beforeSubmit', [StringComparison]::Ordinal)
+if ($proofIndex -lt 0 -or $callbackIndex -lt 0 -or $proofIndex -gt $callbackIndex) {
     throw 'Ownership proof must precede the durable pre-submit callback.'
 }
 
