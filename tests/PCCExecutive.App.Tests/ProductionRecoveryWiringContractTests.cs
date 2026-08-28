@@ -1,3 +1,4 @@
+using System.IO;
 using Xunit;
 
 namespace PCCExecutive.App.Tests;
@@ -26,6 +27,21 @@ public sealed class ProductionRecoveryWiringContractTests
         Assert.Contains("if (store.LoadLogicalAgentAsync(managerAgentId).GetAwaiter().GetResult() is null)", method, StringComparison.Ordinal);
         Assert.Contains("if (store.LoadLogicalAgentAsync(workerId).GetAwaiter().GetResult() is null)", method, StringComparison.Ordinal);
         Assert.Contains("LogicalSessionState.Ready", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Durable_global_rate_limit_and_offline_health_restore_send_gate_before_auto_resume()
+    {
+        var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
+
+        AssertOrdered(source,
+            "store.LoadCheckpointAsync($\"runtime-health:{run.Id}\")",
+            "_runtimeHealthFault = health.State",
+            "_sendGate.Apply(new ResilienceDecision",
+            "AutonomousConversationRolloverRuntime.Attach(gateway)",
+            "gateway.EnsureAutopilotLoop()");
+        Assert.Contains("ChatGptResilienceState.RateLimited", source, StringComparison.Ordinal);
+        Assert.Contains("ChatGptResilienceState.Offline", source, StringComparison.Ordinal);
     }
 
     [Fact]
