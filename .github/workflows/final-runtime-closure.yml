@@ -1,5 +1,5 @@
 name: PCC Executive final runtime closure
-# phase: durable-runtime-p1
+# phase: browser-ownership-fixtures
 
 on:
   push:
@@ -34,7 +34,7 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add src tests build/Apply-FinalRuntimeClosure.ps1 .gitignore .github/workflows/final-runtime-closure.yml
           if (-not (git diff --cached --quiet)) {
-            git commit -m "fix: wire durable autonomous runtime recovery and completion safety"
+            git commit -m "test: require explicit browser ownership proof"
             git push origin HEAD:worker/pcc-final-runtime-e2e-closure
           }
 
