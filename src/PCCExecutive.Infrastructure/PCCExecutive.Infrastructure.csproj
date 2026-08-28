@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>PCCExecutive.Infrastructure</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\PCCExecutive.Domain\PCCExecutive.Domain.csproj" />
+    <ProjectReference Include="..\PCCExecutive.Application\PCCExecutive.Application.csproj" />
+    <ProjectReference Include="..\PCCExecutive.Browser\PCCExecutive.Browser.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+  </ItemGroup>
+</Project>
