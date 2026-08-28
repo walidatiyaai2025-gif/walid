@@ -17,6 +17,24 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task Every_navigation_attempt_is_visible_in_runtime_inspector()
+    {
+        var memory = new InMemoryRuntimeDiagnosticStore();
+        var collector = new RuntimeDiagnosticCollector(memory, memory);
+        var state = new TestInspectorStateSource();
+        var services = new RuntimeInspectorServices(collector, state, (_, _, _, _) => Task.FromResult("{}"));
+        var vm = new MainViewModel(new FakeGateway(TestSnapshots.Healthy), runtimeInspector: services);
+
+        vm.Navigate(ScreenId.RuntimeInspector);
+
+        var events = await collector.ReadRecentAsync(10);
+        var navigation = Assert.Single(events, x => x.Event.Kind == RuntimeDiagnosticKind.Navigation);
+        Assert.Equal("RuntimeInspector", navigation.Event.Target);
+        Assert.True(navigation.Event.Allowed);
+        Assert.IsType<RuntimeInspectorViewModel>(vm.CurrentScreen);
+    }
+
+    [Fact]
     public void Destructive_session_action_requires_confirmation()
     {
         var gateway = new FakeGateway(TestSnapshots.Healthy);
@@ -254,6 +272,12 @@ public sealed class MainViewModelTests
             _snapshot = snapshot;
             SnapshotChanged?.Invoke(this, snapshot);
         }
+    }
+
+    private sealed class TestInspectorStateSource : IRuntimeInspectorStateSource
+    {
+        public Task<RuntimeInspectorState> CaptureAsync(CancellationToken cancellationToken = default) => Task.FromResult(new RuntimeInspectorState(
+            null, "BrowserWeb", "Unknown", "Not ready", "0 active", 0, "READY", null, [], []));
     }
 
     private static class TestSnapshots
