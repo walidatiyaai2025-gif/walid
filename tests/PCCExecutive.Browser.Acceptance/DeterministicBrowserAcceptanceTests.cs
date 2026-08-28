@@ -386,7 +386,7 @@ public sealed class DeterministicBrowserAcceptanceTests
         var recovered = await controller.RecoverOrphanAsync(runtime.RuntimeId);
 
         Assert.True(recovered.Succeeded);
-        Assert.Equal("DEAD_ORPHAN_REPLACED_WITH_NEW_PCC_RUNTIME", recovered.Reason);
+        Assert.Equal("STALE_OR_DEAD_ORPHAN_REPLACED_WITH_NEW_PCC_RUNTIME", recovered.Reason);
         Assert.Equal(runtime.LogicalAgentId, recovered.Runtime!.LogicalAgentId);
         Assert.Empty(host.KilledRuntimeIds);
         Assert.True(processes.IsAlive(unrelatedPid));
