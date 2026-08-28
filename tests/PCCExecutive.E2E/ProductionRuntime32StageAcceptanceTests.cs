@@ -61,17 +61,19 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         Stage(8);
 
         var managerDispatches = await new AutonomousDispatchJournal(h.Store).ListAsync(runId);
-        Assert.Single(managerDispatches.Where(x => x.LogicalAgentId == h.ManagerAgentId));
+        Assert.Single(managerDispatches, x => x.LogicalAgentId == h.ManagerAgentId);
         Assert.Equal(1, h.Adapter.EnterCount(managerRuntime.RuntimeId));
         Stage(9);
 
         var tasks = Enumerable.Range(1, 5)
-            .Select(i => ProductionRuntimeAcceptanceHarness.Task($"Runtime worker task {i}", $"tests/runtime-final/task-{i}", i))
+            .Select(i => ProductionRuntimeAcceptanceHarness.CreatePlannedTask($"Runtime worker task {i}", $"tests/runtime-final/task-{i}", i))
             .ToArray();
         var firstPlanJson = ProductionRuntimeAcceptanceHarness.PlanJson(h.Route, 70m, "CONTINUE", tasks);
-        h.Adapter.SetSemantic(managerRuntime.RuntimeId, ProductionRuntimeAcceptanceHarness.ScriptedBrowserAdapter.SemanticReady(firstPlanJson, complete: true));
-        Assert.Equal(ResponseCompleteness.Complete, (await h.Adapter.InspectAsync(managerRuntime,
-            new BrowserDispatchExpectation(runId.ToString(), h.ManagerAgentId.ToString(), managerRuntime.TaskId!, managerRuntime.ConversationIdentity!, managerRuntime.ProviderConversationIdentity!))).ResponseCompleteness);
+        h.Adapter.SetSemantic(managerRuntime.RuntimeId,
+            ProductionRuntimeAcceptanceHarness.ScriptedBrowserAdapter.SemanticReady(firstPlanJson, complete: true));
+        var managerSemantic = await h.Adapter.InspectAsync(managerRuntime,
+            new BrowserDispatchExpectation(runId.ToString(), h.ManagerAgentId.ToString(), managerRuntime.TaskId!, managerRuntime.ConversationIdentity!, managerRuntime.ProviderConversationIdentity!));
+        Assert.Equal(ResponseCompleteness.Complete, managerSemantic.ResponseCompleteness);
         Stage(10);
 
         await h.ReconcileAsync();
@@ -108,7 +110,7 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         Stage(16);
 
         var scheduler = new BrowserDispatchScheduler();
-        var pacing = new DispatchSchedulerOptions(DispatchMode.AutomaticStaged, TimeSpan.FromSeconds(10), true, 5);
+        var pacing = new DispatchSchedulerOptions(PCCExecutive.Browser.DispatchMode.AutomaticStaged, TimeSpan.FromSeconds(10), true, 5);
         var first = scheduler.Evaluate(ProductionRuntimeAcceptanceHarness.Now, null, 0, pacing, new GlobalBrowserSendGate().Snapshot);
         var slowed = scheduler.Evaluate(ProductionRuntimeAcceptanceHarness.Now.AddSeconds(19), ProductionRuntimeAcceptanceHarness.Now, 1, pacing, new GlobalBrowserSendGate().Snapshot, ChatGptResilienceState.Slow);
         var ready = scheduler.Evaluate(ProductionRuntimeAcceptanceHarness.Now.AddSeconds(20), ProductionRuntimeAcceptanceHarness.Now, 1, pacing, new GlobalBrowserSendGate().Snapshot, ChatGptResilienceState.Slow);
@@ -120,12 +122,12 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         var workerRuntimes = new List<BrowserRuntimeRecord>();
         for (var slotNumber = 1; slotNumber <= 5; slotNumber++)
         {
-            var workerRuntime = await h.RuntimeForAsync(workerIds[slotNumber - 1]);
-            workerRuntimes.Add(workerRuntime);
+            var runtime = await h.RuntimeForAsync(workerIds[slotNumber - 1]);
+            workerRuntimes.Add(runtime);
             var expectedTask = h.Assignments.Single(x => x.Value.Value == slotNumber).Key;
-            Assert.Equal(slotNumber.ToString(), workerRuntime.WorkerSlotId);
-            Assert.Equal(expectedTask.ToString(), workerRuntime.TaskId);
-            Assert.Equal(1, h.Adapter.EnterCount(workerRuntime.RuntimeId));
+            Assert.Equal(slotNumber.ToString(), runtime.WorkerSlotId);
+            Assert.Equal(expectedTask.ToString(), runtime.TaskId);
+            Assert.Equal(1, h.Adapter.EnterCount(runtime.RuntimeId));
         }
         Stage(18);
 
@@ -181,9 +183,10 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         Stage(26);
 
         managerRuntime = await h.RuntimeForAsync(h.ManagerAgentId);
-        var secondTask = ProductionRuntimeAcceptanceHarness.Task("Second wave verification repair", "tests/runtime-final/second-wave", 0);
-        var secondPlanJson = ProductionRuntimeAcceptanceHarness.PlanJson(h.Route, 85m, "CONTINUE", secondTask);
-        h.Adapter.SetSemantic(managerRuntime.RuntimeId, ProductionRuntimeAcceptanceHarness.ScriptedBrowserAdapter.SemanticReady(secondPlanJson, complete: true));
+        var secondTask = ProductionRuntimeAcceptanceHarness.CreatePlannedTask("Second wave verification repair", "tests/runtime-final/second-wave");
+        h.Adapter.SetSemantic(managerRuntime.RuntimeId,
+            ProductionRuntimeAcceptanceHarness.ScriptedBrowserAdapter.SemanticReady(
+                ProductionRuntimeAcceptanceHarness.PlanJson(h.Route, 85m, "CONTINUE", secondTask), complete: true));
         await h.ReconcileAsync();
         Assert.Equal(2, h.CurrentWave!.Sequence);
         Assert.Equal(WaveState.Ready, h.CurrentWave.State);
@@ -192,7 +195,7 @@ public sealed class ProductionRuntime32StageAcceptanceTests
 
         Assert.Equal(1, h.Assignments.Single().Value.Value);
         var workerOneAgent = workerIds[0];
-        h.Adapter.QueueSubmission(provenSubmitted: false, submittedUnknown: true, reason: "SUBMITTED_UNKNOWN");
+        h.Adapter.QueueSubmission(false, true, "SUBMITTED_UNKNOWN");
         await h.StartDispatchAsync();
         var secondWorkerRuntime = await h.RuntimeForAsync(workerOneAgent);
         Assert.Equal("1", secondWorkerRuntime.WorkerSlotId);
@@ -212,23 +215,28 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         Assert.Equal(preRestartAssignment, h.Assignments.Single());
         Assert.Equal("PAUSED", h.Autopilot);
         Assert.True(h.SendGate.Snapshot.IsPaused);
-        foreach (var agent in preRestartAgents) Assert.NotNull(await h.Store.LoadLogicalAgentAsync(agent));
+        foreach (var agent in preRestartAgents)
+            Assert.NotNull(await h.Store.LoadLogicalAgentAsync(agent));
         await h.ResumeAsync();
         Assert.False(h.SendGate.Snapshot.IsPaused);
         Stage(29);
 
         var journal = new AutonomousDispatchJournal(h.Store);
         var durableDispatches = await journal.ListAsync(h.Run.Id);
-        var uncertain = Assert.Single(durableDispatches.Where(x => x.TaskId == secondTask.Id));
+        var uncertain = Assert.Single(durableDispatches, x => x.TaskId == secondTask.Id);
         Assert.Equal(PCCExecutive.Domain.DispatchState.SUBMITTED_UNKNOWN, uncertain.State);
         var submitted = h.Adapter.SubmittedPrompts.Last(x => x.Expectation.TaskId == secondTask.Id.ToString());
-        var retryRequest = new AgentRequest(uncertain.ProjectRunId, uncertain.LogicalAgentId, uncertain.ConversationId, uncertain.Id, submitted.Prompt, uncertain.ContentHash, uncertain.WorkerSlotId, uncertain.TaskId, uncertain.WaveId, uncertain.ProviderConversationId);
+        var retryRequest = new AgentRequest(
+            uncertain.ProjectRunId, uncertain.LogicalAgentId, uncertain.ConversationId, uncertain.Id,
+            submitted.Prompt, uncertain.ContentHash, uncertain.WorkerSlotId, uncertain.TaskId,
+            uncertain.WaveId, uncertain.ProviderConversationId);
         var enterBeforeBlockedRetry = h.Adapter.PhysicalEnterCount;
         var blockedRetry = await h.AgentProvider.SendAsync(retryRequest);
         Assert.True(blockedRetry.IsUncertain);
         Assert.Equal(enterBeforeBlockedRetry, h.Adapter.PhysicalEnterCount);
 
-        await h.Store.UpdateAsync(uncertain.Id.ToString(), PCCExecutive.Browser.DispatchState.SafeRetry, "PROVEN_ABSENCE_AFTER_SEMANTIC_RECONCILIATION");
+        await h.Store.UpdateAsync(uncertain.Id.ToString(), PCCExecutive.Browser.DispatchState.SafeRetry,
+            "PROVEN_ABSENCE_AFTER_SEMANTIC_RECONCILIATION");
         var safeRetry = await h.AgentProvider.SendAsync(retryRequest);
         Assert.True(safeRetry.Accepted);
         Assert.Equal(enterBeforeBlockedRetry + 1, h.Adapter.PhysicalEnterCount);
@@ -267,48 +275,50 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         var managerPredecessor = await h.ActiveBrowserConversationAsync(h.ManagerAgentId);
         await h.InvokeGovernedRolloverAsync(managerRuntime, managerPredecessor, "MANAGER_CONTEXT_PRESSURE_ACCEPTANCE");
         var managerLineage = await h.BrowserConversationsAsync(h.ManagerAgentId);
-        Assert.Single(managerLineage.Where(x => x.State == ConversationLifecycleState.Active));
+        Assert.Single(managerLineage, x => x.State == ConversationLifecycleState.Active);
         Assert.Contains(managerLineage, x => x.ConversationId == managerPredecessor.ConversationId && x.State == ConversationLifecycleState.Archived);
 
         var workerPredecessor = await h.ActiveBrowserConversationAsync(workerOneAgent);
         secondWorkerRuntime = await h.RuntimeForAsync(workerOneAgent);
         await h.InvokeGovernedRolloverAsync(secondWorkerRuntime, workerPredecessor, "WORKER_CONTEXT_PRESSURE_ACCEPTANCE");
         var workerLineage = await h.BrowserConversationsAsync(workerOneAgent);
-        Assert.Single(workerLineage.Where(x => x.State == ConversationLifecycleState.Active));
+        Assert.Single(workerLineage, x => x.State == ConversationLifecycleState.Active);
         Assert.Contains(workerLineage, x => x.ConversationId == workerPredecessor.ConversationId && x.State == ConversationLifecycleState.Archived);
 
         var crashAgent = h.WorkerAgentIds[1];
         var crashRuntime = await h.RuntimeForAsync(crashAgent);
         var crashPredecessor = await h.ActiveBrowserConversationAsync(crashAgent);
-        h.Adapter.QueueSubmission(provenSubmitted: false, submittedUnknown: true, reason: "SUBMITTED_UNKNOWN");
+        h.Adapter.QueueSubmission(false, true, "SUBMITTED_UNKNOWN");
         await h.InvokeGovernedRolloverAsync(crashRuntime, crashPredecessor, "CRASH_DURING_ROLLOVER_ACCEPTANCE");
         var beforeCrashLineage = await h.BrowserConversationsAsync(crashAgent);
         Assert.Contains(beforeCrashLineage, x => x.State == ConversationLifecycleState.Candidate);
         await h.ForceInterruptedRestartAsync();
         var recoveredCrashLineage = await h.BrowserConversationsAsync(crashAgent);
-        Assert.Single(recoveredCrashLineage.Where(x => x.State == ConversationLifecycleState.Active));
+        Assert.Single(recoveredCrashLineage, x => x.State == ConversationLifecycleState.Active);
         Assert.Contains(recoveredCrashLineage, x => x.ConversationId == crashPredecessor.ConversationId && x.State == ConversationLifecycleState.Archived);
 
         var activeManager = await h.ActiveBrowserConversationAsync(h.ManagerAgentId);
         managerRuntime = await h.RuntimeForAsync(h.ManagerAgentId);
         var futurePrompt = "POST_ROLLOVER_FUTURE_MANAGER_SEND";
         var futureHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(futurePrompt))).ToLowerInvariant();
-        var futureTask = CanonicalDispatchIdentity.StableTask(h.Run.Id, managerRuntime.TaskId! + ":future");
-        var futureWave = CanonicalDispatchIdentity.StableWave(h.Run.Id, managerRuntime.TaskId! + ":future");
-        var futureCorrelation = new DurableDispatchCorrelation(h.Run.Id, h.ManagerAgentId, null, futureTask, futureWave, new ConversationId(Guid.Parse(activeManager.ConversationId)), managerRuntime.ProviderConversationIdentity!, futureHash);
-        var futureDispatch = await new CanonicalDispatchReservationService(h.Store).ReserveOrRecoverAsync(futureCorrelation);
         var enterBeforeFuture = h.Adapter.PhysicalEnterCount;
-        var futureResult = await h.AgentProvider.SendAsync(new AgentRequest(h.Run.Id, h.ManagerAgentId, new ConversationId(Guid.Parse(activeManager.ConversationId)), futureDispatch.Id, futurePrompt, futureHash, null, null, null, managerRuntime.ProviderConversationIdentity));
+        var futureResult = await h.AgentProvider.SendAsync(new AgentRequest(
+            h.Run.Id, h.ManagerAgentId, new ConversationId(Guid.Parse(activeManager.ConversationId)), DispatchId.New(),
+            futurePrompt, futureHash, ProviderConversationId: managerRuntime.ProviderConversationIdentity));
         Assert.True(futureResult.Accepted);
         Assert.Equal(enterBeforeFuture + 1, h.Adapter.PhysicalEnterCount);
-        var retiredResult = await h.AgentProvider.SendAsync(new AgentRequest(h.Run.Id, h.ManagerAgentId, new ConversationId(Guid.Parse(managerPredecessor.ConversationId)), DispatchId.New(), "retired", "retired-hash", null, null, null, managerRuntime.ProviderConversationIdentity));
+
+        var retiredResult = await h.AgentProvider.SendAsync(new AgentRequest(
+            h.Run.Id, h.ManagerAgentId, new ConversationId(Guid.Parse(managerPredecessor.ConversationId)), DispatchId.New(),
+            "retired", "retired-hash", ProviderConversationId: managerRuntime.ProviderConversationIdentity));
         Assert.False(retiredResult.Accepted);
         Assert.Equal(enterBeforeFuture + 1, h.Adapter.PhysicalEnterCount);
         Stage(31);
 
         managerRuntime = await h.RuntimeForAsync(h.ManagerAgentId);
-        var closeJson = ProductionRuntimeAcceptanceHarness.PlanJson(h.Route, 100m, "CLOSE");
-        h.Adapter.SetSemantic(managerRuntime.RuntimeId, ProductionRuntimeAcceptanceHarness.ScriptedBrowserAdapter.SemanticReady(closeJson, complete: true));
+        h.Adapter.SetSemantic(managerRuntime.RuntimeId,
+            ProductionRuntimeAcceptanceHarness.ScriptedBrowserAdapter.SemanticReady(
+                ProductionRuntimeAcceptanceHarness.PlanJson(h.Route, 100m, "CLOSE"), complete: true));
         await h.ReconcileAsync();
         Assert.Equal(ProjectCompletionMode.ClosureMode, h.Run.CompletionMode);
         Assert.True(h.Run.VerifiedCompletion.Percent <= 99m);
