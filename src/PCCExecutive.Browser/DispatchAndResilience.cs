@@ -62,29 +62,70 @@ public sealed class BrowserChatProvider
         await dispatchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-        var reservation = await _ledger.ReserveAsync(request.DispatchId, contentHash, cancellationToken).ConfigureAwait(false);
-        if (reservation.Status is DispatchReservationStatus.DuplicateBlocked or DispatchReservationStatus.ContentConflict) return new(request.DispatchId, BrowserDispatchOutcome.DuplicateBlocked, reservation.Entry.State, reservation.Reason, new[] { $"content-hash:{reservation.Entry.ContentHash}" });
-        await _ledger.UpdateAsync(request.DispatchId, DispatchState.Submitting, cancellationToken: cancellationToken).ConfigureAwait(false);
-        var submission = await _adapter.SubmitAsync(runtime, expected, request.Prompt, cancellationToken).ConfigureAwait(false);
-        if (submission.SubmittedUnknown) { await _ledger.UpdateAsync(request.DispatchId, DispatchState.SubmittedUnknown, string.Join(";", submission.Evidence), cancellationToken).ConfigureAwait(false); return new(request.DispatchId, BrowserDispatchOutcome.SubmittedUnknown, DispatchState.SubmittedUnknown, "SUBMITTED_UNKNOWN", submission.Evidence); }
-        if (submission.ProvenSubmitted)
-        {
-            if (string.Equals(request.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
+            var reservation = await _ledger.ReserveAsync(request.DispatchId, contentHash, cancellationToken).ConfigureAwait(false);
+            if (reservation.Status is DispatchReservationStatus.DuplicateBlocked or DispatchReservationStatus.ContentConflict)
+                return new(request.DispatchId, BrowserDispatchOutcome.DuplicateBlocked, reservation.Entry.State, reservation.Reason, new[] { $"content-hash:{reservation.Entry.ContentHash}" });
+
+            async Task<FinalEnterAuthorizationResult> AuthorizeFinalEnterAsync(CancellationToken ct)
             {
-                var providerIdentity = await _adapter.GetCurrentConversationIdentityAsync(runtime, cancellationToken).ConfigureAwait(false);
-                if (string.IsNullOrWhiteSpace(providerIdentity))
-                {
-                    await _ledger.UpdateAsync(request.DispatchId, DispatchState.SubmittedUnknown, "NEW_CONVERSATION_IDENTITY_NOT_PROVEN", cancellationToken).ConfigureAwait(false);
-                    return new(request.DispatchId, BrowserDispatchOutcome.SubmittedUnknown, DispatchState.SubmittedUnknown, "SUBMITTED_UNKNOWN", submission.Evidence.Append("new-conversation-identity:unproven").ToArray());
-                }
-                runtime = runtime with { ProviderConversationIdentity = providerIdentity, LastActivityAt = DateTimeOffset.UtcNow };
-                await _runtimes.UpsertAsync(runtime, cancellationToken).ConfigureAwait(false);
+                var freshRuntime = await _runtimes.GetAsync(runtimeId, ct).ConfigureAwait(false);
+                if (freshRuntime is null)
+                    return FinalEnterAuthorizationResult.Denied("FINAL_RUNTIME_NOT_FOUND", ["final-enter:runtime-missing"]);
+
+                var finalSnapshot = await _adapter.InspectAsync(freshRuntime, expected, ct).ConfigureAwait(false);
+                var finalGuard = _wrongChatGuard.Evaluate(freshRuntime, expected, finalSnapshot);
+                if (!finalGuard.MaySend)
+                    return FinalEnterAuthorizationResult.Denied($"FINAL_{finalGuard.Reason}", finalGuard.Evidence);
+
+                var finalProof = await _ownership.ProveAsync(freshRuntime, ct).ConfigureAwait(false);
+                if (!finalProof.IsProven)
+                    return FinalEnterAuthorizationResult.Denied("FINAL_PCC_OWNERSHIP_NOT_PROVEN", finalGuard.Evidence.Append(finalProof.Reason));
+
+                var evidence = finalGuard.Evidence.Append(finalProof.Reason).Append("final-enter:binding-and-ownership-proven").ToArray();
+                await _ledger.UpdateAsync(request.DispatchId, DispatchState.Submitting, string.Join(";", evidence), ct).ConfigureAwait(false);
+                return FinalEnterAuthorizationResult.Authorized(evidence);
             }
-            await _ledger.UpdateAsync(request.DispatchId, DispatchState.Submitted, string.Join(";", submission.Evidence), cancellationToken).ConfigureAwait(false);
-            return new(request.DispatchId, BrowserDispatchOutcome.Submitted, DispatchState.Submitted, submission.Reason, submission.Evidence);
-        }
-        await _ledger.UpdateAsync(request.DispatchId, DispatchState.SafeRetry, string.Join(";", submission.Evidence), cancellationToken).ConfigureAwait(false);
-        return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.SafeRetry, submission.Reason, submission.Evidence);
+
+            AdapterSubmissionResult submission;
+            if (_adapter is IFinalEnterAuthorizationAdapter finalAdapter)
+            {
+                submission = await finalAdapter.SubmitWithFinalAuthorizationAsync(runtime, expected, request.Prompt, AuthorizeFinalEnterAsync, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                var finalAuthorization = await AuthorizeFinalEnterAsync(cancellationToken).ConfigureAwait(false);
+                if (!finalAuthorization.IsAuthorized)
+                    return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, finalAuthorization.Reason, finalAuthorization.Evidence);
+                submission = await _adapter.SubmitAsync(runtime, expected, request.Prompt, cancellationToken).ConfigureAwait(false);
+            }
+
+            var stateAfterSubmission = await _ledger.GetAsync(request.DispatchId, cancellationToken).ConfigureAwait(false);
+            if (!submission.Triggered && stateAfterSubmission?.State == DispatchState.Prepared)
+                return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, submission.Reason, submission.Evidence);
+
+            if (submission.SubmittedUnknown)
+            {
+                await _ledger.UpdateAsync(request.DispatchId, DispatchState.SubmittedUnknown, string.Join(";", submission.Evidence), cancellationToken).ConfigureAwait(false);
+                return new(request.DispatchId, BrowserDispatchOutcome.SubmittedUnknown, DispatchState.SubmittedUnknown, "SUBMITTED_UNKNOWN", submission.Evidence);
+            }
+            if (submission.ProvenSubmitted)
+            {
+                if (string.Equals(request.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
+                {
+                    var providerIdentity = await _adapter.GetCurrentConversationIdentityAsync(runtime, cancellationToken).ConfigureAwait(false);
+                    if (string.IsNullOrWhiteSpace(providerIdentity))
+                    {
+                        await _ledger.UpdateAsync(request.DispatchId, DispatchState.SubmittedUnknown, "NEW_CONVERSATION_IDENTITY_NOT_PROVEN", cancellationToken).ConfigureAwait(false);
+                        return new(request.DispatchId, BrowserDispatchOutcome.SubmittedUnknown, DispatchState.SubmittedUnknown, "SUBMITTED_UNKNOWN", submission.Evidence.Append("new-conversation-identity:unproven").ToArray());
+                    }
+                    runtime = runtime with { ProviderConversationIdentity = providerIdentity, LastActivityAt = DateTimeOffset.UtcNow };
+                    await _runtimes.UpsertAsync(runtime, cancellationToken).ConfigureAwait(false);
+                }
+                await _ledger.UpdateAsync(request.DispatchId, DispatchState.Submitted, string.Join(";", submission.Evidence), cancellationToken).ConfigureAwait(false);
+                return new(request.DispatchId, BrowserDispatchOutcome.Submitted, DispatchState.Submitted, submission.Reason, submission.Evidence);
+            }
+            await _ledger.UpdateAsync(request.DispatchId, DispatchState.SafeRetry, string.Join(";", submission.Evidence), cancellationToken).ConfigureAwait(false);
+            return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.SafeRetry, submission.Reason, submission.Evidence);
         }
         finally
         {
