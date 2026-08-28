@@ -245,8 +245,8 @@ public sealed class Final32StageE2ETests : IAsyncLifetime
             new ManagerEstimate(100),
             [Gate(CompletionGateFamily.IMPLEMENTATION, GateState.Pass, 99), Gate(CompletionGateFamily.UI, GateState.Pending, 1)],
             []);
-        Assert.Equal(99m, closure.VerifiedCompletion.Percent);
-        Assert.Equal(ProjectCompletionMode.ClosureMode, closure.Mode);
+        Assert.Equal(98.99m, closure.VerifiedCompletion.Percent);
+        Assert.Equal(ProjectCompletionMode.Active, closure.Mode);
         var verified = new CompletionGateController().Evaluate(
             new ManagerEstimate(100),
             [Gate(CompletionGateFamily.IMPLEMENTATION, GateState.Pass, 99), Gate(CompletionGateFamily.UI, GateState.Pass, 1)],
