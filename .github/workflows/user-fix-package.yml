@@ -1,0 +1,79 @@
+name: PCC Executive User Fix Package
+
+on:
+  push:
+    branches:
+      - 'worker/pcc-user-open-profile-fix'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pcc-user-fix-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package_user_fix:
+    name: Build focused user-fix installer
+    runs-on: windows-latest
+    env:
+      PCCEXECUTIVE_LIVE_BROWSER: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Exact-head check
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($sha -ne '${{ github.sha }}'.ToLowerInvariant()) { throw "EXACT_HEAD_MISMATCH expected=${{ github.sha }} actual=$sha" }
+          New-Item -ItemType Directory -Path artifacts/provenance -Force | Out-Null
+          Set-Content artifacts/provenance/SOURCE_SHA.txt $sha -Encoding ascii
+
+      - name: Build WPF product
+        shell: pwsh
+        run: dotnet build src/PCCExecutive.App/PCCExecutive.App.csproj --configuration Release
+
+      - name: Focused App tests
+        shell: pwsh
+        run: dotnet test tests/PCCExecutive.App.Tests/PCCExecutive.App.Tests.csproj --configuration Release --no-restore
+
+      - name: Focused Browser tests
+        shell: pwsh
+        run: |
+          dotnet test tests/PCCExecutive.Browser.Tests/PCCExecutive.Browser.Tests.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'Browser deterministic tests failed.' }
+          dotnet test tests/PCCExecutive.Browser.Acceptance/PCCExecutive.Browser.Acceptance.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'Browser acceptance tests failed.' }
+
+      - name: Install Inno Setup 6+
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: ./build/Package.ps1
+
+      - name: Verify installer package
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          ./tests/installer/Test-Package.ps1 `
+            -InstallerPath "artifacts/package/PCCExecutive-$version-Setup-x64.exe" `
+            -ManifestPath "artifacts/package/PCCExecutive-$version-Setup-x64.manifest.json" `
+            -ExpectedSourceSha "${{ github.sha }}"
+
+      - name: Upload user-fix installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: PCCExecutive-user-fix-${{ github.sha }}-win-x64
+          path: artifacts/package/*
+          if-no-files-found: error
+          retention-days: 14
