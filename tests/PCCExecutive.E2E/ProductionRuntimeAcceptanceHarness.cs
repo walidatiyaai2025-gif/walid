@@ -83,7 +83,17 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
     {
         var runId = Run.Id;
         var identity = Route.RoutingIdentity;
-        await Host.DisposeAsync().ConfigureAwait(false);
+        var hostLock = GetField<ProjectRunLock?>(Host, "_projectLock");
+        try
+        {
+            await Host.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            // Acceptance cleanup must never let a shutdown exception retain the process-wide
+            // project singleton and turn later tests into unrelated PROJECT_ALREADY_CONTROLLED failures.
+            hostLock?.Dispose();
+        }
         _restartLock?.Dispose();
         _restartLock = null;
 
@@ -309,12 +319,28 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        Exception? shutdownFailure = null;
+        ProjectRunLock? hostLock = null;
         if (Host is not null)
         {
-            try { await Host.DisposeAsync().ConfigureAwait(false); } catch { }
+            try { hostLock = GetField<ProjectRunLock?>(Host, "_projectLock"); } catch { }
+            try
+            {
+                await Host.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                shutdownFailure = ex;
+            }
+            finally
+            {
+                hostLock?.Dispose();
+            }
         }
         _restartLock?.Dispose();
         try { Directory.Delete(_root, true); } catch { }
+        if (shutdownFailure is not null)
+            throw new InvalidOperationException("Production host disposal failed during E2E acceptance cleanup.", shutdownFailure);
     }
 
     internal sealed record PlannedTask(
