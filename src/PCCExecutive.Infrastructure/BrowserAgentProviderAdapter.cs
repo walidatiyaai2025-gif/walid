@@ -114,7 +114,7 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
                 BrowserDispatchOutcome.Submitted => result.State == PCCExecutive.Browser.DispatchState.Generating ? PCCExecutive.Domain.DispatchState.GENERATING : PCCExecutive.Domain.DispatchState.SUBMITTED,
                 BrowserDispatchOutcome.SubmittedUnknown => PCCExecutive.Domain.DispatchState.SUBMITTED_UNKNOWN,
                 BrowserDispatchOutcome.DuplicateBlocked => domainDispatch.State,
-                _ when result.State == PCCExecutive.Browser.DispatchState.SafeRetry => PCCExecutive.Domain.DispatchState.PREPARED,
+                _ when result.State is PCCExecutive.Browser.DispatchState.Prepared or PCCExecutive.Browser.DispatchState.SafeRetry => PCCExecutive.Domain.DispatchState.PREPARED,
                 _ => PCCExecutive.Domain.DispatchState.FAILED
             };
             domainDispatch = domainDispatch with
