@@ -1,0 +1,18 @@
+<Application x:Class="PCCExecutive.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnMainWindowClose">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Themes/PremiumTheme.xaml"/>
+                <ResourceDictionary Source="Views/ScreenCommon.xaml"/>
+                <ResourceDictionary Source="Views/Screens01_03.xaml"/>
+                <ResourceDictionary Source="Views/Screens04_06.xaml"/>
+                <ResourceDictionary Source="Views/Screens07_09.xaml"/>
+                <ResourceDictionary Source="Views/Screens10_12.xaml"/>
+                <ResourceDictionary Source="Views/Screens13_15.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>
