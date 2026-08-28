@@ -284,23 +284,24 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
             catch (JsonException) { }
         }
 
-        if (health is not { Active: true } || health.State is not ("LOGIN_REQUIRED" or "CHALLENGE"))
+        var attentionCode = health is null ? null : DurableProviderAttentionPolicy.Classify(health.Active, health.State, health.Reason);
+        if (attentionCode is null)
         {
             foreach (var key in attention.Keys.Where(x => x.StartsWith("browser-attention:", StringComparison.Ordinal)).ToArray())
                 attention.Remove(key);
             return;
         }
 
-        var runtimeId = health.RuntimeId ?? string.Empty;
+        var runtimeId = health!.RuntimeId ?? string.Empty;
         var runtime = string.IsNullOrWhiteSpace(runtimeId)
             ? null
             : await PccHostConversationAccess.RuntimeRegistry(_host).GetAsync(runtimeId, cancellationToken).ConfigureAwait(false);
         var target = runtime?.WorkerSlotId is { Length: > 0 } slot ? $"Worker {slot} ChatGPT session" : "Manager ChatGPT session";
         var id = $"browser-attention:{(string.IsNullOrWhiteSpace(runtimeId) ? "durable-global-health" : runtimeId)}";
-        var reason = health.State == "CHALLENGE"
+        var reason = attentionCode == "CHALLENGE"
             ? "ChatGPT presented a challenge/CAPTCHA that automation must not bypass. Durable global sends remain blocked until fresh semantic recovery proof."
             : "ChatGPT authentication is required in the isolated PCC-owned profile. Durable global sends remain blocked until fresh semantic recovery proof.";
-        attention[id] = (new AttentionSummary(id, health.State, reason, "Open PCC Browser", target, "P0"), runtimeId);
+        attention[id] = (new AttentionSummary(id, attentionCode, reason, "Open PCC Browser", target, "P0"), runtimeId);
         PccHostRecoveryAccess.Autopilot(_host) = "ATTENTION_REQUIRED";
     }
 
