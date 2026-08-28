@@ -1,0 +1,30 @@
+name: Stage 29 Recovery Diagnostic
+
+on:
+  push:
+    branches:
+      - worker/pcc-runtime-e2e-final
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Inject diagnostic assertion in runner only
+        shell: pwsh
+        run: |
+          $path = 'tests/PCCExecutive.E2E/ProductionRuntime32StageAcceptanceTests.cs'
+          $text = [IO.File]::ReadAllText($path)
+          $old = '        Assert.Equal("PAUSED", h.Autopilot);'
+          $new = '        Assert.True(string.Equals("PAUSED", h.Autopilot, StringComparison.Ordinal), "AUTOPILOT=" + h.Autopilot + " | RECOVERY=" + string.Join(" || ", h.Host.Snapshot.RecoveryEvents.Select(x => x.State + ":" + x.Description)));'
+          if (-not $text.Contains($old)) { throw 'Stage 29 assertion anchor not found.' }
+          [IO.File]::WriteAllText($path, $text.Replace($old, $new), [Text.UTF8Encoding]::new($false))
+      - name: Run Stage 29 path with detailed output
+        shell: pwsh
+        run: dotnet test tests/PCCExecutive.E2E/PCCExecutive.E2E.csproj -c Release --filter "FullyQualifiedName~Production_runtime_host_proves_the_ordered_32_stage_path" --logger "console;verbosity=detailed"
