@@ -33,9 +33,6 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
         if (active.Length == 0)
             return new(true, false, false, "NO_BOUND_BROWSER_RUNTIME", "BrowserChatProvider is configured as default; no PCC-owned runtime is bound yet.");
 
-        // Browser session state is inventory state, not semantic authentication proof.
-        // Report configured/available here; actual authentication is proven by the
-        // semantic adapter at the final send boundary.
         return new(true, false, false, "PCC_BROWSER_RUNTIME_PRESENT_AUTH_UNPROVEN", $"owned-runtime-count:{active.Length}");
     }
 
@@ -62,9 +59,6 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
         if (!StringComparer.Ordinal.Equals(runtime.WorkerSlotId, expectedSlot))
             return NotSent(request.DispatchId, $"runtime:{runtime.RuntimeId};expected-slot:{expectedSlot ?? "MANAGER"};actual-slot:{runtime.WorkerSlotId ?? "MANAGER"}", "WRONG_WORKER_SLOT_BINDING");
 
-        // Production composition uses SqliteStateStore. Refuse durable production
-        // dispatch if the final ownership service was not provided; in-memory test
-        // providers remain usable for isolated unit tests.
         if (_durableStore is not null)
         {
             if (_ownership is null)
@@ -77,7 +71,6 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
         var effectiveDispatchId = request.DispatchId;
         PCCExecutive.Domain.Dispatch? domainDispatch = null;
         AutonomousDispatchJournal? journal = null;
-        Func<CancellationToken, Task>? beforeSubmit = null;
         Func<CancellationToken, Task>? beforeSubmit = null;
         if (_durableStore is not null)
         {
