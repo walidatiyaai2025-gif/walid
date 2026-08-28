@@ -13,8 +13,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly IConfirmationService _confirmation;
     private readonly Dictionary<ScreenId, ScreenViewModelBase> _screens;
     private RuntimeSnapshot _snapshot;
-    private ScreenId _selectedScreen = ScreenId.Dashboard;
-    private ScreenViewModelBase _currentScreen;
+    private ScreenId _selectedScreen;
+    private ScreenViewModelBase _currentScreen = null!;
     private string? _lastUiError;
     private DispatchMode _selectedDispatchMode;
     private ProviderMode _selectedProviderMode;
@@ -64,11 +64,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
             [ScreenId.UpdateCenter] = new UpdateCenterViewModel(this),
             [ScreenId.AttentionCenter] = new AttentionCenterViewModel(this)
         };
+        _selectedScreen = _snapshot.HasActiveRun ? ScreenId.Dashboard : ScreenId.ProjectSelection;
         _currentScreen = _screens[_selectedScreen];
 
         NavigateCommand = new RelayCommand(p => Navigate(p));
         RefreshCommand = GatewayCommand(UiAction.Refresh);
-        SelectProjectCommand = GatewayCommand(UiAction.SelectProject, p => p?.ToString());
+        SelectProjectCommand = new AsyncRelayCommand(
+            async p =>
+            {
+                LastUiError = null;
+                await _gateway.ExecuteAsync(UiAction.SelectProject, p?.ToString());
+                if (_gateway.Snapshot.HasActiveRun)
+                    Navigate(ScreenId.Dashboard);
+                else
+                    LastUiError = "Project selection did not resolve to a canonical PCC project. Review the project state and try again.";
+            },
+            p => _gateway.CanExecute(UiAction.SelectProject, p?.ToString()),
+            ex => LastUiError = ex.Message);
         ConnectChromeCommand = GatewayCommand(UiAction.ConnectChrome);
         PauseAiCommand = GatewayCommand(UiAction.PauseAi);
         ResumeAiCommand = GatewayCommand(UiAction.ResumeAi);
