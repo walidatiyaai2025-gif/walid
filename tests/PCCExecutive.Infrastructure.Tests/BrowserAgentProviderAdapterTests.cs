@@ -28,8 +28,10 @@ public sealed class BrowserAgentProviderAdapterTests
             LastActivityAt = DateTimeOffset.UtcNow
         };
         await registry.UpsertAsync(runtime);
-        var browser = new PCCExecutive.Browser.BrowserChatProvider(registry, new SafeAdapter(), new InMemoryDispatchLedger(), new WrongChatGuard(), new GlobalBrowserSendGate());
-        var provider = new BrowserAgentProviderAdapter(registry, browser);
+        var ownership = new ProvenOwnership();
+        var adapter = new SafeAdapter();
+        var browser = new PCCExecutive.Browser.BrowserChatProvider(registry, adapter, new InMemoryDispatchLedger(), new WrongChatGuard(), new GlobalBrowserSendGate(), ownership);
+        var provider = new BrowserAgentProviderAdapter(registry, browser, ownership);
         var request = new AgentRequest(ProjectRunIdFrom(runtime.ProjectRunId), LogicalAgentIdFrom(runtime.LogicalAgentId), ConversationIdFrom(runtime.ConversationIdentity!), DispatchId.New(), "do work", "hash");
 
         var result = await provider.SendAsync(request);
@@ -37,6 +39,7 @@ public sealed class BrowserAgentProviderAdapterTests
         Assert.True(result.Accepted);
         Assert.False(result.IsUncertain);
         Assert.Null(result.ErrorCode);
+        Assert.Equal(1, adapter.SubmitCalls);
     }
 
     [Fact]
@@ -60,20 +63,30 @@ public sealed class BrowserAgentProviderAdapterTests
             LastHeartbeatAt = DateTimeOffset.UtcNow,
             LastActivityAt = DateTimeOffset.UtcNow
         });
-        var provider = new BrowserAgentProviderAdapter(registry, new PCCExecutive.Browser.BrowserChatProvider(registry, new SafeAdapter(), new InMemoryDispatchLedger(), new WrongChatGuard(), new GlobalBrowserSendGate()));
+        var ownership = new ProvenOwnership();
+        var adapter = new SafeAdapter();
+        var provider = new BrowserAgentProviderAdapter(registry, new PCCExecutive.Browser.BrowserChatProvider(registry, adapter, new InMemoryDispatchLedger(), new WrongChatGuard(), new GlobalBrowserSendGate(), ownership), ownership);
 
         var result = await provider.SendAsync(new AgentRequest(run, agent, ConversationId.New(), DispatchId.New(), "do work", "hash"));
 
         Assert.False(result.Accepted);
         Assert.Equal("WRONG_CONVERSATION_BINDING", result.ErrorCode);
+        Assert.Equal(0, adapter.SubmitCalls);
     }
 
     private static ProjectRunId ProjectRunIdFrom(string value) => new(Guid.ParseExact(value, "N"));
     private static LogicalAgentId LogicalAgentIdFrom(string value) => new(Guid.ParseExact(value, "N"));
     private static ConversationId ConversationIdFrom(string value) => new(Guid.ParseExact(value, "N"));
 
+    private sealed class ProvenOwnership : IOwnershipProofService
+    {
+        public Task<OwnershipProof> ProveAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default) =>
+            Task.FromResult(OwnershipProof.Proven(runtime.RuntimeId));
+    }
+
     private sealed class SafeAdapter : IChatGptBrowserAdapter
     {
+        public int SubmitCalls { get; private set; }
         public string AdapterVersion => "test";
         public Task<ChatGptSemanticSnapshot> InspectAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, CancellationToken cancellationToken = default) =>
             Task.FromResult(new ChatGptSemanticSnapshot(
@@ -88,7 +101,10 @@ public sealed class BrowserAgentProviderAdapterTests
                 DateTimeOffset.UtcNow,
                 AdapterVersion));
 
-        public Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, string prompt, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new AdapterSubmissionResult(true, true, false, "SUBMITTED", new[] { "test-submit" }));
+        public Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, string prompt, CancellationToken cancellationToken = default)
+        {
+            SubmitCalls++;
+            return Task.FromResult(new AdapterSubmissionResult(true, true, false, "SUBMITTED", new[] { "test-submit" }));
+        }
     }
 }
