@@ -338,7 +338,7 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         var futureResult = await h.AgentProvider.SendAsync(new AgentRequest(
             h.Run.Id, h.ManagerAgentId, new ConversationId(Guid.Parse(activeManager.ConversationId)), DispatchId.New(),
             futurePrompt, futureHash, ProviderConversationId: managerRuntime.ProviderConversationIdentity));
-        Assert.True(futureResult.Accepted);
+        Assert.True(futureResult.Accepted, $"error={futureResult.ErrorCode}; evidence={futureResult.ProviderEvidence}");
         Assert.Equal(enterBeforeFuture + 1, h.Adapter.PhysicalEnterCount);
 
         var retiredResult = await h.AgentProvider.SendAsync(new AgentRequest(

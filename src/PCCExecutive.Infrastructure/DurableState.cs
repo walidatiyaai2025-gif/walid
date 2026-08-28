@@ -121,6 +121,8 @@ public sealed class SqliteStateStore : IDurableStateStore, IBrowserRuntimeRegist
     public Task<WorkerTask?> LoadTaskAsync(TaskId id, CancellationToken cancellationToken = default) => LoadAsync<WorkerTask>("task", id.ToString(), cancellationToken);
     public Task SaveLogicalAgentAsync(LogicalAgentSession value, CancellationToken cancellationToken = default) => SaveAsync("logical-agent", value.Id.ToString(), value.ProjectRunId.ToString(), value, cancellationToken);
     public Task<LogicalAgentSession?> LoadLogicalAgentAsync(LogicalAgentId id, CancellationToken cancellationToken = default) => LoadAsync<LogicalAgentSession>("logical-agent", id.ToString(), cancellationToken);
+    public async Task<IReadOnlyList<LogicalAgentSession>> ListLogicalAgentsAsync(CancellationToken cancellationToken = default) =>
+        await ListKindAsync<LogicalAgentSession>("logical-agent", cancellationToken).ConfigureAwait(false);
     public Task SaveConversationAsync(PCCExecutive.Domain.Conversation value, ProjectRunId projectRunId, CancellationToken cancellationToken = default) => SaveAsync("conversation", value.Id.ToString(), projectRunId.ToString(), value, cancellationToken);
     public Task<PCCExecutive.Domain.Conversation?> LoadConversationAsync(ConversationId id, CancellationToken cancellationToken = default) => LoadAsync<PCCExecutive.Domain.Conversation>("conversation", id.ToString(), cancellationToken);
     public Task SaveDispatchAsync(PCCExecutive.Domain.Dispatch value, CancellationToken cancellationToken = default) => SaveAsync("dispatch", value.Id.ToString(), value.ProjectRunId.ToString(), value, cancellationToken);

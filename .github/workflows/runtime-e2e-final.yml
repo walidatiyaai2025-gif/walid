@@ -3,14 +3,13 @@ name: PCC Runtime E2E Final Acceptance
 on:
   push:
     branches:
+      - task/pcc-executive-t0001-v1
       - worker/pcc-runtime-e2e-final
   pull_request:
-    branches:
-      - worker/pcc-final-runtime-e2e-closure
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: pcc-runtime-e2e-final-${{ github.ref }}
@@ -32,35 +31,13 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Prove exact candidate and base ancestry
+      - name: Prove exact candidate source
         shell: pwsh
         run: |
           $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
           $expected = '${{ github.event.pull_request.head.sha || github.sha }}'.ToLowerInvariant()
           if ($actual -ne $expected) { throw "EXACT_HEAD_MISMATCH expected=$expected actual=$actual" }
-          git fetch origin worker/pcc-final-runtime-e2e-closure --no-tags
-          git merge-base --is-ancestor origin/worker/pcc-final-runtime-e2e-closure HEAD
-          if ($LASTEXITCODE -ne 0) { throw 'Runtime acceptance candidate is not based on the live convergence branch.' }
           Write-Host "EXACT_RUNTIME_E2E_HEAD=$actual"
-
-      - name: Apply and persist canonical conversation identity closure
-        shell: pwsh
-        run: |
-          ./build/Apply-CanonicalConversationIdentityClosureV6.ps1
-          git config user.name "pcc-runtime-e2e-closure"
-          git config user.email "actions@users.noreply.github.com"
-          git rm -f build/Apply-CanonicalConversationIdentityClosure.ps1
-          git rm -f build/Apply-CanonicalConversationIdentityClosureV2.ps1
-          git rm -f build/Apply-CanonicalConversationIdentityClosureV3.ps1
-          git rm -f build/Apply-CanonicalConversationIdentityClosureV4.ps1
-          git rm -f build/Apply-CanonicalConversationIdentityClosureV5.ps1
-          git rm -f build/Apply-CanonicalConversationIdentityClosureV6.ps1
-          git add src tests
-          if (git diff --cached --quiet) { throw 'CANONICAL_IDENTITY_PATCH_PRODUCED_NO_SOURCE_CHANGE' }
-          git commit -m "fix: canonicalize logical conversation identity"
-          git push origin HEAD:worker/pcc-runtime-e2e-final
-          if ($LASTEXITCODE -ne 0) { throw 'SOURCE_PUSH_FAILED' }
-          Write-Host "PATCHED_SOURCE_HEAD=$((git rev-parse HEAD).Trim())"
 
       - name: Domain Application App Browser Acceptance Infrastructure Integration E2E
         shell: pwsh

@@ -41,8 +41,7 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
                 await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
-                    await RepairInterruptedRolloversAsync(cancellationToken).ConfigureAwait(false);
-                    await NormalizeActiveConversationTruthAsync(cancellationToken).ConfigureAwait(false);
+                    await RecoverInterruptedRolloversAsync(cancellationToken).ConfigureAwait(false);
                     await RecoverDurableAttentionAsync(cancellationToken).ConfigureAwait(false);
                     var run = PccHostRecoveryAccess.Run(_host);
                     if (run is not null && PccHostRecoveryAccess.RuntimeHealthFault(_host) is null)
@@ -205,6 +204,44 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
     {
         await RepairInterruptedRolloversAsync(cancellationToken).ConfigureAwait(false);
         await NormalizeActiveConversationTruthAsync(cancellationToken).ConfigureAwait(false);
+        await TryResolveStartupRecoveryFenceAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task TryResolveStartupRecoveryFenceAsync(CancellationToken cancellationToken)
+    {
+        var run = PccHostRecoveryAccess.Run(_host);
+        if (run is null) return;
+
+        var sessions = (await _store.ListLogicalAgentsAsync(cancellationToken).ConfigureAwait(false))
+            .Where(x => x.ProjectRunId == run.Id && x.CurrentConversationId is not null)
+            .ToArray();
+        if (sessions.Length == 0) return;
+
+        var runtimes = (await PccHostConversationAccess.RuntimeRegistry(_host).ListAsync(cancellationToken).ConfigureAwait(false))
+            .Where(x => !x.IsArchived &&
+                        x.State is not BrowserSessionState.Killed and not BrowserSessionState.Archived &&
+                        StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()))
+            .ToArray();
+        var reconciler = new BrowserSessionReconciliationService();
+        foreach (var session in sessions)
+        {
+            var agentRuntimes = runtimes
+                .Where(x => StringComparer.Ordinal.Equals(x.LogicalAgentId, session.Id.ToString()))
+                .ToArray();
+            if (agentRuntimes.Length != 1) return;
+
+            var runtime = agentRuntimes[0];
+            if (reconciler.Reconcile(session, runtime).Outcome != BrowserReconciliationKind.MATCHED) return;
+            var ownership = await PccHostConversationAccess.Ownership(_host).ProveAsync(runtime, cancellationToken).ConfigureAwait(false);
+            if (!ownership.IsProven) return;
+        }
+
+        await PccHostRecoveryAccess.NewSendPause(_host).ResumeNewSendsAsync(
+            "STARTUP_BROWSER_RECONCILIATION_COMPLETE:all durable logical sessions match exactly one PCC-owned active runtime.",
+            cancellationToken).ConfigureAwait(false);
+        if (!PccHostRecoveryAccess.SendGate(_host).Snapshot.IsPaused &&
+            StringComparer.Ordinal.Equals(PccHostRecoveryAccess.Autopilot(_host), "RECOVERY_REQUIRED"))
+            PccHostRecoveryAccess.Autopilot(_host) = "RUNNING";
     }
 
     private async Task RepairInterruptedRolloversAsync(CancellationToken cancellationToken)

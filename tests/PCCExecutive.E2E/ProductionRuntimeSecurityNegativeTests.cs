@@ -144,6 +144,16 @@ public sealed class ProductionRuntimeSecurityNegativeTests
         await ((IBrowserRuntimeRegistry)h.Store).UpsertAsync(managerRuntime with { ConversationIdentity = nonCanonicalManagerConversation });
         await h.ForceInterruptedRestartAsync();
 
+        var equivalentRuntime = await h.RuntimeForAsync(h.ManagerAgentId);
+        var storedManagerAfterEquivalentRestart = await h.Store.LoadLogicalAgentAsync(h.ManagerAgentId);
+        Assert.NotNull(storedManagerAfterEquivalentRestart);
+        var equivalentReconciliation = new BrowserSessionReconciliationService().Reconcile(storedManagerAfterEquivalentRestart!, equivalentRuntime);
+        Assert.Equal(BrowserReconciliationKind.MATCHED, equivalentReconciliation.Outcome);
+
+        var differentManagerConversation = ConversationId.New().ToString();
+        await ((IBrowserRuntimeRegistry)h.Store).UpsertAsync(equivalentRuntime with { ConversationIdentity = differentManagerConversation });
+        await h.ForceInterruptedRestartAsync();
+
         var mismatchedRuntime = await h.RuntimeForAsync(h.ManagerAgentId);
         var storedManagerAfterRestart = await h.Store.LoadLogicalAgentAsync(h.ManagerAgentId);
         Assert.NotNull(storedManagerAfterRestart);
