@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -49,7 +50,7 @@ public interface IDurableStateStore
 public sealed class SqliteStateStore : IDurableStateStore, IBrowserRuntimeRegistry, IDispatchLedger, IConversationCheckpointPort, IConversationLifecycleStore, IAsyncDisposable
 {
     private const int CurrentSchemaVersion = 1;
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = false };
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _connectionString;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
 
@@ -131,14 +132,20 @@ public sealed class SqliteStateStore : IDurableStateStore, IBrowserRuntimeRegist
     public async Task<PccExecutiveSettings> LoadSettingsAsync(CancellationToken cancellationToken = default) =>
         await LoadAsync<PccExecutiveSettings>("settings", "application", cancellationToken).ConfigureAwait(false) ?? new PccExecutiveSettings();
 
-    public Task UpsertAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default) =>
-        SaveAsync("browser-runtime", runtime.RuntimeId, runtime.ProjectRunId, runtime, cancellationToken);
-
-    public Task<BrowserRuntimeRecord?> GetAsync(string runtimeId, CancellationToken cancellationToken = default) =>
+    public Task<BrowserRuntimeRecord?> GetBrowserRuntimeAsync(string runtimeId, CancellationToken cancellationToken = default) =>
         LoadAsync<BrowserRuntimeRecord>("browser-runtime", runtimeId, cancellationToken);
 
-    public async Task<IReadOnlyList<BrowserRuntimeRecord>> ListAsync(CancellationToken cancellationToken = default) =>
+    public async Task<IReadOnlyList<BrowserRuntimeRecord>> ListBrowserRuntimesAsync(CancellationToken cancellationToken = default) =>
         await ListKindAsync<BrowserRuntimeRecord>("browser-runtime", cancellationToken).ConfigureAwait(false);
+
+    Task IBrowserRuntimeRegistry.UpsertAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken) =>
+        SaveAsync("browser-runtime", runtime.RuntimeId, runtime.ProjectRunId, runtime, cancellationToken);
+
+    Task<BrowserRuntimeRecord?> IBrowserRuntimeRegistry.GetAsync(string runtimeId, CancellationToken cancellationToken) =>
+        GetBrowserRuntimeAsync(runtimeId, cancellationToken);
+
+    Task<IReadOnlyList<BrowserRuntimeRecord>> IBrowserRuntimeRegistry.ListAsync(CancellationToken cancellationToken) =>
+        ListBrowserRuntimesAsync(cancellationToken);
 
     public async Task<DispatchReservation> ReserveAsync(string dispatchId, string contentHash, CancellationToken cancellationToken = default)
     {
@@ -182,11 +189,14 @@ public sealed class SqliteStateStore : IDurableStateStore, IBrowserRuntimeRegist
         }
     }
 
-    public async Task<DispatchLedgerEntry?> GetAsync(string dispatchId, CancellationToken cancellationToken = default)
+    public async Task<DispatchLedgerEntry?> GetDispatchLedgerAsync(string dispatchId, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         return await ReadLedgerAsync(connection, dispatchId, cancellationToken).ConfigureAwait(false);
     }
+
+    Task<DispatchLedgerEntry?> IDispatchLedger.GetAsync(string dispatchId, CancellationToken cancellationToken) =>
+        GetDispatchLedgerAsync(dispatchId, cancellationToken);
 
     public async Task<string> CreateCheckpointAsync(ConversationRecord activeConversation, CancellationToken cancellationToken = default)
     {
@@ -204,7 +214,8 @@ public sealed class SqliteStateStore : IDurableStateStore, IBrowserRuntimeRegist
         try
         {
             await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            await using var transactionBase = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            var transaction = (SqliteTransaction)transactionBase;
             await SaveWithConnectionAsync(connection, transaction, "browser-conversation", predecessorArchived.ConversationId, predecessorArchived.ProjectRunId, predecessorArchived, cancellationToken).ConfigureAwait(false);
             await SaveWithConnectionAsync(connection, transaction, "browser-conversation", successorActive.ConversationId, successorActive.ProjectRunId, successorActive, cancellationToken).ConfigureAwait(false);
             await SaveWithConnectionAsync(connection, transaction, "browser-conversation-candidate", successorActive.ConversationId, successorActive.ProjectRunId, new ConversationCandidateState(successorActive, checkpointId, "COMMITTED"), cancellationToken).ConfigureAwait(false);
@@ -292,10 +303,10 @@ public sealed class SqliteStateStore : IDurableStateStore, IBrowserRuntimeRegist
         return result;
     }
 
-    private static async Task SaveWithConnectionAsync<T>(SqliteConnection connection, System.Data.Common.DbTransaction? transaction, string kind, string id, string? projectRunId, T value, CancellationToken cancellationToken)
+    private static async Task SaveWithConnectionAsync<T>(SqliteConnection connection, SqliteTransaction? transaction, string kind, string id, string? projectRunId, T value, CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        if (transaction is not null) command.Transaction = (SqliteTransaction)transaction;
+        command.Transaction = transaction;
         command.CommandText = "INSERT INTO state_records(kind,id,project_run_id,payload,updated_at) VALUES ($kind,$id,$run,$payload,$at) ON CONFLICT(kind,id) DO UPDATE SET project_run_id=excluded.project_run_id,payload=excluded.payload,updated_at=excluded.updated_at;";
         command.Parameters.AddWithValue("$kind", kind);
         command.Parameters.AddWithValue("$id", id);
@@ -354,12 +365,15 @@ public sealed class SqliteStateStore : IDurableStateStore, IBrowserRuntimeRegist
 
 public sealed class ProjectRunLock : IDisposable
 {
+    private static readonly ConcurrentDictionary<string, byte> ActiveLocks = new(StringComparer.Ordinal);
     private readonly Mutex _mutex;
+    private readonly string _key;
     private bool _owns;
 
-    private ProjectRunLock(Mutex mutex, bool owns)
+    private ProjectRunLock(Mutex mutex, string key, bool owns)
     {
         _mutex = mutex;
+        _key = key;
         _owns = owns;
     }
 
@@ -369,11 +383,15 @@ public sealed class ProjectRunLock : IDisposable
     {
         if (string.IsNullOrWhiteSpace(projectIdentity)) throw new ArgumentException("Project identity is required.", nameof(projectIdentity));
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(projectIdentity))).ToLowerInvariant();
-        var mutex = new Mutex(false, $"PCCExecutive.Project.{hash}");
+        var key = $"PCCExecutive.Project.{hash}";
+        var mutex = new Mutex(false, key);
+        if (!ActiveLocks.TryAdd(key, 0)) return new ProjectRunLock(mutex, key, false);
+
         bool owns;
         try { owns = mutex.WaitOne(TimeSpan.Zero); }
         catch (AbandonedMutexException) { owns = true; }
-        return new ProjectRunLock(mutex, owns);
+        if (!owns) ActiveLocks.TryRemove(key, out _);
+        return new ProjectRunLock(mutex, key, owns);
     }
 
     public void Dispose()
@@ -381,6 +399,7 @@ public sealed class ProjectRunLock : IDisposable
         if (_owns)
         {
             _mutex.ReleaseMutex();
+            ActiveLocks.TryRemove(_key, out _);
             _owns = false;
         }
         _mutex.Dispose();

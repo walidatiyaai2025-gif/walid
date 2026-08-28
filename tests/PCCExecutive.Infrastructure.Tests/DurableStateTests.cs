@@ -106,7 +106,8 @@ public sealed class DurableStateTests : IAsyncLifetime
         await using (var store = new SqliteStateStore(path))
         {
             await store.InitializeAsync();
-            await store.UpsertAsync(runtime);
+            var registry = (IBrowserRuntimeRegistry)store;
+            await registry.UpsertAsync(runtime);
             var reservation = await store.ReserveAsync("dispatch-1", "hash-1");
             Assert.Equal(DispatchReservationStatus.New, reservation.Status);
             await store.UpdateAsync("dispatch-1", PCCExecutive.Browser.DispatchState.SubmittedUnknown, "unknown-send");
@@ -119,8 +120,8 @@ public sealed class DurableStateTests : IAsyncLifetime
         await using (var reopened = new SqliteStateStore(path))
         {
             await reopened.InitializeAsync();
-            Assert.Equal(runtime, await reopened.GetAsync(runtime.RuntimeId));
-            var dispatch = await reopened.GetAsync("dispatch-1");
+            Assert.Equal(runtime, await reopened.GetBrowserRuntimeAsync(runtime.RuntimeId));
+            var dispatch = await reopened.GetDispatchLedgerAsync("dispatch-1");
             Assert.NotNull(dispatch);
             Assert.Equal(PCCExecutive.Browser.DispatchState.SubmittedUnknown, dispatch!.State);
             var duplicate = await reopened.ReserveAsync("dispatch-1", "hash-1");
