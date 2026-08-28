@@ -99,7 +99,6 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
     private async Task GovernedRolloverAsync(BrowserRuntimeRecord runtime, ConversationRecord predecessor, string reason, CancellationToken cancellationToken)
     {
         if (predecessor.State != ConversationLifecycleState.Active) return;
-        await PccHostRecoveryAccess.NewSendPause(_host).PauseNewSendsAsync($"Conversation rollover for logical agent {predecessor.LogicalAgentId}.", cancellationToken).ConfigureAwait(false);
         var checkpointId = $"rollover:{predecessor.LogicalAgentId}:{predecessor.ConversationId}:{DateTimeOffset.UtcNow.UtcTicks}";
         var checkpoint = new DurableCheckpoint(
             checkpointId,
@@ -152,6 +151,7 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
         var dispatch = await new CanonicalDispatchReservationService(_store).ReserveOrRecoverAsync(correlation, cancellationToken).ConfigureAwait(false);
         var request = new PCCExecutive.Application.AgentRequest(correlation.ProjectRunId, correlation.LogicalAgentId, logicalConversation, dispatch.Id, packet, hash, correlation.WorkerSlotId, candidateRuntime.WorkerSlotId is null ? null : taskId, candidateRuntime.WorkerSlotId is null ? null : waveId, providerIdentity);
         var result = await PccHostConversationAccess.AgentProvider(_host).SendAsync(request, cancellationToken).ConfigureAwait(false);
+        await PccHostRecoveryAccess.NewSendPause(_host).PauseNewSendsAsync($"Conversation rollover for logical agent {predecessor.LogicalAgentId}.", cancellationToken).ConfigureAwait(false);
         if (!result.Accepted)
         {
             await SaveJournalAsync(predecessor, candidate, checkpointId, result.IsUncertain ? "CONTINUATION_SUBMITTED_UNKNOWN" : "CONTINUATION_SEND_FAILED", result.ErrorCode ?? reason, cancellationToken).ConfigureAwait(false);
