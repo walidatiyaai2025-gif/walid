@@ -182,8 +182,15 @@ public sealed class VerifiedBackupService
     private async Task PersistManifestAsync(BackupManifest manifest, CancellationToken cancellationToken)
     {
         await _schema.InitializeMetadataAsync(cancellationToken).ConfigureAwait(false);
-        if (await _schema.ClassifyAsync(cancellationToken).ConfigureAwait(false) == SchemaCompatibility.UPGRADE_REQUIRED)
-            await _schema.MigrateAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        var compatibility = await _schema.ClassifyAsync(cancellationToken).ConfigureAwait(false);
+        if (compatibility != SchemaCompatibility.CURRENT)
+        {
+            // A pre-migration backup must never trigger the migration it is intended to protect.
+            // The manifest remains durable on disk and is persisted into durability_backups only
+            // after the schema is already current.
+            return;
+        }
+
         await using var connection = await SqliteDurabilityConnection.OpenAsync(_store.DatabasePath, _policy, cancellationToken: cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.CommandText = "INSERT OR REPLACE INTO durability_backups(backup_id,source_database_id,schema_version,application_version,source_sha,created_at,reason,file_path,file_hash,integrity_status,manifest_json) VALUES($id,$source,$schema,$app,$sha,$at,$reason,$path,$hash,$integrity,$json);";
