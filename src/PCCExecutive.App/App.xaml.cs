@@ -9,7 +9,7 @@ namespace PCCExecutive.App;
 public partial class App : System.Windows.Application
 {
     private TrayIconService? _tray;
-    private PccExecutiveRuntimeHost? _gateway;
+    private RecoveryCompletionPresentationGateway? _gateway;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -20,7 +20,7 @@ public partial class App : System.Windows.Application
         {
             var applicationVersion = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
             PackagedStartupSchemaSafety.EnsureDefaultCurrentAsync(applicationVersion).GetAwaiter().GetResult();
-            _gateway = PccExecutiveRuntimeHost.Create();
+            _gateway = RecoveryCompletionPresentationGateway.Create();
             var viewModel = new MainViewModel(_gateway, new WpfConfirmationService());
             var window = new MainWindow(viewModel);
             MainWindow = window;
