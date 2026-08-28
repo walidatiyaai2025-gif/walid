@@ -169,8 +169,13 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
         await InvokePrivateAsync(Host, "RefreshLocalSnapshotAsync", CancellationToken.None).ConfigureAwait(false);
     }
 
-    internal Task<bool> RunIndependentFinalVerificationAsync() =>
-        InvokePrivateAsync<bool>(Host, "RunIndependentFinalVerificationAsync", CancellationToken.None);
+    internal async Task<bool> RunIndependentFinalVerificationAsync()
+    {
+        await Host.ExecuteAsync(UiAction.RunVerification).ConfigureAwait(false);
+        return Run.VerifiedCompletion.Percent == 100m &&
+               Run.CompletionMode == ProjectCompletionMode.VerifiedComplete &&
+               Run.State == ProjectRunState.VerifiedComplete;
+    }
 
     internal Task RecordRuntimeLoopErrorAsync(string message) =>
         InvokePrivateAsync(Host, "RecordRuntimeLoopErrorAsync", new InvalidOperationException(message), CancellationToken.None);

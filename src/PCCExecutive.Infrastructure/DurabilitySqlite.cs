@@ -59,7 +59,12 @@ public sealed record SqliteDurabilityPolicy(
 public static class SqliteDurabilityConnection
 {
     public static string ConnectionString(string databasePath, SqliteOpenMode mode = SqliteOpenMode.ReadWriteCreate) =>
-        new SqliteConnectionStringBuilder { DataSource = databasePath, Mode = mode, Cache = SqliteCacheMode.Shared, Pooling = false }.ToString();
+        // Read-only integrity probes and writable orchestration commits can overlap during
+        // shutdown/recovery. A shared SQLite page cache can inherit the read-only opener's
+        // access mode and intermittently reject the writer with SQLITE_READONLY. WAL already
+        // provides the required cross-connection concurrency, so keep each connection cache
+        // private and preserve the write boundary.
+        new SqliteConnectionStringBuilder { DataSource = databasePath, Mode = mode, Cache = SqliteCacheMode.Private, Pooling = false }.ToString();
 
     public static async Task<SqliteConnection> OpenAsync(string databasePath, SqliteDurabilityPolicy policy, SqliteOpenMode mode = SqliteOpenMode.ReadWriteCreate, CancellationToken cancellationToken = default)
     {

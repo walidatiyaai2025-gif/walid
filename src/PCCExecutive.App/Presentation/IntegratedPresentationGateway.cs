@@ -247,6 +247,19 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
 
     public async Task ExecuteAsync(UiAction action, string? targetId = null, CancellationToken cancellationToken = default)
     {
+        await _autopilotOperation.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await ExecuteCoreAsync(action, targetId, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _autopilotOperation.Release();
+        }
+    }
+
+    private async Task ExecuteCoreAsync(UiAction action, string? targetId, CancellationToken cancellationToken)
+    {
         switch (action)
         {
             case UiAction.Refresh:
@@ -643,6 +656,10 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     {
         var run = RequireActiveRun();
         var plan = _currentPlan ?? throw new InvalidOperationException("A validated Manager plan is required before dispatch.");
+        var alreadyDispatched = _assignments.Count > 0 && _assignments.Keys.All(id =>
+            _runtimeTasks.FirstOrDefault(task => task.Id == id)?.State is TaskState.Dispatched or TaskState.Running or TaskState.Completed);
+        if (alreadyDispatched && _currentWave?.State is WaveState.Running or WaveState.Completed)
+            return; // Safe repeat: the durable dispatch identities already own every physical send.
         var wave = _currentWave is { State: WaveState.Ready } ready ? ready : throw new InvalidOperationException("Current Wave is not ready for dispatch.");
         var dispatchProposals = plan.Tasks.Where(x => _assignments.ContainsKey(x.Task.Id) && _runtimeTasks.FirstOrDefault(t => t.Id == x.Task.Id)?.State is not (TaskState.Dispatched or TaskState.Running or TaskState.Completed)).ToArray();
         if (dispatchProposals.Length == 0) throw new InvalidOperationException("No safely dispatchable tasks remain in the current Wave.");
@@ -993,6 +1010,13 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
 
     private async Task RunVerificationAsync(CancellationToken cancellationToken)
     {
+        if (_run is { CompletionMode: ProjectCompletionMode.ClosureMode, VerifiedCompletion.Percent: >= 99m })
+        {
+            await RunIndependentFinalVerificationAsync(cancellationToken).ConfigureAwait(false);
+            await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         var result = await _baseline.BuildAsync(_projectControlId ?? throw new InvalidOperationException("Select a project before verification."), cancellationToken).ConfigureAwait(false);
         if (result.IsSuccess && result.Value is not null)
         {

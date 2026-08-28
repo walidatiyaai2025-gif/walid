@@ -217,6 +217,8 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         var preRestartRun = h.Run.Id;
         var preRestartWave = h.CurrentWave!.Id;
         var preRestartAssignment = h.Assignments.Single();
+        await h.PauseAsync();
+        Assert.True(h.SendGate.Snapshot.IsPaused);
         var preRestartAgents = new[] { h.ManagerAgentId }.Concat(h.WorkerAgentIds).ToArray();
         var preRestartIdentity = new Dictionary<LogicalAgentId, (string? Slot, string? Task, string Conversation, string? Provider)>();
         foreach (var agent in preRestartAgents)
@@ -227,8 +229,6 @@ public sealed class ProductionRuntime32StageAcceptanceTests
             Assert.True(StringComparer.Ordinal.Equals(runtime.ConversationIdentity, logical!.CurrentConversationId!.Value.ToString()));
             preRestartIdentity[agent] = (runtime.WorkerSlotId, runtime.TaskId, runtime.ConversationIdentity!, runtime.ProviderConversationIdentity);
         }
-        await h.PauseAsync();
-        Assert.True(h.SendGate.Snapshot.IsPaused);
         await h.ForceInterruptedRestartAsync();
         Assert.Equal(preRestartRun, h.Run.Id);
         Assert.Equal(preRestartWave, h.CurrentWave!.Id);

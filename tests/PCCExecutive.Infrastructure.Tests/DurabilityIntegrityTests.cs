@@ -30,6 +30,21 @@ public sealed class DurabilityIntegrityTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Read_only_probe_cannot_poison_an_overlapping_writable_metadata_connection()
+    {
+        await using var store = await DurabilityTestFixture.NewStoreAsync(_root, "readonly-overlap.db");
+        var policy = new SqliteDurabilityPolicy();
+        await using var readOnly = await SqliteDurabilityConnection.OpenAsync(
+            store.DatabasePath,
+            policy,
+            SqliteOpenMode.ReadOnly);
+
+        var schema = new DurabilitySchemaManager(store.DatabasePath, policy);
+        await schema.InitializeMetadataAsync();
+        Assert.False(string.IsNullOrWhiteSpace(await schema.GetDatabaseIdAsync()));
+    }
+
+    [Fact]
     public async Task Corrupted_database_is_detected()
     {
         var path = Path.Combine(_root, "corrupt.db");
