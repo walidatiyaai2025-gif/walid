@@ -11,7 +11,7 @@ try {
     Set-Content (Join-Path $payload 'PCCExecutive.exe') 'fake-app' -Encoding ascii
     & (Join-Path $PSScriptRoot 'Test-ReleasePayload.ps1') -PayloadRoot $payload
 
-    foreach ($badName in @('Cookies','.env','project.sqlite','developer.log')) {
+    foreach ($badName in @('Cookies','.env','project.sqlite','developer.log','project.db-wal','project.db-shm','state.sqlite-wal','state.sqlite-shm','state.sqlite-journal')) {
         $badPath = Join-Path $payload $badName
         Set-Content $badPath 'secret' -Encoding ascii
         $rejected = $false
@@ -19,6 +19,14 @@ try {
         if (-not $rejected) { throw "Secret/profile payload rejection self-test failed for $badName." }
         Remove-Item $badPath -Force
     }
+
+    # Runtime SQLite WAL/SHM creation is legitimate outside the packaged payload. The scanner must
+    # remain scoped to PayloadRoot and must not treat normal application-state sidecars as release contamination.
+    $runtimeState = Join-Path $temp 'runtime-state'
+    New-Item -ItemType Directory -Path $runtimeState -Force | Out-Null
+    Set-Content (Join-Path $runtimeState 'pcc-executive.db-wal') 'runtime-sidecar' -Encoding ascii
+    Set-Content (Join-Path $runtimeState 'pcc-executive.db-shm') 'runtime-sidecar' -Encoding ascii
+    & (Join-Path $PSScriptRoot 'Test-ReleasePayload.ps1') -PayloadRoot $payload
 
     $installer = Join-Path $temp 'PCCExecutive-0.1.0-Setup-x64.exe'
     Set-Content $installer 'fake-installer' -Encoding ascii

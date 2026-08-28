@@ -24,6 +24,7 @@ function Is-Allowed([System.IO.FileSystemInfo]$item) {
 $forbiddenDirectory = '^(User Data|BrowserProfiles?|ChatGPTProfiles?|auth-state|storage-state|playwright-auth)$'
 $forbiddenFileName = '^(Cookies|Cookies-journal|Login Data|Login Data-journal|Web Data|History|Preferences|Secure Preferences)$'
 $forbiddenExtension = '^\.(sqlite|sqlite3|db|pdb|cs|csproj|sln|slnx|user)$'
+$forbiddenSqliteSidecar = '(?i)(?:\.db|\.sqlite|\.sqlite3)-(?:wal|shm|journal)$'
 $forbiddenSecretName = '^(\.env(?:\..+)?|.*(?:auth[-_.]?state|storage[-_.]?state|credentials?|tokens?|cookies?)\.(json|ya?ml))$'
 
 $violations = [System.Collections.Generic.List[string]]::new()
@@ -37,6 +38,7 @@ foreach ($file in Get-ChildItem -Path $root -Recurse -Force -File -ErrorAction S
     if (Is-Allowed $file) { continue }
     $relative = [IO.Path]::GetRelativePath($root, $file.FullName)
     if ($file.Name -match $forbiddenFileName) { $violations.Add("browser-profile-file:$relative"); continue }
+    if ($file.Name -match $forbiddenSqliteSidecar) { $violations.Add("sqlite-sidecar:$relative"); continue }
     if ($file.Extension -match $forbiddenExtension) { $violations.Add("forbidden-release-file:$relative"); continue }
     if ($file.Name -match $forbiddenSecretName) { $violations.Add("secret-or-auth-file:$relative"); continue }
     if ($file.Extension -eq '.log') { $violations.Add("developer-log:$relative"); continue }

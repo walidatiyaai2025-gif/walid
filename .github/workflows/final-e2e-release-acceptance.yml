@@ -1,0 +1,142 @@
+name: PCC Executive Final E2E Release Acceptance
+
+on:
+  push:
+    branches:
+      - worker/pcc-final-e2e-release-acceptance
+  pull_request:
+    branches:
+      - worker/pcc-final-runtime-e2e-closure
+
+permissions:
+  contents: read
+
+jobs:
+  final-acceptance:
+    name: 32-stage E2E and package acceptance
+    runs-on: windows-latest
+    env:
+      PCCEXECUTIVE_LIVE_BROWSER: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Exact-head and source hygiene
+        shell: pwsh
+        run: |
+          $actual=(git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected='${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}'.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "EXACT_HEAD_MISMATCH actual=$actual expected=$expected" }
+          ./build/Test-GeneratedOutputHygiene.ps1
+
+      - name: Restore and build zero-warning acceptance projects
+        shell: pwsh
+        run: |
+          $projects = @(
+            'tests/PCCExecutive.Domain.Tests/PCCExecutive.Domain.Tests.csproj',
+            'tests/PCCExecutive.Application.Tests/PCCExecutive.Application.Tests.csproj',
+            'tests/PCCExecutive.App.Tests/PCCExecutive.App.Tests.csproj',
+            'tests/PCCExecutive.Browser.Tests/PCCExecutive.Browser.Tests.csproj',
+            'tests/PCCExecutive.Browser.Acceptance/PCCExecutive.Browser.Acceptance.csproj',
+            'tests/PCCExecutive.Infrastructure.Tests/PCCExecutive.Infrastructure.Tests.csproj',
+            'tests/PCCExecutive.Integration/PCCExecutive.Integration.csproj',
+            'tests/PCCExecutive.E2E/PCCExecutive.E2E.csproj'
+          )
+          foreach ($project in $projects) {
+            dotnet build $project --configuration Release -warnaserror
+            if ($LASTEXITCODE -ne 0) { throw "BUILD_FAILED $project" }
+          }
+
+      - name: Domain tests
+        shell: pwsh
+        run: dotnet test tests/PCCExecutive.Domain.Tests/PCCExecutive.Domain.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
+      - name: Application tests
+        shell: pwsh
+        run: dotnet test tests/PCCExecutive.Application.Tests/PCCExecutive.Application.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
+      - name: App tests
+        shell: pwsh
+        run: dotnet test tests/PCCExecutive.App.Tests/PCCExecutive.App.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
+      - name: Browser tests
+        shell: pwsh
+        run: dotnet test tests/PCCExecutive.Browser.Tests/PCCExecutive.Browser.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
+      - name: Browser acceptance
+        shell: pwsh
+        run: dotnet test tests/PCCExecutive.Browser.Acceptance/PCCExecutive.Browser.Acceptance.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
+      - name: Infrastructure tests
+        shell: pwsh
+        run: dotnet test tests/PCCExecutive.Infrastructure.Tests/PCCExecutive.Infrastructure.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
+      - name: Integration tests
+        shell: pwsh
+        run: dotnet test tests/PCCExecutive.Integration/PCCExecutive.Integration.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
+      - name: 32-stage E2E
+        shell: pwsh
+        run: dotnet test tests/PCCExecutive.E2E/PCCExecutive.E2E.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
+      - name: Release hardening and updater integrity
+        shell: pwsh
+        run: |
+          ./build/Test-ReleaseHardening.ps1
+          ./build/Test-UpdateIntegrity.ps1
+          ./build/Test-NuGetVulnerabilities.ps1
+
+      - name: Self-contained publish and published app smoke
+        shell: pwsh
+        run: |
+          $publish='artifacts/final-acceptance/publish'
+          dotnet publish src/PCCExecutive.App/PCCExecutive.App.csproj --configuration Release --runtime win-x64 --self-contained true --output $publish
+          if ($LASTEXITCODE -ne 0) { throw 'SELF_CONTAINED_PUBLISH_FAILED' }
+          ./build/Test-ReleasePayload.ps1 -PayloadRoot $publish
+          ./tests/installer/Smoke-PublishedApp.ps1 -PublishRoot $publish
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build exact-head Setup and verify package
+        shell: pwsh
+        run: |
+          ./build/Package.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'SETUP_BUILD_FAILED' }
+          $version=(Get-Content VERSION -Raw).Trim()
+          $installer="artifacts/package/PCCExecutive-$version-Setup-x64.exe"
+          if (-not (Test-Path $installer)) { throw "INSTALLER_MISSING $installer" }
+          ./tests/installer/Test-Package.ps1 -InstallerPath $installer -ExpectedVersion $version
+
+      - name: Fresh install first-run persistence and uninstall preserve-data
+        shell: pwsh
+        run: |
+          $version=(Get-Content VERSION -Raw).Trim()
+          $installer="artifacts/package/PCCExecutive-$version-Setup-x64.exe"
+          $installRoot="$env:LOCALAPPDATA/PCC Executive Smoke/FinalAcceptance"
+          $dataRoot="$env:LOCALAPPDATA/PCC Executive Final Acceptance Data"
+          ./tests/installer/Smoke-FreshInstall.ps1 -InstallerPath $installer -ExpectedVersion $version -InstallRoot $installRoot
+          ./tests/installer/Smoke-FirstRun.ps1 -InstallRoot $installRoot -ExpectedSchemaVersion 2 -DataRoot $dataRoot -EvidencePath artifacts/final-acceptance/first-run.json
+          ./tests/installer/Smoke-Persistence.ps1 -InstallRoot $installRoot -DataRoot $dataRoot -EvidencePath artifacts/final-acceptance/persistence.json
+          ./tests/installer/Smoke-Uninstall.ps1 -InstallRoot $installRoot -DataRoot $dataRoot
+
+      - name: Final tracked-output recheck
+        shell: pwsh
+        run: ./build/Test-GeneratedOutputHygiene.ps1
+
+      - name: Upload deterministic acceptance evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: PCCExecutive-final-acceptance-${{ github.sha }}
+          path: |
+            artifacts/final-acceptance/**
+            artifacts/package/**
+            artifacts/release/**
+          if-no-files-found: warn
+          retention-days: 14
