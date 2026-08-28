@@ -125,6 +125,56 @@ public sealed class RecoveryIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public void Browser_reconciliation_matches_same_conversation_uuid_across_guid_formats()
+    {
+        var run = Run(ProjectRunState.WaveRunning);
+        var agent = LogicalAgentId.New();
+        var conversation = ConversationId.New();
+        var session = new LogicalAgentSession(agent, run.Id, AgentRole.Manager, null, null, conversation, LogicalSessionState.Active);
+        var runtime = new BrowserRuntimeRecord
+        {
+            RuntimeId = "manager-runtime",
+            ProjectRunId = run.Id.ToString(),
+            LogicalAgentId = agent.ToString(),
+            ConversationIdentity = conversation.Value.ToString("D"),
+            ProfilePath = "owned",
+            CreatedByPcc = true,
+            OwnershipNonce = "nonce",
+            LastHeartbeatAt = DateTimeOffset.UtcNow,
+            LastActivityAt = DateTimeOffset.UtcNow
+        };
+
+        var result = new BrowserSessionReconciliationService().Reconcile(session, runtime);
+
+        Assert.Equal(BrowserReconciliationKind.MATCHED, result.Outcome);
+    }
+
+    [Fact]
+    public void Browser_reconciliation_keeps_a_genuine_conversation_uuid_mismatch_blocking()
+    {
+        var run = Run(ProjectRunState.WaveRunning);
+        var agent = LogicalAgentId.New();
+        var durableConversation = ConversationId.New();
+        var session = new LogicalAgentSession(agent, run.Id, AgentRole.Manager, null, null, durableConversation, LogicalSessionState.Active);
+        var runtime = new BrowserRuntimeRecord
+        {
+            RuntimeId = "manager-runtime",
+            ProjectRunId = run.Id.ToString(),
+            LogicalAgentId = agent.ToString(),
+            ConversationIdentity = ConversationId.New().Value.ToString("D"),
+            ProfilePath = "owned",
+            CreatedByPcc = true,
+            OwnershipNonce = "nonce",
+            LastHeartbeatAt = DateTimeOffset.UtcNow,
+            LastActivityAt = DateTimeOffset.UtcNow
+        };
+
+        var result = new BrowserSessionReconciliationService().Reconcile(session, runtime);
+
+        Assert.Equal(BrowserReconciliationKind.IDENTITY_MISMATCH, result.Outcome);
+    }
+
+    [Fact]
     public async Task Pre_update_checkpoint_requires_verified_backup()
     {
         await using var store = await NewStoreAsync("update.db");
