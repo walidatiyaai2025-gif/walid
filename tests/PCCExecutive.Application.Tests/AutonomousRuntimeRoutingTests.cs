@@ -51,6 +51,14 @@ public sealed class AutonomousRuntimeRoutingTests
         second!.Dispose();
     }
 
+    [Fact]
+    public void Fully_ready_runtime_routes_safe_automatic_resume()
+    {
+        var decision = _router.Route(State(BrowserRecoveryState.Ready), new("manager", BrowserRecoveryState.Ready, SafeToResume: true));
+        Assert.Equal(AutonomousRuntimeAction.ResumeOrchestration, decision.Action);
+        Assert.False(decision.RequiresHumanAttention);
+    }
+
     private static GuidedRuntimeState State(BrowserRecoveryState state) => new(
         GatewayBound: true, BrowserProviderSelected: true, BrowserState: state,
         ProjectResolved: true, ProjectIdentityKnown: true, ProjectRunValid: true,
