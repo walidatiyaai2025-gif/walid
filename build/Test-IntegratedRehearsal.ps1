@@ -11,7 +11,7 @@ try{
     $matrixPath=Join-Path $temp 'matrix.json';& (Join-Path $PSScriptRoot 'Get-IntegrationMatrix.ps1') -OutputPath $matrixPath|Out-Null;$matrix=Get-Content $matrixPath -Raw|ConvertFrom-Json
     foreach($name in @('DOMAIN','APPLICATION','PCC','GITHUB','PERSISTENCE','BROWSER','UI','UPDATER','INSTALLER','TESTS')){$actual=($matrix.Modules|Where-Object Name -eq $name|Select-Object -First 1).State;if($actual -ne 'FOUND'){throw "Integration matrix mismatch for $name expected=FOUND actual=$actual"}}
     if($matrix.Overall -ne 'READY_FOR_TEMP_CONVERGENCE'){throw "All required modules exist; matrix should be ready, actual=$($matrix.Overall)"}
-    $w1=$config.chains|Where-Object owner -eq 'WORKER_1';if($w1.state -ne 'PENDING_PR' -or $w1.includeInPartialCandidate){throw 'Current Worker 1 follow-on must be validated independently and excluded from the accepted canonical candidate until routed.'}
+    foreach($owner in @('WORKER_1','WORKER_2','WORKER_3','WORKER_4','WORKER_5')){$chain=$config.chains|Where-Object owner -eq $owner|Select-Object -First 1;if($null -eq $chain -or $chain.state -ne 'FOUND'){throw "Current canonical integration must represent $owner as FOUND."}}
     $browser=($config.chains|Where-Object owner -eq 'WORKER_3').head;$planPath=Join-Path $temp 'playwright.json';& (Join-Path $PSScriptRoot 'Get-PlaywrightPackagingPlan.ps1') -BrowserHead $browser -OutputPath $planPath|Out-Null;$plan=Get-Content $planPath -Raw|ConvertFrom-Json
     if($plan.Strategy -ne 'SYSTEM_CHROME_CDP' -or $plan.PlaywrightManagedBrowserInstallRequired){throw 'Playwright packaging strategy does not match current Worker 3 implementation.'}
     Write-Host 'INTEGRATED_REHEARSAL_CONTRACT_TESTS_PASS';$global:LASTEXITCODE=0

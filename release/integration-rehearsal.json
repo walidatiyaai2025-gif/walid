@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "canonical": {
     "branch": "task/pcc-executive-t0001-v1",
-    "sha": "54853fdd41e71ab6c68bb77c737ef90a83dfebab"
+    "sha": "e02309975f8a14507a35a0b6f2d1098ce86c9379"
   },
   "databaseSchemaTarget": "1",
   "minimumUpgradeVersion": "NONE_FRESH_BASELINE",
@@ -13,22 +13,22 @@
     {
       "owner": "WORKER_1",
       "name": "FOUNDATION_PCC_GITHUB_MANAGER_ORCHESTRATION",
-      "head": "eff2ed24c09952f703541695a9925414dc1797fb",
+      "head": "e02309975f8a14507a35a0b6f2d1098ce86c9379",
       "prs": [4, 7],
       "dependsOn": ["032058791bd009c22691c4db437f02e369057811"],
-      "state": "PENDING_PR",
+      "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "Foundation and PCC/GitHub are canonical; current Manager orchestration follow-on remains outside canonical and is validated independently, not merged into the candidate."
+      "reason": "Foundation, PCC/GitHub and Manager-to-workers orchestration/evidence reconciliation are integrated on canonical."
     },
     {
       "owner": "WORKER_2",
       "name": "PERSISTENCE_RECOVERY_CANONICAL_INTEGRATION",
-      "head": "54853fdd41e71ab6c68bb77c737ef90a83dfebab",
+      "head": "e02309975f8a14507a35a0b6f2d1098ce86c9379",
       "prs": [],
       "dependsOn": [],
       "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "Durable PCCExecutive.Infrastructure and SQLite persistence are integrated on canonical; historical Worker 2 branch is not used as release source."
+      "reason": "Durable PCCExecutive.Infrastructure and SQLite persistence are integrated on canonical."
     },
     {
       "owner": "WORKER_3",
@@ -43,12 +43,12 @@
     {
       "owner": "WORKER_4",
       "name": "PREMIUM_WPF_UI_RUNTIME_BINDING",
-      "head": "54853fdd41e71ab6c68bb77c737ef90a83dfebab",
+      "head": "e02309975f8a14507a35a0b6f2d1098ce86c9379",
       "prs": [],
       "dependsOn": ["af5f2b3d783752b4272f521f192ab6068bda86ac"],
       "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "Premium WPF shell and its integrated persistence/browser/PCC/GitHub service binding are present on canonical."
+      "reason": "Premium WPF shell and persistence/browser/PCC/GitHub service binding are integrated on canonical."
     },
     {
       "owner": "WORKER_5",
