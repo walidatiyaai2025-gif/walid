@@ -49,6 +49,9 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     private Task? _autopilotTask;
     private readonly Queue<string> _recentPlanFingerprints = new();
     private readonly Queue<decimal> _recentVerifiedCompletion = new();
+    private string? _runtimeHealthFault;
+    private string? _runtimeErrorFingerprint;
+    private int _runtimeErrorCount;
     private IReadOnlyList<ConversationHistorySummary> _conversationHistory = [];
 
     private PccExecutiveRuntimeHost(
@@ -115,6 +118,36 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
             {
                 _autopilot = "PAUSED";
                 _newSendPause.PauseNewSendsAsync("Restored persisted operator pause.").GetAwaiter().GetResult();
+            }
+            var healthCheckpoint = store.LoadCheckpointAsync($"runtime-health:{run.Id}").GetAwaiter().GetResult();
+            if (healthCheckpoint is not null)
+            {
+                var health = JsonSerializer.Deserialize<DurableRuntimeHealth>(healthCheckpoint.Payload);
+                if (health?.Active == true)
+                {
+                    _runtimeHealthFault = health.State;
+                    var now = DateTimeOffset.UtcNow;
+                    var cooldown = health.ResumeNotBefore is null ? (TimeSpan?)null : health.ResumeNotBefore <= now ? TimeSpan.Zero : health.ResumeNotBefore.Value - now;
+                    _sendGate.Apply(new ResilienceDecision(ParseResilienceState(health.State), FaultScope.Global, true, health.RequiresHumanAction, health.Reason), now, cooldown);
+                    if (_autopilot != "PAUSED") _autopilot = health.State;
+                }
+            }
+            var loopCheckpoint = store.LoadCheckpointAsync($"loop-guard:{run.Id}").GetAwaiter().GetResult();
+            if (loopCheckpoint is not null)
+            {
+                var loop = JsonSerializer.Deserialize<DurableLoopGuard>(loopCheckpoint.Payload);
+                if (loop is not null)
+                {
+                    foreach (var fingerprint in loop.PlanFingerprints.TakeLast(3)) _recentPlanFingerprints.Enqueue(fingerprint);
+                    foreach (var completion in loop.VerifiedCompletion.TakeLast(3)) _recentVerifiedCompletion.Enqueue(completion);
+                    _runtimeErrorFingerprint = loop.RuntimeErrorFingerprint;
+                    _runtimeErrorCount = loop.RuntimeErrorCount;
+                    if (loop.AutoStopped)
+                    {
+                        _run = _run is null ? null : _run with { State = ProjectRunState.StalledAutoStopped };
+                        _autopilot = "STALLED";
+                    }
+                }
             }
         }
         Snapshot = BuildSnapshot(Array.Empty<BrowserRuntimeRecord>(), new HashSet<string>(StringComparer.Ordinal));
@@ -230,6 +263,8 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                 break;
             case UiAction.ResumeAi:
                 var resumedRun = RequireActiveRun();
+                if (_runtimeHealthFault is not null && !await TryResumeAfterFreshSemanticHealthAsync(cancellationToken).ConfigureAwait(false))
+                    throw new InvalidOperationException("Global Browser sends remain blocked because fresh semantic health is not proven safe.");
                 await _newSendPause.ResumeNewSendsAsync("Operator resumed AI from PCC Executive.", cancellationToken).ConfigureAwait(false);
                 await _store.SaveCheckpointAsync(new DurableCheckpoint($"autopilot-pause:{resumedRun.Id}", resumedRun.Id.ToString(), "autopilot-pause-v1", "{\"paused\":false}", DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
                 await _store.SaveCheckpointAsync(new DurableCheckpoint($"dispatch-pause:{resumedRun.Id}", resumedRun.Id.ToString(), "dispatch-pause-v1", "{\"paused\":false}", DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
@@ -293,6 +328,67 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
 
     private ProjectRun RequireActiveRun() =>
         _run ?? throw new InvalidOperationException("Select and resolve a project before using project runtime controls.");
+
+    private async Task PersistGlobalHealthPauseAsync(ResilienceDecision resilience, string runtimeId, CancellationToken cancellationToken)
+    {
+        var run = RequireActiveRun();
+        var cooldown = resilience.RequiresHumanAction ? (TimeSpan?)null : resilience.State == ChatGptResilienceState.RateLimited ? new ConservativeCooldownPolicy().GetCooldown(1) : TimeSpan.FromSeconds(30);
+        _sendGate.Apply(resilience with { Scope = FaultScope.Global, PauseUnsafeNewSends = true }, DateTimeOffset.UtcNow, cooldown);
+        _runtimeHealthFault = resilience.State.ToString().ToUpperInvariant();
+        _autopilot = _runtimeHealthFault;
+        var durable = new DurableRuntimeHealth(true, _runtimeHealthFault, resilience.Reason, _sendGate.Snapshot.ResumeNotBefore, resilience.RequiresHumanAction, runtimeId);
+        await _store.SaveCheckpointAsync(new DurableCheckpoint($"runtime-health:{run.Id}", run.Id.ToString(), "runtime-health-v2", JsonSerializer.Serialize(durable), DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<bool> TryResumeAfterFreshSemanticHealthAsync(CancellationToken cancellationToken)
+    {
+        var run = RequireActiveRun();
+        if (_runtimeHealthFault is null) return true;
+        var gate = _sendGate.Snapshot;
+        if (gate.ResumeNotBefore is not null && gate.ResumeNotBefore > DateTimeOffset.UtcNow) return false;
+        var runtimes = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false))
+            .Where(x => !x.IsArchived && x.State is not BrowserSessionState.Killed && StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()) && !string.IsNullOrWhiteSpace(x.TaskId) && !string.IsNullOrWhiteSpace(x.ConversationIdentity) && !string.IsNullOrWhiteSpace(x.ProviderConversationIdentity))
+            .ToArray();
+        if (runtimes.Length == 0) return false;
+        foreach (var runtime in runtimes)
+        {
+            var expected = new BrowserDispatchExpectation(run.Id.ToString(), runtime.LogicalAgentId, runtime.TaskId!, runtime.ConversationIdentity!, runtime.ProviderConversationIdentity!, runtime.WorkerSlotId);
+            var semantic = await _browserAdapter.InspectAsync(runtime, expected, cancellationToken).ConfigureAwait(false);
+            if (semantic.Auth.State != AuthState.Authenticated || semantic.Health.State != PageHealth.Healthy) return false;
+        }
+        await _newSendPause.ResumeNewSendsAsync("Fresh semantic Browser health proved safe after durable global fault.", cancellationToken).ConfigureAwait(false);
+        _runtimeHealthFault = null;
+        await _store.SaveCheckpointAsync(new DurableCheckpoint($"runtime-health:{run.Id}", run.Id.ToString(), "runtime-health-v2", JsonSerializer.Serialize(new DurableRuntimeHealth(false, "READY", "Fresh semantic health proven.", null, false, null)), DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task PersistLoopGuardAsync(bool autoStopped, CancellationToken cancellationToken)
+    {
+        if (_run is null) return;
+        var state = new DurableLoopGuard(_recentPlanFingerprints.ToArray(), _recentVerifiedCompletion.ToArray(), _runtimeErrorFingerprint, _runtimeErrorCount, autoStopped);
+        await _store.SaveCheckpointAsync(new DurableCheckpoint($"loop-guard:{_run.Id}", _run.Id.ToString(), "loop-guard-v2", JsonSerializer.Serialize(state), DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task RecordRuntimeLoopErrorAsync(InvalidOperationException error, CancellationToken cancellationToken)
+    {
+        var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{error.GetType().FullName}|{error.Message}"))).ToLowerInvariant();
+        if (StringComparer.Ordinal.Equals(_runtimeErrorFingerprint, fingerprint)) _runtimeErrorCount++;
+        else
+        {
+            _runtimeErrorFingerprint = fingerprint;
+            _runtimeErrorCount = 1;
+        }
+        if (_runtimeErrorCount >= 3 && _run is not null)
+        {
+            _run = _run with { State = ProjectRunState.StalledAutoStopped };
+            _autopilot = "STALLED";
+            _latestManagerHandoff = "STALLED_AUTO_STOPPED — the same runtime error repeated three times across durable loop state.";
+            await _orchestrationStore.SaveAsync(new OrchestrationRecoverySnapshot(_run, _currentWave, _runtimeTasks, _assignments, [], null, OrchestrationPhase.StalledAutoStopped, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+            await PersistLoopGuardAsync(true, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        await PersistLoopGuardAsync(false, cancellationToken).ConfigureAwait(false);
+    }
 
     private async Task PersistAgentBindingAsync(LogicalAgentId agentId, WorkerSlotId? slot, TaskId? taskId, ConversationId conversationId, CancellationToken cancellationToken)
     {
@@ -454,15 +550,13 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         if (semantic.Auth.State is AuthState.LoginRequired or AuthState.Challenge)
         {
             CaptureProviderAttention(semantic.Auth.State == AuthState.Challenge ? "CHALLENGE" : "LOGIN_REQUIRED", runtime.RuntimeId, "Manager ChatGPT session");
+            await PersistGlobalHealthPauseAsync(resilience, runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
             await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
             return;
         }
         if (resilience.Scope == FaultScope.Global && resilience.PauseUnsafeNewSends)
         {
-            var cooldown = resilience.State == ChatGptResilienceState.RateLimited ? new ConservativeCooldownPolicy().GetCooldown(1) : TimeSpan.FromSeconds(30);
-            _sendGate.Apply(resilience, DateTimeOffset.UtcNow, cooldown);
-            _autopilot = resilience.State.ToString().ToUpperInvariant();
-            await _store.SaveCheckpointAsync(new DurableCheckpoint($"runtime-health:{run.Id}", run.Id.ToString(), "runtime-health-v1", JsonSerializer.Serialize(new { resilience.State, resilience.Reason, ResumeNotBefore = _sendGate.Snapshot.ResumeNotBefore }), DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+            await PersistGlobalHealthPauseAsync(resilience, runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
             await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
             return;
         }
@@ -481,6 +575,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         var planFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", parsed.Plan.Tasks.Select(x => x.Task.Fingerprint))))).ToLowerInvariant();
         _recentPlanFingerprints.Enqueue(planFingerprint);
         while (_recentPlanFingerprints.Count > 3) _recentPlanFingerprints.Dequeue();
+        await PersistLoopGuardAsync(false, cancellationToken).ConfigureAwait(false);
         if (_recentPlanFingerprints.Count == 3 && _recentPlanFingerprints.Distinct(StringComparer.Ordinal).Count() == 1)
         {
             _run = run with { State = ProjectRunState.StalledAutoStopped };
@@ -614,16 +709,16 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                 continue;
             var expected = new BrowserDispatchExpectation(run.Id.ToString(), agentId.ToString(), proposal.Task.Id.ToString(), runtime.ConversationIdentity, runtime.ProviderConversationIdentity, slot.Value.ToString());
             var semantic = await _browserAdapter.InspectAsync(runtime, expected, cancellationToken).ConfigureAwait(false);
+            var resilience = new ChatGptResilienceClassifier().Classify(semantic, DateTimeOffset.UtcNow - runtime.LastActivityAt);
             if (semantic.Auth.State is AuthState.LoginRequired or AuthState.Challenge)
             {
                 CaptureProviderAttention(semantic.Auth.State == AuthState.Challenge ? "CHALLENGE" : "LOGIN_REQUIRED", runtime.RuntimeId, $"Worker {slot.Value} ChatGPT session");
+                await PersistGlobalHealthPauseAsync(resilience, runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
                 continue;
             }
-            var resilience = new ChatGptResilienceClassifier().Classify(semantic, DateTimeOffset.UtcNow - runtime.LastActivityAt);
             if (resilience.Scope == FaultScope.Global && resilience.PauseUnsafeNewSends)
             {
-                _sendGate.Apply(resilience, DateTimeOffset.UtcNow, new ConservativeCooldownPolicy().GetCooldown(1));
-                _autopilot = resilience.State.ToString().ToUpperInvariant();
+                await PersistGlobalHealthPauseAsync(resilience, runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
                 continue;
             }
             if (semantic.Generation.State == GenerationState.Generating || semantic.ResponseCompleteness != ResponseCompleteness.Complete || string.IsNullOrWhiteSpace(semantic.CapturedResponseText))
@@ -652,6 +747,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         _run = run with { State = completion.Mode == ProjectCompletionMode.ClosureMode ? ProjectRunState.ClosureMode : ProjectRunState.ManagerReview, VerifiedCompletion = completion.VerifiedCompletion, CompletionMode = completion.Mode };
         _recentVerifiedCompletion.Enqueue(_run.VerifiedCompletion.Percent);
         while (_recentVerifiedCompletion.Count > 3) _recentVerifiedCompletion.Dequeue();
+        await PersistLoopGuardAsync(false, cancellationToken).ConfigureAwait(false);
         if (_recentVerifiedCompletion.Count == 3 && _recentVerifiedCompletion.Distinct().Count() == 1 && _run.VerifiedCompletion.Percent < 99m)
         {
             _run = _run with { State = ProjectRunState.StalledAutoStopped };
@@ -783,8 +879,8 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                 }
                 if (_sendGate.Snapshot is { IsPaused: true, ResumeNotBefore: not null } gate && gate.ResumeNotBefore <= DateTimeOffset.UtcNow && _settings.AutoResume)
                 {
-                    await _newSendPause.ResumeNewSendsAsync("Conservative runtime cooldown elapsed; reconciling before sends resume.", cancellationToken).ConfigureAwait(false);
-                    _autopilot = _currentWave?.State == WaveState.Running ? "WAITING_WORKERS" : "RECOVERING";
+                    if (await TryResumeAfterFreshSemanticHealthAsync(cancellationToken).ConfigureAwait(false))
+                        _autopilot = _currentWave?.State == WaveState.Running ? "WAITING_WORKERS" : "RECOVERING";
                 }
                 await _autopilotOperation.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
@@ -804,10 +900,9 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
-            catch (InvalidOperationException)
+            catch (InvalidOperationException ex)
             {
-                // Incomplete generation, login, offline and stale evidence remain observable runtime states;
-                // the loop polls conservatively and never retries a dispatch here.
+                await RecordRuntimeLoopErrorAsync(ex, cancellationToken).ConfigureAwait(false);
             }
             await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false);
         }
@@ -973,7 +1068,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
             P0Count: 0,
             P1Count: 0,
             BlockerCount: 0,
-            LoopGuardState: run is null ? "WAITING_FOR_PROJECT" : "NORMAL",
+            LoopGuardState: run is null ? "WAITING_FOR_PROJECT" : run.State == ProjectRunState.StalledAutoStopped ? "STALLED_AUTO_STOPPED" : _runtimeErrorCount > 0 ? $"WATCH:{_runtimeErrorCount}" : "NORMAL",
             LatestManagerHandoff: run is null ? "Select and resolve a project before Manager execution." : _latestManagerHandoff,
             CurrentExecutionFlow: run is null ? "Project Selection → resolve canonical project → Dashboard" : "Project → Manager plan → validate → staged Workers → reconcile → Manager review",
             ApiConfigured: false,
@@ -1081,6 +1176,10 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     }
 
     private sealed record SelectedProjectState(string ProjectControlId, string ProjectIdentity, string DisplayName, string Repository, Guid ProjectRunId);
+    private sealed record DurableRuntimeHealth(bool Active, string State, string Reason, DateTimeOffset? ResumeNotBefore, bool RequiresHumanAction, string? RuntimeId);
+    private sealed record DurableLoopGuard(IReadOnlyList<string> PlanFingerprints, IReadOnlyList<decimal> VerifiedCompletion, string? RuntimeErrorFingerprint, int RuntimeErrorCount, bool AutoStopped);
+
+    private static ChatGptResilienceState ParseResilienceState(string value) => Enum.TryParse<ChatGptResilienceState>(value, true, out var state) ? state : ChatGptResilienceState.Paused;
 
     private sealed class EmptyCompletedTaskIndex : ICompletedTaskIndex
     {
