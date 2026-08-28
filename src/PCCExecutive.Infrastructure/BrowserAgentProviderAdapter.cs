@@ -77,6 +77,7 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
         var effectiveDispatchId = request.DispatchId;
         PCCExecutive.Domain.Dispatch? domainDispatch = null;
         AutonomousDispatchJournal? journal = null;
+        Func<CancellationToken, Task>? beforeSubmit = null;
         if (_durableStore is not null)
         {
             journal = new AutonomousDispatchJournal(_durableStore);
@@ -112,7 +113,8 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
                     null,
                     null,
                     $"runtime-task:{runtime.TaskId};worker-slot:{expectedSlot ?? "MANAGER"}");
-                await journal.SaveAsync(domainDispatch, cancellationToken).ConfigureAwait(false);
+                var prepared = domainDispatch;
+                beforeSubmit = ct => journal.SaveAsync(prepared, ct);
             }
         }
 
@@ -127,7 +129,7 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
             request.ContentHash,
             expectedSlot);
 
-        var result = await _provider.SendAsync(runtime.RuntimeId, browserRequest, cancellationToken).ConfigureAwait(false);
+        var result = await _provider.SendAsync(runtime.RuntimeId, browserRequest, cancellationToken, beforeSubmit).ConfigureAwait(false);
         var evidence = string.Join(";", result.Evidence.Prepend(result.Reason));
 
         if (journal is not null && domainDispatch is not null)

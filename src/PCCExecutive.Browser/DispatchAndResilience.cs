@@ -44,7 +44,7 @@ public sealed class BrowserChatProvider
     private readonly IBrowserRuntimeRegistry _runtimes; private readonly IChatGptBrowserAdapter _adapter; private readonly IDispatchLedger _ledger; private readonly WrongChatGuard _wrongChatGuard; private readonly GlobalBrowserSendGate _globalGate; private readonly IOwnershipProofService _ownership; private readonly ConcurrentDictionary<string, SemaphoreSlim> _dispatchGates = new(StringComparer.Ordinal);
     public BrowserChatProvider(IBrowserRuntimeRegistry runtimes, IChatGptBrowserAdapter adapter, IDispatchLedger ledger, WrongChatGuard wrongChatGuard, GlobalBrowserSendGate globalGate, IOwnershipProofService ownership) { _runtimes = runtimes; _adapter = adapter; _ledger = ledger; _wrongChatGuard = wrongChatGuard; _globalGate = globalGate; _ownership = ownership ?? throw new ArgumentNullException(nameof(ownership)); }
 
-    public async Task<BrowserDispatchResult> SendAsync(string runtimeId, BrowserDispatchRequest request, CancellationToken cancellationToken = default)
+    public async Task<BrowserDispatchResult> SendAsync(string runtimeId, BrowserDispatchRequest request, CancellationToken cancellationToken = default, Func<CancellationToken, Task>? beforeSubmit = null)
     {
         var gate = _globalGate.Snapshot;
         if (gate.IsPaused) return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, "GLOBAL_SEND_PAUSED", new[] { gate.Reason ?? "global-pause" });
@@ -56,6 +56,7 @@ public sealed class BrowserChatProvider
         if (!guard.MaySend) return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, guard.Reason, guard.Evidence);
         var proof = await _ownership.ProveAsync(runtime, cancellationToken).ConfigureAwait(false);
         if (!proof.IsProven) return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, "PCC_OWNERSHIP_NOT_PROVEN", guard.Evidence.Append(proof.Reason).ToArray());
+        if (beforeSubmit is not null) await beforeSubmit(cancellationToken).ConfigureAwait(false);
         var contentHash = request.ContentHash ?? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(request.Prompt)));
         var dispatchGate = _dispatchGates.GetOrAdd(request.DispatchId, static _ => new SemaphoreSlim(1, 1));
         await dispatchGate.WaitAsync(cancellationToken).ConfigureAwait(false);

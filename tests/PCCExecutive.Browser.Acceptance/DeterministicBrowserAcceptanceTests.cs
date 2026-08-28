@@ -33,13 +33,13 @@ public sealed class DeterministicBrowserAcceptanceTests
         harness.Adapter.SetSnapshot(worker2.RuntimeId, AcceptanceSnapshots.Healthy(ConversationMatch.Mismatch));
         harness.Adapter.SetSubmission(worker2.RuntimeId, new(true, true, false, "SHOULD_NOT_RUN", ["wrong-chat"]));
 
-        var blocked = await new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate)
+        var blocked = await new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate, harness.Ownership)
             .SendAsync(worker2.RuntimeId, harness.Request(worker2, "task-w2", "dispatch-w2", "w2"));
 
         var worker3 = await harness.BindTaskAsync(new AcceptanceTask("task-w3", 3, "w3", "scope-w3"));
         harness.Adapter.SetSnapshot(worker3.RuntimeId, AcceptanceSnapshots.Healthy());
         harness.Adapter.SetSubmission(worker3.RuntimeId, new(true, true, false, "SUBMISSION_PROVEN", ["worker3:healthy"]));
-        var continued = await new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate)
+        var continued = await new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate, harness.Ownership)
             .SendAsync(worker3.RuntimeId, harness.Request(worker3, "task-w3", "dispatch-w3", "w3"));
 
         Assert.Equal(BrowserDispatchOutcome.NotSent, blocked.Outcome);
@@ -58,7 +58,7 @@ public sealed class DeterministicBrowserAcceptanceTests
         harness.Adapter.SetSnapshot(worker.RuntimeId, snapshot);
         harness.Adapter.SetSubmission(worker.RuntimeId, new(true, true, false, "SHOULD_NOT_RUN", ["blind-click"]));
 
-        var result = await new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate)
+        var result = await new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate, harness.Ownership)
             .SendAsync(worker.RuntimeId, harness.Request(worker, "task-unknown", "dispatch-unknown", "unknown"));
         var resilience = new ChatGptResilienceController().Evaluate(RuntimeResilienceState.Ready,
             new RuntimeResilienceObservation(worker.RuntimeId, snapshot, DateTimeOffset.UtcNow));
@@ -78,7 +78,7 @@ public sealed class DeterministicBrowserAcceptanceTests
         var worker = await harness.BindTaskAsync(new AcceptanceTask("task-uncertain", 1, "uncertain", "scope"));
         harness.Adapter.SetSnapshot(worker.RuntimeId, AcceptanceSnapshots.Healthy());
         harness.Adapter.SetSubmission(worker.RuntimeId, new(true, false, true, "SUBMITTED_UNKNOWN", ["enter-triggered", "delivery-unproven"]));
-        var provider = new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate);
+        var provider = new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate, harness.Ownership);
         var request = harness.Request(worker, "task-uncertain", "dispatch-uncertain", "uncertain");
 
         var first = await provider.SendAsync(worker.RuntimeId, request);
@@ -112,7 +112,7 @@ public sealed class DeterministicBrowserAcceptanceTests
         var worker = await harness.BindTaskAsync(new AcceptanceTask("task-dedupe", 1, "dedupe", "scope"));
         harness.Adapter.SetSnapshot(worker.RuntimeId, AcceptanceSnapshots.Healthy());
         harness.Adapter.SetSubmission(worker.RuntimeId, new(true, true, false, "SUBMISSION_PROVEN", ["submitted"]));
-        var provider = new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate);
+        var provider = new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate, harness.Ownership);
         var request = harness.Request(worker, "task-dedupe", "dispatch-dedupe", "dedupe");
 
         var first = await provider.SendAsync(worker.RuntimeId, request);
@@ -162,7 +162,7 @@ public sealed class DeterministicBrowserAcceptanceTests
     {
         var harness = new ControlledBrowserAcceptanceHarness();
         await harness.CreateTopologyAsync(3);
-        var provider = new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate);
+        var provider = new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate, harness.Ownership);
 
         var worker2 = await harness.BindTaskAsync(new AcceptanceTask("task-2", 2, "two", "scope-2"));
         harness.Adapter.SetSnapshot(worker2.RuntimeId, AcceptanceSnapshots.Healthy());
@@ -389,7 +389,7 @@ public sealed class DeterministicBrowserAcceptanceTests
         harness.Adapter.SetSnapshot(worker.RuntimeId, AcceptanceSnapshots.Healthy());
         harness.Adapter.SetSubmission(worker.RuntimeId, new(true, false, true, "SUBMITTED_UNKNOWN", ["delivery-unproven"]));
         var request = harness.Request(worker, "task-unknown-restart", "dispatch-unknown-restart", "work");
-        var provider = new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate);
+        var provider = new BrowserChatProvider(harness.Registry, harness.Adapter, harness.Ledger, new WrongChatGuard(), harness.GlobalGate, harness.Ownership);
         await provider.SendAsync(worker.RuntimeId, request);
 
         var envelope = await harness.CaptureRestartAsync([request.DispatchId], phase: "submitted-unknown");

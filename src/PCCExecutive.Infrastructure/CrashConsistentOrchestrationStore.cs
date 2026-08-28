@@ -78,6 +78,7 @@ public sealed class CrashConsistentOrchestrationStore : IOrchestrationStateStore
 
     private async Task<DurableCommitResult> CommitCoreAsync(OrchestrationRecoverySnapshot snapshot, string operationKind, string idempotencyKey, ICrashFaultInjector faultInjector, long? expectedRevision, CancellationToken cancellationToken)
     {
+        snapshot = await DispatchMergedOrchestrationStateStore.MergeAsync(_store, snapshot, cancellationToken).ConfigureAwait(false);
         await _schema.InitializeMetadataAsync(cancellationToken).ConfigureAwait(false);
         if (await _schema.ClassifyAsync(cancellationToken).ConfigureAwait(false) == SchemaCompatibility.UPGRADE_REQUIRED)
             await _schema.MigrateAsync(cancellationToken: cancellationToken).ConfigureAwait(false);

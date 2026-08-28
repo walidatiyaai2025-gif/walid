@@ -188,15 +188,17 @@ public sealed class ControlledBrowserAcceptanceHarness
     private readonly Dictionary<int, BrowserRuntimeRecord> _workers = new();
     private BrowserRuntimeRecord? _manager;
     private readonly List<AcceptanceTrace> _trace = [];
+    private readonly IOwnershipProofService _ownership = new AcceptanceOwnershipProofService();
 
     public ControlledBrowserAcceptanceHarness()
     {
-        _provider = new BrowserChatProvider(_registry, _adapter, _ledger, new WrongChatGuard(), _globalGate);
+        _provider = new BrowserChatProvider(_registry, _adapter, _ledger, new WrongChatGuard(), _globalGate, _ownership);
     }
 
     public InMemoryBrowserRuntimeRegistry Registry => _registry;
     public InMemoryDispatchLedger Ledger => _ledger;
     public GlobalBrowserSendGate GlobalGate => _globalGate;
+    public IOwnershipProofService Ownership => _ownership;
     public DeterministicChatGptAdapter Adapter => _adapter;
     public IReadOnlyList<AcceptanceTrace> Trace => _trace;
     public BrowserRuntimeRecord Manager => _manager ?? throw new InvalidOperationException("Topology has not been created.");
@@ -367,5 +369,14 @@ public sealed class ControlledBrowserAcceptanceHarness
         if (tasks.Select(x => x.TaskId).Distinct(StringComparer.Ordinal).Count() != tasks.Count) throw new InvalidOperationException("Duplicate task identity.");
         if (tasks.Select(x => x.WorkerSlot).Distinct().Count() != tasks.Count) throw new InvalidOperationException("Worker collision.");
         if (tasks.Select(x => x.ScopeKey).Distinct(StringComparer.Ordinal).Count() != tasks.Count) throw new InvalidOperationException("Acceptance scopes are not independent.");
+    }
+}
+
+internal sealed class AcceptanceOwnershipProofService : IOwnershipProofService
+{
+    public Task<OwnershipProof> ProveAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(OwnershipProof.Proven(runtime.RuntimeId));
     }
 }
