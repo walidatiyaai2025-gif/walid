@@ -98,6 +98,21 @@ public sealed class AutonomousDispatchJournal
             };
         }
 
+        // Submitting is the crash fence written only after the final Enter-boundary
+        // authorization. A restart cannot know whether Enter executed after that
+        // fence, so materialize the uncertainty in the durable Browser ledger too.
+        if (ledger.State == PCCExecutive.Browser.DispatchState.Submitting)
+        {
+            const string recoveredFence = "RECOVERED_SUBMITTING_FENCE_AS_SUBMITTED_UNKNOWN";
+            await _store.UpdateAsync(dispatch.Id.ToString(), PCCExecutive.Browser.DispatchState.SubmittedUnknown, recoveredFence, cancellationToken).ConfigureAwait(false);
+            ledger = ledger with
+            {
+                State = PCCExecutive.Browser.DispatchState.SubmittedUnknown,
+                ReconciliationEvidence = recoveredFence,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+        }
+
         var mapped = ledger.State switch
         {
             PCCExecutive.Browser.DispatchState.Prepared => PCCExecutive.Domain.DispatchState.PREPARED,

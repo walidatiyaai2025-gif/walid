@@ -68,7 +68,7 @@ public sealed class ChatGptAdapterDriftGuard
     }
 }
 
-public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter
+public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IFinalEnterAuthorizationAdapter
 {
     public const string CurrentAdapterVersion = "chatgpt-web-semantic-v2";
     private const string ComposerSelector = "textarea, [contenteditable='true'][role='textbox'], [contenteditable='true'][data-lexical-editor='true'], [data-testid='composer-text-input']";
@@ -120,8 +120,25 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter
         catch (PlaywrightException ex) { return Unknown($"playwright-inspection-error:{ex.GetType().Name}"); }
     }
 
-    public async Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, string prompt, CancellationToken cancellationToken = default)
+    public Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, string prompt, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new AdapterSubmissionResult(false, false, false, "FINAL_ENTER_AUTHORIZATION_REQUIRED", ["submission:not-triggered", "final-enter-authorization:missing"]));
+
+    public Task<AdapterSubmissionResult> SubmitWithFinalAuthorizationAsync(
+        BrowserRuntimeRecord runtime,
+        BrowserDispatchExpectation expectation,
+        string prompt,
+        Func<CancellationToken, Task<FinalEnterAuthorizationResult>> finalAuthorization,
+        CancellationToken cancellationToken = default) =>
+        SubmitCoreAsync(runtime, expectation, prompt, finalAuthorization, cancellationToken);
+
+    private async Task<AdapterSubmissionResult> SubmitCoreAsync(
+        BrowserRuntimeRecord runtime,
+        BrowserDispatchExpectation expectation,
+        string prompt,
+        Func<CancellationToken, Task<FinalEnterAuthorizationResult>> finalAuthorization,
+        CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(finalAuthorization);
         var page = await _pages.GetPageAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
         if (page is null) return new(false, false, false, "BROWSER_PAGE_MISSING", new[] { "submission:not-triggered" });
         var triggered = false;
@@ -135,12 +152,20 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter
                 return new(false, false, false, "PRE_SUBMIT_STATE_NOT_PROVEN", new[] { "submission:not-triggered", $"adapter:{AdapterVersion}" });
             var composer = await VisibleAsync(page, ComposerSelector).ConfigureAwait(false);
             if (composer is null) return new(false, false, false, "COMPOSER_NOT_FOUND", new[] { "submission:not-triggered" });
+
             await composer.FillAsync(prompt).ConfigureAwait(false);
+
+            // SEC-P0-003: the decisive PCC proof is intentionally after Fill and
+            // immediately before the only operation in this adapter capable of Enter.
+            var authorization = await finalAuthorization(cancellationToken).ConfigureAwait(false);
+            if (!authorization.IsAuthorized)
+                return new(false, false, false, "FINAL_ENTER_AUTHORIZATION_FAILED", authorization.Evidence.Prepend(authorization.Reason).Prepend("submission:not-triggered").ToArray());
+
             triggered = true;
             await composer.PressAsync("Enter").ConfigureAwait(false);
             await page.WaitForTimeoutAsync(700).ConfigureAwait(false);
             var after = await InspectAsync(runtime, expectation, cancellationToken).ConfigureAwait(false);
-            var evidence = new[] { "submission:enter-triggered", $"assistant-count-before:{before.AssistantMessageCount}", $"assistant-count-after:{after.AssistantMessageCount}", $"generation-after:{after.Generation.State}", $"health-after:{after.Health.State}", $"adapter:{AdapterVersion}" };
+            var evidence = authorization.Evidence.Concat(new[] { "submission:enter-triggered", $"assistant-count-before:{before.AssistantMessageCount}", $"assistant-count-after:{after.AssistantMessageCount}", $"generation-after:{after.Generation.State}", $"health-after:{after.Health.State}", $"adapter:{AdapterVersion}" }).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             if (after.Generation.State == GenerationState.Generating || after.AssistantMessageCount > before.AssistantMessageCount)
                 return new(true, true, false, "SUBMISSION_PROVEN", evidence);
             if (after.Health.State is PageHealth.RateLimited or PageHealth.TempError or PageHealth.Offline || after.Auth.State is AuthState.LoginRequired or AuthState.Challenge || after.Input.State == InputState.Unknown || after.Conversation.State == ConversationMatch.Unknown || after.Generation.State == GenerationState.Unknown)
