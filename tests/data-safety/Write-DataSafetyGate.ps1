@@ -167,6 +167,22 @@ $report = [ordered]@{
 
 New-Item -ItemType Directory -Path (Split-Path $OutputPath -Parent) -Force | Out-Null
 $report | ConvertTo-Json -Depth 8 | Set-Content $OutputPath -Encoding UTF8
-$report | ConvertTo-Json -Depth 8
 
+# Existing release readiness consumes DATA_PRESERVATION.json and currently accepts only
+# PASS/FAIL/NOT_APPLICABLE. Keep the richer DATA_SAFETY state in DataSafetyStatus while
+# mapping every non-PASS result to a blocking FAIL for release-readiness consumption.
+$readinessStatus = if ($status -eq 'PASS') { 'PASS' } else { 'FAIL' }
+$readinessAlias = [ordered]@{
+    Gate='DATA_PRESERVATION'
+    Status=$readinessStatus
+    DataSafetyStatus=$status
+    Details="DATA_SAFETY=$status; $details"
+    SourceSha=$sha
+    Version=(Get-Content (Join-Path $RepositoryRoot 'VERSION') -Raw).Trim()
+    GeneratedAt=[DateTimeOffset]::UtcNow.ToString('o')
+}
+$aliasPath = Join-Path (Split-Path $OutputPath -Parent) 'DATA_PRESERVATION.json'
+$readinessAlias | ConvertTo-Json -Depth 5 | Set-Content $aliasPath -Encoding UTF8
+
+$report | ConvertTo-Json -Depth 8
 if ($status -eq 'FAIL') { throw "DATA_SAFETY_FAIL: $details" }
