@@ -10,6 +10,7 @@ public partial class App : System.Windows.Application
 {
     private TrayIconService? _tray;
     private PccExecutiveRuntimeHost? _gateway;
+    private DispatcherPresentationGateway? _uiGateway;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -21,7 +22,8 @@ public partial class App : System.Windows.Application
             var applicationVersion = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
             PackagedStartupSchemaSafety.EnsureDefaultCurrentAsync(applicationVersion).GetAwaiter().GetResult();
             _gateway = PccExecutiveRuntimeHost.Create();
-            var viewModel = new MainViewModel(_gateway, new WpfConfirmationService());
+            _uiGateway = new DispatcherPresentationGateway(_gateway, Dispatcher);
+            var viewModel = new MainViewModel(_uiGateway, new WpfConfirmationService());
             var window = new MainWindow(viewModel);
             MainWindow = window;
 
@@ -52,6 +54,7 @@ public partial class App : System.Windows.Application
     protected override void OnExit(ExitEventArgs e)
     {
         _tray?.Dispose();
+        _uiGateway?.Dispose();
         if (_gateway is not null)
             _gateway.DisposeAsync().AsTask().GetAwaiter().GetResult();
         base.OnExit(e);
