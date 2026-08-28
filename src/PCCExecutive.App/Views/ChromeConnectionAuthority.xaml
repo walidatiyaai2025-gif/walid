@@ -110,11 +110,11 @@
                                         Command="{Binding Shell.NavigateCommand}"
                                         CommandParameter="ProjectSelection"
                                         Margin="0,0,8,8"
-                                        ToolTip="Profile choice is saved now; project selection is the next step."/>
+                                        ToolTip="Profile choice is saved now; project selection is the next numbered step."/>
                                 <Button Content="Connect / Recover Chrome"
                                         Command="{Binding Shell.ConnectChromeCommand}"
                                         Margin="0,0,8,8"
-                                        ToolTip="Available after a project is selected, when the Manager runtime has a canonical project identity."/>
+                                        ToolTip="Manual recovery control. After Open Project, PCC normally connects/recover Chrome automatically."/>
                                 <Button Content="Open PCC Browser"
                                         Command="{Binding Shell.OpenSessionCommand}"
                                         CommandParameter="{Binding Shell.ManagerSession.RuntimeId}"
@@ -142,15 +142,18 @@
 
                         <Border Style="{StaticResource Card}">
                             <StackPanel>
-                                <TextBlock Text="FIRST-RUN FLOW" Style="{StaticResource SectionTitle}"/>
-                                <TextBlock Text="1  Select your Chrome profile" FontWeight="SemiBold" Margin="0,8,0,3"/>
-                                <TextBlock Text="PCC stores the profile choice without taking ownership of your personal Chrome."
+                                <TextBlock Text="FIRST-RUN FLOW — FOLLOW THE NUMBERS" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock Text="1  Select your signed-in Chrome profile" FontWeight="SemiBold" Margin="0,8,0,3"/>
+                                <TextBlock Text="GPTDeskTop is preferred automatically when its existing signed-in profile is available."
                                            Style="{StaticResource MutedText}"/>
-                                <TextBlock Text="2  Continue to Projects" FontWeight="SemiBold" Margin="0,12,0,3"/>
-                                <TextBlock Text="Resolve the canonical PCC project before a Manager runtime is created."
+                                <TextBlock Text="2  Press Continue to Projects → Open Project" FontWeight="SemiBold" Margin="0,12,0,3"/>
+                                <TextBlock Text="Choose the canonical PCC project. You do not need to return here to connect Chrome."
                                            Style="{StaticResource MutedText}"/>
-                                <TextBlock Text="3  Connect Chrome" FontWeight="SemiBold" Margin="0,12,0,3"/>
-                                <TextBlock Text="PCC creates or recovers only its own isolated Manager/Worker browser sessions."
+                                <TextBlock Text="3  PCC connects / recovers Chrome automatically" FontWeight="SemiBold" Margin="0,12,0,3"/>
+                                <TextBlock Text="Stale DevTools ports and dead PCC browser sessions are recovered automatically when ownership is proven."
+                                           Style="{StaticResource MutedText}"/>
+                                <TextBlock Text="4  Open 04 Manager → Start / Continue Manager" FontWeight="SemiBold" Margin="0,12,0,3"/>
+                                <TextBlock Text="After Manager starts, planning, Worker dispatch, reconciliation, recovery and continuation are automatic unless 15 Attention says you are required."
                                            Style="{StaticResource MutedText}"/>
                             </StackPanel>
                         </Border>
