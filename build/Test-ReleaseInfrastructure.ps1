@@ -54,8 +54,8 @@ Get-Content (Join-Path $repoRoot 'updater\update-manifest.schema.json') -Raw | C
 
 $installerText = Get-Content (Join-Path $repoRoot 'installer\PCCExecutive.iss') -Raw
 foreach ($required in @(
-    'ArchitecturesAllowed=x64compatible',
-    'ArchitecturesInstallIn64BitMode=x64compatible',
+    'ArchitecturesAllowed=x64',
+    'ArchitecturesInstallIn64BitMode=x64',
     'UsePreviousAppDir=yes',
     'CloseApplications=yes',
     'PCCExecutive-{#MyAppVersion}-Setup-x64',
