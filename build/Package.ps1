@@ -27,9 +27,18 @@ if ($LASTEXITCODE -ne 0) { throw 'Build/test orchestration failed.' }
 
 $publishDir = Join-Path $ArtifactsRoot "publish/$Runtime"
 $packageDir = Join-Path $ArtifactsRoot 'package'
+$evidenceDir = Join-Path $ArtifactsRoot 'release-evidence'
 Remove-Item $packageDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
 & (Join-Path $PSScriptRoot 'Publish-Windows.ps1') -Configuration $Configuration -Runtime $Runtime -OutputRoot $publishDir
+
+# The self-contained app must run successfully before any installer is compiled.
+& (Join-Path $repoRoot 'tests/installer/Smoke-PublishedApp.ps1') `
+    -PublishRoot $publishDir `
+    -ExpectedSourceSha $sourceSha `
+    -EvidencePath (Join-Path $evidenceDir 'published-app-smoke.json')
+if ($LASTEXITCODE -ne 0) { throw 'Published application smoke failed; installer creation is forbidden.' }
 
 if ([string]::IsNullOrWhiteSpace($InnoCompiler)) {
     $candidates = @(
@@ -62,11 +71,20 @@ if (Test-Path $updaterExe) { $signTargets += $updaterExe }
 } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $publishDir 'build-provenance.json') -Encoding UTF8
 
 $iss = Join-Path $repoRoot 'installer/PCCExecutive.iss'
-& $InnoCompiler "/DMyAppVersion=$version" "/DMyFileVersion=$fileVersion" "/DSourceDir=$((Resolve-Path $publishDir).Path)" "/DOutputDir=$((Resolve-Path $packageDir).Path)" "/DSourceSha=$sourceSha" $iss
+$innoArgs = @(
+    "/DMyAppVersion=$version",
+    "/DMyFileVersion=$fileVersion",
+    "/DSourceDir=$((Resolve-Path $publishDir).Path)",
+    "/DOutputDir=$((Resolve-Path $packageDir).Path)",
+    "/DSourceSha=$sourceSha",
+    $iss
+)
+& $InnoCompiler @innoArgs
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
 $artifactName = "PCCExecutive-$version-Setup-x64.exe"
 $installerPath = Join-Path $packageDir $artifactName
 if (-not (Test-Path $installerPath)) { throw "Expected installer artifact was not produced: $installerPath" }
+if ((Get-Item $installerPath).Length -lt 1MB) { throw "Installer artifact is unrealistically small: $((Get-Item $installerPath).Length) bytes" }
 & (Join-Path $PSScriptRoot 'Sign-Release.ps1') -Files @($installerPath) -RequireSigned:$RequireSigning
 
 $context = if ($env:CI -or $env:GITHUB_ACTIONS) { 'CI' } else { 'Dev' }
