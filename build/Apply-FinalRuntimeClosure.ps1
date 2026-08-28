@@ -173,7 +173,7 @@ Write-Text $dispatchPath $dispatch
 # 5. Playwright has no unguarded Enter path. Authorization runs after Fill and directly before Press.
 $adapterPath = 'src/PCCExecutive.Browser/ChatGptBrowserAdapter.cs'
 $chat = Read-Text $adapterPath
-if (-not $chat.Contains('public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter')) {`r`n    $chat = $chat.Replace('public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter', 'public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter')`r`n}
+if (-not $chat.Contains('public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter')) {`r`n    if (-not $chat.Contains('public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter')) {`r`n    $chat = $chat.Replace('public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter', 'public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter')`r`n}`r`n}
 if (-not $chat.Contains('PRE_ENTER_AUTHORIZATION_REQUIRED')) {
     $oldSignature = '    public async Task<AdapterSubmissionResult> SubmitAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, string prompt, CancellationToken cancellationToken = default)'
     $newSignature = @'
