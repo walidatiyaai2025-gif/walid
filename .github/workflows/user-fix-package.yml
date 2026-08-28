@@ -150,7 +150,7 @@ jobs:
           if (-not (Test-Path $seedPath)) { throw 'Same-version repair deleted durable user data.' }
           if ((Get-Content $seedPath -Raw).Trim() -ne $seed) { throw 'Same-version repair changed durable user data.' }
 
-          $provenance = Get-Content (Join-Path $installRoot 'build-provenance.json') -Raw | ConvertFrom-Json
+          $provenance = Get-Content (Join-Path $installRoot 'publish-manifest.json') -Raw | ConvertFrom-Json
           if ([string]$provenance.SourceSha -ne '${{ github.sha }}') { throw "Repair provenance mismatch: $($provenance.SourceSha)" }
           Write-Host "SAME_VERSION_REPAIR_PASS source=${{ github.sha }}"
 
