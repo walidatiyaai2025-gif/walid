@@ -110,7 +110,8 @@ public sealed record BrowserDispatchExpectation(
     string LogicalAgentId,
     string TaskId,
     string ConversationIdentity,
-    string ProviderConversationIdentity);
+    string ProviderConversationIdentity,
+    string? WorkerSlotId = null);
 
 public sealed record WrongChatDecision(bool MaySend, string Reason, IReadOnlyList<string> Evidence);
 public sealed record AdapterSubmissionResult(bool Triggered, bool ProvenSubmitted, bool SubmittedUnknown, string Reason, IReadOnlyList<string> Evidence);
@@ -123,7 +124,8 @@ public sealed record BrowserDispatchRequest(
     string ConversationIdentity,
     string ProviderConversationIdentity,
     string Prompt,
-    string? ContentHash = null);
+    string? ContentHash = null,
+    string? WorkerSlotId = null);
 
 public sealed record BrowserDispatchResult(
     string DispatchId,

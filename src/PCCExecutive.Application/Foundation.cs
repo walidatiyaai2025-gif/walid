@@ -4,7 +4,7 @@ using PCCExecutive.Domain;
 
 namespace PCCExecutive.Application;
 
-public sealed record AgentRequest(ProjectRunId ProjectRunId, LogicalAgentId LogicalAgentId, ConversationId ConversationId, DispatchId DispatchId, string Content, string ContentHash);
+public sealed record AgentRequest(ProjectRunId ProjectRunId, LogicalAgentId LogicalAgentId, ConversationId ConversationId, DispatchId DispatchId, string Content, string ContentHash, WorkerSlotId? WorkerSlotId = null, TaskId? TaskId = null, WaveId? WaveId = null);
 public sealed record AgentResult(DispatchId DispatchId, bool Accepted, bool IsGenerating, bool IsComplete, bool IsUncertain, string? Response, string? ProviderEvidence, string? ErrorCode);
 public sealed record ProviderHealth(bool IsAvailable, bool IsAuthenticated, bool RequiresAttention, string? State, string? Evidence);
 public interface IAgentProvider

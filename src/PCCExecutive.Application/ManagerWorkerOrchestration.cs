@@ -78,7 +78,7 @@ public sealed class ManagerWorkerOrchestrator
             var binding = bindings[i];
             var content = BuildWorkerPrompt(task, binding);
             var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
-            var request = new AgentRequest(projectRunId, binding.LogicalAgentId, binding.ConversationId, DispatchId.New(), content, hash);
+            var request = new AgentRequest(projectRunId, binding.LogicalAgentId, binding.ConversationId, DispatchId.New(), content, hash, binding.SlotId, task.Id, plan.WaveId);
             var result = await _provider.SendAsync(request, cancellationToken).ConfigureAwait(false);
             results.Add(new(task, binding, result));
 

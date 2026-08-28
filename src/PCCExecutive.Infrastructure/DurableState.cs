@@ -166,8 +166,8 @@ public sealed class SqliteStateStore : IDurableStateStore, IBrowserRuntimeRegist
             {
                 if (!StringComparer.Ordinal.Equals(existing.ContentHash, contentHash))
                     return new(DispatchReservationStatus.ContentConflict, existing, "DISPATCH_ID_CONTENT_HASH_CONFLICT");
-                if (existing.State == PCCExecutive.Browser.DispatchState.SafeRetry)
-                    return new(DispatchReservationStatus.RetryAllowed, existing, "SAFE_RETRY_EXPLICITLY_ALLOWED");
+                if (existing.State is PCCExecutive.Browser.DispatchState.Prepared or PCCExecutive.Browser.DispatchState.SafeRetry)
+                    return new(DispatchReservationStatus.RetryAllowed, existing, existing.State == PCCExecutive.Browser.DispatchState.Prepared ? "PREPARED_REPLAY_SAME_DISPATCH_ALLOWED" : "SAFE_RETRY_EXPLICITLY_ALLOWED");
                 return new(DispatchReservationStatus.DuplicateBlocked, existing, $"DISPATCH_ALREADY_{existing.State.ToString().ToUpperInvariant()}");
             }
 

@@ -1,0 +1,12 @@
+D:\a\walid\walid\src\PCCExecutive.Domain\bin\Release\net10.0\PCCExecutive.Domain.deps.json
+D:\a\walid\walid\src\PCCExecutive.Domain\bin\Release\net10.0\PCCExecutive.Domain.dll
+D:\a\walid\walid\src\PCCExecutive.Domain\bin\Release\net10.0\PCCExecutive.Domain.pdb
+D:\a\walid\walid\src\PCCExecutive.Domain\obj\Release\net10.0\PCCExecutive.Domain.GeneratedMSBuildEditorConfig.editorconfig
+D:\a\walid\walid\src\PCCExecutive.Domain\obj\Release\net10.0\PCCExecutive.Domain.AssemblyInfoInputs.cache
+D:\a\walid\walid\src\PCCExecutive.Domain\obj\Release\net10.0\PCCExecutive.Domain.AssemblyInfo.cs
+D:\a\walid\walid\src\PCCExecutive.Domain\obj\Release\net10.0\PCCExecutive.Domain.csproj.CoreCompileInputs.cache
+D:\a\walid\walid\src\PCCExecutive.Domain\obj\Release\net10.0\PCCExecutive.Domain.sourcelink.json
+D:\a\walid\walid\src\PCCExecutive.Domain\obj\Release\net10.0\PCCExecutive.Domain.dll
+D:\a\walid\walid\src\PCCExecutive.Domain\obj\Release\net10.0\refint\PCCExecutive.Domain.dll
+D:\a\walid\walid\src\PCCExecutive.Domain\obj\Release\net10.0\PCCExecutive.Domain.pdb
+D:\a\walid\walid\src\PCCExecutive.Domain\obj\Release\net10.0\ref\PCCExecutive.Domain.dll

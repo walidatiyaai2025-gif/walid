@@ -12,6 +12,8 @@ public sealed class WrongChatGuard
         evidence.Add("project-run:match");
         if (!StringComparer.Ordinal.Equals(runtime.LogicalAgentId, expected.LogicalAgentId)) return Deny("LOGICAL_AGENT_MISMATCH");
         evidence.Add("logical-agent:match");
+        if (!StringComparer.Ordinal.Equals(runtime.WorkerSlotId, expected.WorkerSlotId)) return Deny("WORKER_SLOT_MISMATCH");
+        evidence.Add("worker-slot:match");
         if (string.IsNullOrWhiteSpace(runtime.TaskId)) return new(false, "TASK_BINDING_UNKNOWN", evidence);
         if (!StringComparer.Ordinal.Equals(runtime.TaskId, expected.TaskId)) return Deny("TASK_MISMATCH");
         evidence.Add("task:match");
@@ -36,7 +38,7 @@ public sealed class WrongChatGuard
         evidence.Add("wrong-chat-guard:proven-safe");
         return new(true, "READY_TO_SEND", evidence);
 
-        WrongChatDecision Deny(string reason) => new(false, reason, new[] { $"runtime:{runtime.RuntimeId}", $"expected-project-run:{expected.ProjectRunId}", $"expected-agent:{expected.LogicalAgentId}", $"expected-task:{expected.TaskId}", $"expected-conversation:{expected.ConversationIdentity}", $"adapter:{snapshot.AdapterVersion}" });
+        WrongChatDecision Deny(string reason) => new(false, reason, new[] { $"runtime:{runtime.RuntimeId}", $"expected-project-run:{expected.ProjectRunId}", $"expected-agent:{expected.LogicalAgentId}", $"expected-worker-slot:{expected.WorkerSlotId ?? "MANAGER"}", $"expected-task:{expected.TaskId}", $"expected-conversation:{expected.ConversationIdentity}", $"adapter:{snapshot.AdapterVersion}" });
     }
 
     private static bool Uncertain<T>(SemanticDetection<T> detection) where T : struct, Enum =>

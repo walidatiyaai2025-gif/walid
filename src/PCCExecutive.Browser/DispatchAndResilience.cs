@@ -20,7 +20,7 @@ public sealed class InMemoryDispatchLedger : IDispatchLedger
                 continue;
             }
             if (!StringComparer.Ordinal.Equals(existing.ContentHash, contentHash)) return Task.FromResult(new DispatchReservation(DispatchReservationStatus.ContentConflict, existing, "DISPATCH_ID_CONTENT_HASH_CONFLICT"));
-            if (existing.State == DispatchState.SafeRetry) return Task.FromResult(new DispatchReservation(DispatchReservationStatus.RetryAllowed, existing, "SAFE_RETRY_EXPLICITLY_ALLOWED"));
+            if (existing.State is DispatchState.Prepared or DispatchState.SafeRetry) return Task.FromResult(new DispatchReservation(DispatchReservationStatus.RetryAllowed, existing, existing.State == DispatchState.Prepared ? "PREPARED_REPLAY_SAME_DISPATCH_ALLOWED" : "SAFE_RETRY_EXPLICITLY_ALLOWED"));
             return Task.FromResult(new DispatchReservation(DispatchReservationStatus.DuplicateBlocked, existing, $"DISPATCH_ALREADY_{existing.State.ToString().ToUpperInvariant()}"));
         }
     }
@@ -41,8 +41,8 @@ public sealed class InMemoryDispatchLedger : IDispatchLedger
 
 public sealed class BrowserChatProvider
 {
-    private readonly IBrowserRuntimeRegistry _runtimes; private readonly IChatGptBrowserAdapter _adapter; private readonly IDispatchLedger _ledger; private readonly WrongChatGuard _wrongChatGuard; private readonly GlobalBrowserSendGate _globalGate;
-    public BrowserChatProvider(IBrowserRuntimeRegistry runtimes, IChatGptBrowserAdapter adapter, IDispatchLedger ledger, WrongChatGuard wrongChatGuard, GlobalBrowserSendGate globalGate) { _runtimes = runtimes; _adapter = adapter; _ledger = ledger; _wrongChatGuard = wrongChatGuard; _globalGate = globalGate; }
+    private readonly IBrowserRuntimeRegistry _runtimes; private readonly IChatGptBrowserAdapter _adapter; private readonly IDispatchLedger _ledger; private readonly WrongChatGuard _wrongChatGuard; private readonly GlobalBrowserSendGate _globalGate; private readonly IOwnershipProofService _ownership; private readonly ConcurrentDictionary<string, SemaphoreSlim> _dispatchGates = new(StringComparer.Ordinal);
+    public BrowserChatProvider(IBrowserRuntimeRegistry runtimes, IChatGptBrowserAdapter adapter, IDispatchLedger ledger, WrongChatGuard wrongChatGuard, GlobalBrowserSendGate globalGate, IOwnershipProofService ownership) { _runtimes = runtimes; _adapter = adapter; _ledger = ledger; _wrongChatGuard = wrongChatGuard; _globalGate = globalGate; _ownership = ownership ?? throw new ArgumentNullException(nameof(ownership)); }
 
     public async Task<BrowserDispatchResult> SendAsync(string runtimeId, BrowserDispatchRequest request, CancellationToken cancellationToken = default)
     {
@@ -50,11 +50,17 @@ public sealed class BrowserChatProvider
         if (gate.IsPaused) return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, "GLOBAL_SEND_PAUSED", new[] { gate.Reason ?? "global-pause" });
         var runtime = await _runtimes.GetAsync(runtimeId, cancellationToken).ConfigureAwait(false);
         if (runtime is null) return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, "RUNTIME_NOT_FOUND", Array.Empty<string>());
-        var expected = new BrowserDispatchExpectation(request.ProjectRunId, request.LogicalAgentId, request.TaskId, request.ConversationIdentity, request.ProviderConversationIdentity);
+        var expected = new BrowserDispatchExpectation(request.ProjectRunId, request.LogicalAgentId, request.TaskId, request.ConversationIdentity, request.ProviderConversationIdentity, request.WorkerSlotId);
         var snapshot = await _adapter.InspectAsync(runtime, expected, cancellationToken).ConfigureAwait(false);
         var guard = _wrongChatGuard.Evaluate(runtime, expected, snapshot);
         if (!guard.MaySend) return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, guard.Reason, guard.Evidence);
+        var proof = await _ownership.ProveAsync(runtime, cancellationToken).ConfigureAwait(false);
+        if (!proof.IsProven) return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.Prepared, "PCC_OWNERSHIP_NOT_PROVEN", guard.Evidence.Append(proof.Reason).ToArray());
         var contentHash = request.ContentHash ?? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(request.Prompt)));
+        var dispatchGate = _dispatchGates.GetOrAdd(request.DispatchId, static _ => new SemaphoreSlim(1, 1));
+        await dispatchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
         var reservation = await _ledger.ReserveAsync(request.DispatchId, contentHash, cancellationToken).ConfigureAwait(false);
         if (reservation.Status is DispatchReservationStatus.DuplicateBlocked or DispatchReservationStatus.ContentConflict) return new(request.DispatchId, BrowserDispatchOutcome.DuplicateBlocked, reservation.Entry.State, reservation.Reason, new[] { $"content-hash:{reservation.Entry.ContentHash}" });
         await _ledger.UpdateAsync(request.DispatchId, DispatchState.Submitting, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -78,6 +84,12 @@ public sealed class BrowserChatProvider
         }
         await _ledger.UpdateAsync(request.DispatchId, DispatchState.SafeRetry, string.Join(";", submission.Evidence), cancellationToken).ConfigureAwait(false);
         return new(request.DispatchId, BrowserDispatchOutcome.NotSent, DispatchState.SafeRetry, submission.Reason, submission.Evidence);
+        }
+        finally
+        {
+            dispatchGate.Release();
+            if (dispatchGate.CurrentCount == 1) _dispatchGates.TryRemove(request.DispatchId, out _);
+        }
     }
 }
 
