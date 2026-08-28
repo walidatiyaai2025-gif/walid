@@ -68,7 +68,7 @@ public sealed class ChatGptAdapterDriftGuard
     }
 }
 
-public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter
+public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter, IPhysicalSubmitAuthorizationAdapter
 {
     public const string CurrentAdapterVersion = "chatgpt-web-semantic-v2";
     private const string ComposerSelector = "textarea, [contenteditable='true'][role='textbox'], [contenteditable='true'][data-lexical-editor='true'], [data-testid='composer-text-input']";

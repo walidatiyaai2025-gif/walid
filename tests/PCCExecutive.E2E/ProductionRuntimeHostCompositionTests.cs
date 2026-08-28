@@ -9,7 +9,7 @@ public sealed class ProductionRuntimeHostCompositionTests
     public async Task Final_32_stage_gate_executes_real_production_PccExecutiveRuntimeHost_composition()
     {
         await using var host = PccExecutiveRuntimeHost.Create();
-        var snapshot = await host.SnapshotAsync();
+        var snapshot = host.Snapshot;
         Assert.NotNull(snapshot);
         Assert.NotNull(snapshot.Project);
         Assert.NotNull(snapshot.Autopilot);

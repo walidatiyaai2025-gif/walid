@@ -272,13 +272,13 @@ public sealed class Final32StageE2ETests : IAsyncLifetime
         Assert.False(duplicate.IsValid);
         Assert.Contains(duplicate.Findings, x => x.Code == "DUPLICATE_TASK_ID");
 
-        var missingDep = Task(TaskId.New(), "missing dependency", "tests/dependency", [TaskId.New()]);
+        var missingDep = WorkerTaskFor(TaskId.New(), "missing dependency", "tests/dependency", new HashSet<TaskId> { TaskId.New() });
         var dependencyValidation = new WaveValidator().Validate(new WavePlan(WaveId.New(), new ManagerEstimate(1), [missingDep], []), EmptyCompletedTaskIndex.Instance);
         Assert.False(dependencyValidation.IsValid);
         Assert.Contains(dependencyValidation.Issues, x => x.Code == "MISSING_DEPENDENCY");
 
-        var overlapA = Task(TaskId.New(), "overlap a", "tests/shared", []);
-        var overlapB = Task(TaskId.New(), "overlap b", "tests/shared/child", []);
+        var overlapA = WorkerTaskFor(TaskId.New(), "overlap a", "tests/shared", new HashSet<TaskId>());
+        var overlapB = WorkerTaskFor(TaskId.New(), "overlap b", "tests/shared/child", new HashSet<TaskId>());
         var overlapValidation = new WaveValidator().Validate(new WavePlan(WaveId.New(), new ManagerEstimate(1), [overlapA, overlapB], []), EmptyCompletedTaskIndex.Instance);
         Assert.False(overlapValidation.IsValid);
         Assert.Contains(overlapValidation.Issues, x => x.Code == "OVERLAPPING_SCOPE");
@@ -395,7 +395,7 @@ public sealed class Final32StageE2ETests : IAsyncLifetime
     private static PolicyCompletionGate Gate(CompletionGateFamily family, GateState state, decimal weight) =>
         new(family, new CompletionGate(family.ToString(), true, weight, state, "fresh-e2e"), AcceptableEvidence(), ClosurePriority.P0_VERIFICATION_BLOCKER);
 
-    private static WorkerTask Task(TaskId id, string objective, string path, IReadOnlySet<TaskId> dependencies)
+    private static WorkerTask WorkerTaskFor(TaskId id, string objective, string path, IReadOnlySet<TaskId> dependencies)
     {
         var scope = TaskScope.Create(Repository, [path]);
         return new WorkerTask(id, objective, scope, dependencies, ["deterministic acceptance"], TaskState.Proposed, TaskFingerprint.Create(objective, scope, dependencies));
