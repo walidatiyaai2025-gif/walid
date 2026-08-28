@@ -547,19 +547,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     }
 
     private string BuildManagerPrompt(ProjectRun run, ProjectBaselineSnapshot baseline) =>
-        $"PROJECT_ID: {_projectControlId}\
-DISPLAY_NAME: {_projectDisplay}\
-REPOSITORY: {_projectRepository}\
-PROJECT_RUN: {run.Id}\
-PCC_SOURCE_SHA: {baseline.PccSourceSha}\
-DEFAULT_BRANCH: {baseline.DefaultBranch}\
-DEFAULT_HEAD: {baseline.DefaultHeadSha}\
-VERIFIED_COMPLETION: {run.VerifiedCompletion.Percent}\
-MANAGER_ESTIMATE: {run.ManagerEstimate.Percent}\
-ACTIVE_WORKERS: 0/5\
-AUTOPILOT: {_autopilot}\
-\
-Return one JSON object only with ManagerEstimate, ExpectedHead, ExpectedRoutingIdentity, ProjectDecision, KnownBlockers, and Tasks (0..5). Each task requires TaskId GUID, Objective, Repository, Paths, Components, ExclusiveResources, Dependencies, AcceptanceCriteria, EvidenceExpected, Priority, SuggestedWorkerSlot (1..5), Reason, KnownBlockers, RequiredPreviousTasks, RecommendedExecutionMode, TargetScope, TargetVariant, ExpectedHead, RelatedPullRequest, ExpectedPullRequestState, TargetBranch, FeatureExpansion.";
+        $"PROJECT_ID: {_projectControlId}\nDISPLAY_NAME: {_projectDisplay}\nREPOSITORY: {_projectRepository}\nPROJECT_RUN: {run.Id}\nPCC_SOURCE_SHA: {baseline.PccSourceSha}\nDEFAULT_BRANCH: {baseline.DefaultBranch}\nDEFAULT_HEAD: {baseline.DefaultHeadSha}\nVERIFIED_COMPLETION: {run.VerifiedCompletion.Percent}\nMANAGER_ESTIMATE: {run.ManagerEstimate.Percent}\nACTIVE_WORKERS: 0/5\nAUTOPILOT: {_autopilot}\n\nReturn one JSON object only with ManagerEstimate, ExpectedHead, ExpectedRoutingIdentity, ProjectDecision, KnownBlockers, and Tasks (0..5). Each task requires TaskId GUID, Objective, Repository, Paths, Components, ExclusiveResources, Dependencies, AcceptanceCriteria, EvidenceExpected, Priority, SuggestedWorkerSlot (1..5), Reason, KnownBlockers, RequiredPreviousTasks, RecommendedExecutionMode, TargetScope, TargetVariant, ExpectedHead, RelatedPullRequest, ExpectedPullRequestState, TargetBranch, FeatureExpansion.";
 
     private async Task ReconcileManagerResponseAsync(CancellationToken cancellationToken)
     {
@@ -859,9 +847,7 @@ Return one JSON object only with ManagerEstimate, ExpectedHead, ExpectedRoutingI
         if (!ownership.IsProven) throw new InvalidOperationException($"Manager review send refused before binding: {ownership.Reason}.");
         await _sessions.BindDispatchTargetAsync(runtime.RuntimeId, $"manager-review:{review.WaveId}", logicalConversation, providerConversation, cancellationToken).ConfigureAwait(false);
         await PersistAgentBindingAsync(managerAgentId, null, null, managerReviewConversation, cancellationToken).ConfigureAwait(false);
-        var prompt = $"WAVE_REVIEW:\
-{JsonSerializer.Serialize(review)}\
-Return the next structured Manager plan JSON only. Use 0..5 tasks and current live evidence.";
+        var prompt = $"WAVE_REVIEW:\n{JsonSerializer.Serialize(review)}\nReturn the next structured Manager plan JSON only. Use 0..5 tasks and current live evidence.";
         var reviewHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt))).ToLowerInvariant();
         runtime = await _runtimeRegistry.GetAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false) ?? runtime;
         var reviewConversation = new ConversationId(Guid.Parse(logicalConversation));
