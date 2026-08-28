@@ -53,7 +53,14 @@ public sealed class DurableStateTests : IAsyncLifetime
         {
             await reopened.InitializeAsync();
             Assert.Equal(run, await reopened.LoadProjectRunAsync(run.Id));
-            Assert.Equal(wave, await reopened.LoadWaveAsync(wave.Id));
+            var loadedWave = await reopened.LoadWaveAsync(wave.Id);
+            Assert.NotNull(loadedWave);
+            Assert.Equal(wave.Id, loadedWave!.Id);
+            Assert.Equal(wave.ProjectRunId, loadedWave.ProjectRunId);
+            Assert.Equal(wave.Sequence, loadedWave.Sequence);
+            Assert.Equal(wave.State, loadedWave.State);
+            Assert.Equal(wave.TaskIds.ToArray(), loadedWave.TaskIds.ToArray());
+            Assert.Equal(wave.CreatedAt, loadedWave.CreatedAt);
             Assert.Equal(task.Id, (await reopened.LoadTaskAsync(task.Id))?.Id);
             Assert.Equal(agent, await reopened.LoadLogicalAgentAsync(agent.Id));
             Assert.Equal(conversation, await reopened.LoadConversationAsync(conversation.Id));

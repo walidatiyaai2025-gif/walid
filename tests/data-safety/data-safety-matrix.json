@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "gate": "DATA_SAFETY",
+  "allowedStates": ["PASS", "FAIL", "BLOCKED_PACKAGE", "BLOCKED_CI", "NOT_EXECUTED"],
+  "cases": [
+    { "id": "DS01", "title": "empty first-run DB", "family": "persistence", "releaseBlocking": true },
+    { "id": "DS02", "title": "clean restart", "family": "persistence", "releaseBlocking": true },
+    { "id": "DS03", "title": "unclean restart", "family": "recovery", "releaseBlocking": true },
+    { "id": "DS04", "title": "five-Worker restart", "family": "recovery", "releaseBlocking": true },
+    { "id": "DS05", "title": "SUBMITTED_UNKNOWN preserved", "family": "recovery", "releaseBlocking": true },
+    { "id": "DS06", "title": "reinstall preserves DB", "family": "installer", "releaseBlocking": true },
+    { "id": "DS07", "title": "v1 to v2 migration", "family": "migration", "releaseBlocking": true },
+    { "id": "DS08", "title": "interrupted migration", "family": "migration", "releaseBlocking": true },
+    { "id": "DS09", "title": "pre-update backup", "family": "backup", "releaseBlocking": true },
+    { "id": "DS10", "title": "failed-update rollback", "family": "update", "releaseBlocking": true },
+    { "id": "DS11", "title": "verified backup restore", "family": "backup", "releaseBlocking": true },
+    { "id": "DS12", "title": "corrupted backup rejected", "family": "backup", "releaseBlocking": true },
+    { "id": "DS13", "title": "hash mismatch rejected", "family": "backup", "releaseBlocking": true },
+    { "id": "DS14", "title": "newer DB than app", "family": "migration", "releaseBlocking": true },
+    { "id": "DS15", "title": "uninstall preserves data", "family": "installer", "releaseBlocking": true },
+    { "id": "DS16", "title": "reinstall recovers preserved state", "family": "installer", "releaseBlocking": true },
+    { "id": "DS17", "title": "package excludes developer DB", "family": "package", "releaseBlocking": true },
+    { "id": "DS18", "title": "WAL committed data preserved", "family": "backup", "releaseBlocking": true },
+    { "id": "DS19", "title": "active DB backup safety", "family": "backup", "releaseBlocking": true },
+    { "id": "DS20", "title": "conversation lineage preserved", "family": "recovery", "releaseBlocking": true },
+    { "id": "DS21", "title": "exactly one active conversation", "family": "recovery", "releaseBlocking": true },
+    { "id": "DS22", "title": "privacy scan", "family": "security", "releaseBlocking": true },
+    { "id": "DS23", "title": "DatabaseId preserved", "family": "identity", "releaseBlocking": true },
+    { "id": "DS24", "title": "recovery journal evidence", "family": "recovery", "releaseBlocking": true },
+    { "id": "DS25", "title": "machine-readable data-safety gate", "family": "gate", "releaseBlocking": true }
+  ]
+}

@@ -44,7 +44,7 @@ public sealed record PersistedOrchestrationSnapshot(
 public sealed class SqliteOrchestrationStateStore : IOrchestrationStateStore
 {
     private const string Kind = "orchestration-snapshot-v1";
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions Json = DurabilityJson.CreateOptions();
     private readonly SqliteStateStore _store;
 
     public SqliteOrchestrationStateStore(SqliteStateStore store) => _store = store;
@@ -119,7 +119,7 @@ public sealed record RecoveryCheckpointEnvelope(
 public sealed class RecoveryCheckpointService
 {
     private const int EnvelopeVersion = 1;
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions Json = DurabilityJson.CreateOptions();
     private readonly SqliteStateStore _store;
 
     public RecoveryCheckpointService(SqliteStateStore store) => _store = store;
@@ -176,7 +176,7 @@ public sealed record ShutdownMarker(ProjectRunId ProjectRunId, bool Clean, DateT
 
 public sealed class DurableStartupRecoveryService
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions Json = DurabilityJson.CreateOptions();
     private readonly SqliteStateStore _store;
     private readonly IOrchestrationStateStore _orchestration;
 
@@ -294,7 +294,7 @@ public sealed class SafeShutdownCoordinator
 
     private static async Task FlushAsync(string path, CancellationToken cancellationToken)
     {
-        var cs = new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWriteCreate }.ToString();
+        var cs = new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false }.ToString();
         await using var connection = new SqliteConnection(cs);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
@@ -311,8 +311,8 @@ public sealed class SqliteBackupService
     {
         Directory.CreateDirectory(backupDirectory);
         var file = Path.Combine(backupDirectory, $"pcc-state-{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}.db");
-        var sourceCs = new SqliteConnectionStringBuilder { DataSource = store.DatabasePath, Mode = SqliteOpenMode.ReadWriteCreate }.ToString();
-        var targetCs = new SqliteConnectionStringBuilder { DataSource = file, Mode = SqliteOpenMode.ReadWriteCreate }.ToString();
+        var sourceCs = new SqliteConnectionStringBuilder { DataSource = store.DatabasePath, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false }.ToString();
+        var targetCs = new SqliteConnectionStringBuilder { DataSource = file, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false }.ToString();
         await using (var source = new SqliteConnection(sourceCs))
         await using (var target = new SqliteConnection(targetCs))
         {
@@ -321,7 +321,7 @@ public sealed class SqliteBackupService
             source.BackupDatabase(target);
         }
 
-        await using (var verify = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = file, Mode = SqliteOpenMode.ReadOnly }.ToString()))
+        await using (var verify = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = file, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString()))
         {
             await verify.OpenAsync(cancellationToken).ConfigureAwait(false);
             await using var command = verify.CreateCommand();
@@ -347,7 +347,7 @@ public sealed record PreUpdateRecoveryCheckpoint(
 
 public sealed class PreUpdateRecoveryCoordinator
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions Json = DurabilityJson.CreateOptions();
     private readonly INewSendPausePort _sendGate;
     private readonly IOrchestrationStateStore _orchestration;
     private readonly SqliteStateStore _store;
@@ -404,7 +404,7 @@ public sealed record RolloverIntent(
 
 public sealed class DurableConversationLifecycleStore : IConversationLifecycleStore, IConversationArchiveEvidencePort
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions Json = DurabilityJson.CreateOptions();
     private readonly SqliteStateStore _store;
 
     public DurableConversationLifecycleStore(SqliteStateStore store) => _store = store;
@@ -471,7 +471,7 @@ public sealed class DurableConversationLifecycleStore : IConversationLifecycleSt
 
     private async Task WriteStateTransactionAsync(IReadOnlyList<(string Kind, string Id, string? ProjectRunId, string Payload)> writes, RolloverIntent intent, CancellationToken cancellationToken)
     {
-        var cs = new SqliteConnectionStringBuilder { DataSource = _store.DatabasePath, Mode = SqliteOpenMode.ReadWriteCreate, Cache = SqliteCacheMode.Shared }.ToString();
+        var cs = new SqliteConnectionStringBuilder { DataSource = _store.DatabasePath, Mode = SqliteOpenMode.ReadWriteCreate, Cache = SqliteCacheMode.Shared, Pooling = false }.ToString();
         await using var connection = new SqliteConnection(cs);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -493,7 +493,7 @@ public sealed class DurableConversationLifecycleStore : IConversationLifecycleSt
 
     private async Task SaveIntentAsync(RolloverIntent intent, CancellationToken cancellationToken)
     {
-        var cs = new SqliteConnectionStringBuilder { DataSource = _store.DatabasePath, Mode = SqliteOpenMode.ReadWriteCreate, Cache = SqliteCacheMode.Shared }.ToString();
+        var cs = new SqliteConnectionStringBuilder { DataSource = _store.DatabasePath, Mode = SqliteOpenMode.ReadWriteCreate, Cache = SqliteCacheMode.Shared, Pooling = false }.ToString();
         await using var connection = new SqliteConnection(cs);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);

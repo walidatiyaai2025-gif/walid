@@ -23,6 +23,23 @@ if ($LASTEXITCODE -ne 0 -or $dotnetVersion -notmatch '^10\.') {
     throw ".NET 10 SDK is required. Detected '$dotnetVersion'."
 }
 
+$sourceSha = (& git -C $repoRoot rev-parse HEAD 2>$null).Trim().ToLowerInvariant()
+if ($sourceSha -notmatch '^[0-9a-f]{40}$') { throw "Exact SOURCE_SHA is required. Detected '$sourceSha'." }
+$ciBuild = if ($env:GITHUB_ACTIONS) { 'true' } else { 'false' }
+
+$buildEvidenceRoot = Join-Path $repoRoot 'artifacts\build'
+New-Item -ItemType Directory -Path $buildEvidenceRoot -Force | Out-Null
+Set-Content (Join-Path $buildEvidenceRoot 'source-sha.txt') $sourceSha -Encoding ascii
+
+function Invoke-DotNetChecked {
+    param(
+        [Parameter(Mandatory)] [string[]]$Arguments,
+        [Parameter(Mandatory)] [string]$FailureMessage
+    )
+    & dotnet @Arguments
+    if ($LASTEXITCODE -ne 0) { throw $FailureMessage }
+}
+
 $solutions = @(
     Get-ChildItem -Path $repoRoot -Recurse -File -Filter '*.slnx' |
         Where-Object { $_.FullName -notmatch '[\\/](artifacts|bin|obj)[\\/]' } |
@@ -48,19 +65,27 @@ if ($solutions.Count -eq 0 -and $srcProjects.Count -eq 0) {
 }
 
 foreach ($solution in $solutions) {
-    & dotnet restore $solution.FullName
-    if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed: $($solution.FullName)" }
-    & dotnet build $solution.FullName --configuration $Configuration --no-restore -p:Version=$version -p:ContinuousIntegrationBuild=$([bool]$env:GITHUB_ACTIONS)
-    if ($LASTEXITCODE -ne 0) { throw "dotnet build failed: $($solution.FullName)" }
+    Invoke-DotNetChecked -Arguments @('restore', $solution.FullName) -FailureMessage "dotnet restore failed: $($solution.FullName)"
+    Invoke-DotNetChecked -Arguments @(
+        'build', $solution.FullName,
+        '--configuration', $Configuration,
+        '--no-restore',
+        "-p:Version=$version",
+        "-p:ContinuousIntegrationBuild=$ciBuild"
+    ) -FailureMessage "dotnet build failed: $($solution.FullName)"
 }
 
-# Build every source project explicitly. This prevents a stale solution file from silently omitting
-# Browser, Infrastructure, WPF, updater, PCC or GitHub modules after cross-worker integration.
+# Build every source project explicitly. A stale solution file must never hide a failing Browser,
+# Infrastructure, WPF, updater, PCC, GitHub or Application project after cross-worker convergence.
 foreach ($project in $srcProjects) {
-    & dotnet restore $project.FullName
-    if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed: $($project.FullName)" }
-    & dotnet build $project.FullName --configuration $Configuration --no-restore -p:Version=$version -p:ContinuousIntegrationBuild=$([bool]$env:GITHUB_ACTIONS)
-    if ($LASTEXITCODE -ne 0) { throw "dotnet build failed: $($project.FullName)" }
+    Invoke-DotNetChecked -Arguments @('restore', $project.FullName) -FailureMessage "dotnet restore failed: $($project.FullName)"
+    Invoke-DotNetChecked -Arguments @(
+        'build', $project.FullName,
+        '--configuration', $Configuration,
+        '--no-restore',
+        "-p:Version=$version",
+        "-p:ContinuousIntegrationBuild=$ciBuild"
+    ) -FailureMessage "dotnet build failed: $($project.FullName)"
 }
 
 $testProjects = @(
@@ -79,24 +104,27 @@ $resultsDir = Join-Path $repoRoot 'artifacts\test-results'
 New-Item -ItemType Directory -Path $resultsDir -Force | Out-Null
 
 foreach ($testProject in $testProjects) {
-    $args = @(
+    $testArgs = @(
         'test', $testProject.FullName,
         '--configuration', $Configuration,
         '--logger', 'trx',
         '--results-directory', $resultsDir,
-        ('-p:Version=' + $version),
-        ('-p:ContinuousIntegrationBuild=' + [bool]$env:GITHUB_ACTIONS)
+        "-p:Version=$version",
+        "-p:ContinuousIntegrationBuild=$ciBuild"
     )
-    if (-not [string]::IsNullOrWhiteSpace($NormalTestFilter)) { $args += @('--filter', $NormalTestFilter) }
-    & dotnet @args
-    if ($LASTEXITCODE -ne 0) { throw "dotnet test failed: $($testProject.FullName)" }
+    if (-not [string]::IsNullOrWhiteSpace($NormalTestFilter)) {
+        $testArgs += @('--filter', $NormalTestFilter)
+    }
+    Invoke-DotNetChecked -Arguments $testArgs -FailureMessage "dotnet test failed: $($testProject.FullName)"
 }
 
 $appExe = Join-Path $repoRoot "src\PCCExecutive.App\bin\$Configuration\net10.0-windows\PCCExecutive.exe"
 if (Test-Path $appExe) {
-    & $appExe --smoke-test
+    & $appExe '--smoke-test'
     if ($LASTEXITCODE -ne 0) { throw "PCCExecutive WPF integrated startup smoke failed with exit code $LASTEXITCODE." }
 }
 elseif ($RequireProduct -or (Test-Path (Join-Path $repoRoot 'src\PCCExecutive.App\PCCExecutive.App.csproj'))) {
     throw "PCCExecutive WPF executable was not produced at expected path: $appExe"
 }
+
+Write-Host "BUILD_TEST_GATE_PASS sourceSha=$sourceSha version=$version configuration=$Configuration"

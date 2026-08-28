@@ -21,7 +21,7 @@ function Is-Allowed([System.IO.FileSystemInfo]$item) {
     return $allowed.ContainsKey($relative)
 }
 
-$forbiddenDirectory = '^(User Data|BrowserProfiles?|ChatGPTProfiles?|auth-state|storage-state|playwright-auth|\.playwright)$'
+$forbiddenDirectory = '^(User Data|BrowserProfiles?|ChatGPTProfiles?|auth-state|storage-state|playwright-auth)$'
 $forbiddenFileName = '^(Cookies|Cookies-journal|Login Data|Login Data-journal|Web Data|History|Preferences|Secure Preferences)$'
 $forbiddenExtension = '^\.(sqlite|sqlite3|db|pdb|cs|csproj|sln|slnx|user)$'
 $forbiddenSecretName = '^(\.env(?:\..+)?|.*(?:auth[-_.]?state|storage[-_.]?state|credentials?|tokens?|cookies?)\.(json|ya?ml))$'
