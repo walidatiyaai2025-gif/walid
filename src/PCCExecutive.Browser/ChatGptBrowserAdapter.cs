@@ -43,14 +43,39 @@ public sealed class WrongChatGuard
         detection.Confidence < 0.60 || string.Equals(detection.State.ToString(), "Unknown", StringComparison.Ordinal);
 }
 
+public sealed record AdapterDriftDecision(bool IsCertain, string Reason, string AdapterVersion, IReadOnlyList<string> Evidence);
+
+public sealed class ChatGptAdapterDriftGuard
+{
+    public AdapterDriftDecision Evaluate(ChatGptSemanticSnapshot snapshot, double minimumConfidence = .60)
+    {
+        if (minimumConfidence is < 0 or > 1) throw new ArgumentOutOfRangeException(nameof(minimumConfidence));
+        var critical = new (string Name, string State, double Confidence, IReadOnlyList<string> Evidence)[]
+        {
+            ("input", snapshot.Input.State.ToString(), snapshot.Input.Confidence, snapshot.Input.Evidence),
+            ("generation", snapshot.Generation.State.ToString(), snapshot.Generation.Confidence, snapshot.Generation.Evidence),
+            ("auth", snapshot.Auth.State.ToString(), snapshot.Auth.Confidence, snapshot.Auth.Evidence),
+            ("conversation", snapshot.Conversation.State.ToString(), snapshot.Conversation.Confidence, snapshot.Conversation.Evidence),
+            ("health", snapshot.Health.State.ToString(), snapshot.Health.Confidence, snapshot.Health.Evidence)
+        };
+        var uncertain = critical.Where(x => x.Confidence < minimumConfidence || string.Equals(x.State, "Unknown", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (uncertain.Length == 0)
+            return new(true, "ADAPTER_SEMANTICS_PROVEN", snapshot.AdapterVersion, critical.SelectMany(x => x.Evidence).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+        var evidence = uncertain.Select(x => $"{x.Name}:{x.State}:confidence={x.Confidence:0.00}").Concat(uncertain.SelectMany(x => x.Evidence)).ToArray();
+        return new(false, "BROWSER_ADAPTER_UNCERTAIN", snapshot.AdapterVersion, evidence);
+    }
+}
+
 public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter
 {
-    public const string CurrentAdapterVersion = "chatgpt-web-semantic-v1";
-    private const string ComposerSelector = "textarea, [contenteditable='true'][role='textbox'], [contenteditable='true'][data-lexical-editor='true']";
+    public const string CurrentAdapterVersion = "chatgpt-web-semantic-v2";
+    private const string ComposerSelector = "textarea, [contenteditable='true'][role='textbox'], [contenteditable='true'][data-lexical-editor='true'], [data-testid='composer-text-input']";
     private const string AssistantSelector = "[data-message-author-role='assistant']";
-    private const string StopSelector = "button[aria-label*='Stop' i], button:has-text('Stop generating')";
+    private const string StopSelector = "button[aria-label*='Stop' i], button:has-text('Stop generating'), [data-testid='stop-button']";
     private const string LoginSelector = "a[href*='/auth/login'], button:has-text('Log in'), button:has-text('Sign in')";
     private const string ContinueSelector = "button:has-text('Continue generating'), button:has-text('Continue')";
+    private const string RetrySelector = "button:has-text('Retry'), button:has-text('Regenerate'), button[aria-label*='Retry' i]";
+    private const string ResponseActionSelector = "[data-testid='copy-turn-action-button'], button[aria-label*='Copy' i], [data-testid='good-response-turn-action-button']";
     private readonly IPlaywrightPageProvider _pages;
 
     public PlaywrightChatGptBrowserAdapter(IPlaywrightPageProvider pages) => _pages = pages;
@@ -65,12 +90,22 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter
             var body = await BodyAsync(page).ConfigureAwait(false);
             var composer = await VisibleAsync(page, ComposerSelector).ConfigureAwait(false);
             var assistantCount = await page.Locator(AssistantSelector).CountAsync().ConfigureAwait(false);
-            var input = composer is null ? D(InputState.Unknown, .2, "composer:not-found") : await composer.IsEnabledAsync().ConfigureAwait(false) ? D(InputState.Ready, .92, "composer:visible", "composer:enabled") : D(InputState.Disabled, .92, "composer:disabled");
-            var auth = Contains(body, "verify you are human", "checking your browser", "security challenge", "captcha") ? D(AuthState.Challenge, .92, "challenge-text:present") : page.Url.Contains("/auth/login", StringComparison.OrdinalIgnoreCase) || await HasVisibleAsync(page, LoginSelector).ConfigureAwait(false) ? D(AuthState.LoginRequired, .92, "login-ui:present") : composer is not null ? D(AuthState.Authenticated, .75, "composer:authenticated-surface-present") : D(AuthState.Unknown, .3, "auth:unproven");
-            var generation = await HasVisibleAsync(page, StopSelector).ConfigureAwait(false) ? D(GenerationState.Generating, .92, "stop-generation-control:visible") : composer is not null && assistantCount > 0 ? D(GenerationState.Complete, .75, "assistant-message:present", "stop-generation-control:absent") : composer is not null ? D(GenerationState.Idle, .75, "composer:visible", "stop-generation-control:absent") : D(GenerationState.Unknown, .25, "generation:unproven");
+            var stopVisible = await HasVisibleAsync(page, StopSelector).ConfigureAwait(false);
+            var continueVisible = await HasVisibleAsync(page, ContinueSelector).ConfigureAwait(false);
+            var retryVisible = await HasVisibleAsync(page, RetrySelector).ConfigureAwait(false);
+            var responseActionsVisible = assistantCount > 0 && await HasVisibleAsync(page, ResponseActionSelector).ConfigureAwait(false);
+
+            var input = composer is null
+                ? D(InputState.Unknown, .2, "composer:not-found")
+                : await composer.IsEnabledAsync().ConfigureAwait(false)
+                    ? D(InputState.Ready, .92, "composer:visible", "composer:enabled")
+                    : D(InputState.Disabled, .92, "composer:disabled");
+
+            var auth = DetectAuth(page.Url, body, composer is not null, await HasVisibleAsync(page, LoginSelector).ConfigureAwait(false));
+            var generation = DetectGeneration(composer is not null, assistantCount, stopVisible, responseActionsVisible, continueVisible, retryVisible);
             var conversation = DetectConversation(page.Url, expectation.ProviderConversationIdentity);
             var health = DetectHealth(page.Url, body, composer is not null, auth.State);
-            var completeness = assistantCount == 0 ? ResponseCompleteness.None : await HasVisibleAsync(page, ContinueSelector).ConfigureAwait(false) || Contains(body, "network error") && generation.State != GenerationState.Generating ? ResponseCompleteness.Partial : generation.State == GenerationState.Complete ? ResponseCompleteness.Complete : ResponseCompleteness.Unknown;
+            var completeness = DetectCompleteness(body, assistantCount, generation.State, continueVisible, retryVisible, responseActionsVisible, health);
             var response = assistantCount > 0 ? await LastAssistantAsync(page, assistantCount).ConfigureAwait(false) : null;
             return new(input, generation, auth, conversation, health, completeness, assistantCount, response, DateTimeOffset.UtcNow, AdapterVersion);
         }
@@ -85,7 +120,10 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter
         try
         {
             var before = await InspectAsync(runtime, expectation, cancellationToken).ConfigureAwait(false);
-            if (before.Input.State != InputState.Ready || before.Auth.State != AuthState.Authenticated || before.Conversation.State != ConversationMatch.Match)
+            var drift = new ChatGptAdapterDriftGuard().Evaluate(before);
+            if (!drift.IsCertain)
+                return new(false, false, false, "BROWSER_ADAPTER_UNCERTAIN", drift.Evidence);
+            if (before.Input.State != InputState.Ready || before.Auth.State != AuthState.Authenticated || before.Conversation.State != ConversationMatch.Match || before.Health.State != PageHealth.Healthy || before.Generation.State == GenerationState.Generating)
                 return new(false, false, false, "PRE_SUBMIT_STATE_NOT_PROVEN", new[] { "submission:not-triggered", $"adapter:{AdapterVersion}" });
             var composer = await VisibleAsync(page, ComposerSelector).ConfigureAwait(false);
             if (composer is null) return new(false, false, false, "COMPOSER_NOT_FOUND", new[] { "submission:not-triggered" });
@@ -94,12 +132,13 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter
             await composer.PressAsync("Enter").ConfigureAwait(false);
             await page.WaitForTimeoutAsync(700).ConfigureAwait(false);
             var after = await InspectAsync(runtime, expectation, cancellationToken).ConfigureAwait(false);
-            var evidence = new[] { "submission:enter-triggered", $"assistant-count-before:{before.AssistantMessageCount}", $"assistant-count-after:{after.AssistantMessageCount}", $"generation-after:{after.Generation.State}", $"health-after:{after.Health.State}" };
-            if (after.Generation.State == GenerationState.Generating || after.AssistantMessageCount > before.AssistantMessageCount) return new(true, true, false, "SUBMISSION_PROVEN", evidence);
-            if (after.Health.State is PageHealth.RateLimited or PageHealth.TempError or PageHealth.Offline || after.Auth.State is AuthState.LoginRequired or AuthState.Challenge || after.Input.State == InputState.Unknown || after.Conversation.State == ConversationMatch.Unknown)
+            var evidence = new[] { "submission:enter-triggered", $"assistant-count-before:{before.AssistantMessageCount}", $"assistant-count-after:{after.AssistantMessageCount}", $"generation-after:{after.Generation.State}", $"health-after:{after.Health.State}", $"adapter:{AdapterVersion}" };
+            if (after.Generation.State == GenerationState.Generating || after.AssistantMessageCount > before.AssistantMessageCount)
+                return new(true, true, false, "SUBMISSION_PROVEN", evidence);
+            if (after.Health.State is PageHealth.RateLimited or PageHealth.TempError or PageHealth.Offline || after.Auth.State is AuthState.LoginRequired or AuthState.Challenge || after.Input.State == InputState.Unknown || after.Conversation.State == ConversationMatch.Unknown || after.Generation.State == GenerationState.Unknown)
                 return new(true, false, true, "SUBMITTED_UNKNOWN", evidence);
             var value = await ComposerValueAsync(composer).ConfigureAwait(false);
-            return string.IsNullOrWhiteSpace(value) ? new(true, true, false, "SUBMISSION_PROVEN_COMPOSER_CLEARED", evidence) : new(true, false, true, "SUBMITTED_UNKNOWN", evidence);
+            return new(true, false, true, "SUBMITTED_UNKNOWN", evidence.Concat(new[] { string.IsNullOrWhiteSpace(value) ? "composer:cleared-but-send-not-otherwise-proven" : "composer:still-has-content" }).ToArray());
         }
         catch (PlaywrightException ex)
         {
@@ -110,19 +149,47 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter
     private ChatGptSemanticSnapshot Unknown(string evidence) => new(D(InputState.Unknown, 0, evidence), D(GenerationState.Unknown, 0, evidence), D(AuthState.Unknown, 0, evidence), D(ConversationMatch.Unknown, 0, evidence), D(PageHealth.Unknown, 0, evidence), ResponseCompleteness.Unknown, 0, null, DateTimeOffset.UtcNow, AdapterVersion);
     private static SemanticDetection<T> D<T>(T state, double confidence, params string[] evidence) where T : struct, Enum => SemanticDetection<T>.Create(state, confidence, CurrentAdapterVersion, evidence);
 
+    private static SemanticDetection<AuthState> DetectAuth(string url, string body, bool composerVisible, bool loginVisible)
+    {
+        if (Contains(body, "verify you are human", "checking your browser", "security challenge", "captcha", "challenge required")) return D(AuthState.Challenge, .95, "challenge-ui:present");
+        if (Contains(body, "session has expired", "session expired", "please log in again")) return D(AuthState.LoginRequired, .95, "session-expired:present");
+        if (url.Contains("/auth/login", StringComparison.OrdinalIgnoreCase) || loginVisible) return D(AuthState.LoginRequired, .92, "login-ui:present");
+        return composerVisible ? D(AuthState.Authenticated, .80, "composer:authenticated-surface-present") : D(AuthState.Unknown, .3, "auth:unproven");
+    }
+
+    private static SemanticDetection<GenerationState> DetectGeneration(bool composerVisible, int assistantCount, bool stopVisible, bool responseActionsVisible, bool continueVisible, bool retryVisible)
+    {
+        if (stopVisible) return D(GenerationState.Generating, .95, "stop-generation-control:visible");
+        if (assistantCount == 0 && composerVisible) return D(GenerationState.Idle, .82, "composer:visible", "assistant-message:none", "stop-generation-control:absent");
+        if (assistantCount > 0 && responseActionsVisible && composerVisible && !continueVisible && !retryVisible) return D(GenerationState.Complete, .88, "assistant-message:present", "response-actions:visible", "stop-generation-control:absent");
+        if (assistantCount > 0 && (continueVisible || retryVisible)) return D(GenerationState.Complete, .72, "assistant-message:present", "retry-or-continue-control:visible");
+        return D(GenerationState.Unknown, .45, "generation:not-proven-by-multiple-signals");
+    }
+
+    private static ResponseCompleteness DetectCompleteness(string body, int assistantCount, GenerationState generation, bool continueVisible, bool retryVisible, bool responseActionsVisible, SemanticDetection<PageHealth> health)
+    {
+        if (assistantCount == 0) return ResponseCompleteness.None;
+        if (continueVisible || retryVisible) return ResponseCompleteness.Partial;
+        if (Contains(body, "there was an error generating", "network error", "response interrupted", "continue generating")) return ResponseCompleteness.Partial;
+        if (health.Evidence.Any(x => x.Contains("context-limit", StringComparison.OrdinalIgnoreCase))) return ResponseCompleteness.Partial;
+        if (generation == GenerationState.Complete && responseActionsVisible) return ResponseCompleteness.Complete;
+        return ResponseCompleteness.Unknown;
+    }
+
     private static SemanticDetection<ConversationMatch> DetectConversation(string currentUrl, string expectedIdentity)
     {
         if (!Normalize(currentUrl, out var actual) || !Normalize(expectedIdentity, out var expected)) return D(ConversationMatch.Unknown, .3, "provider-conversation:unparseable");
-        return StringComparer.OrdinalIgnoreCase.Equals(actual, expected) ? D(ConversationMatch.Match, .92, $"provider-conversation:{actual}") : D(ConversationMatch.Mismatch, .92, $"expected:{expected}", $"actual:{actual}");
+        return StringComparer.OrdinalIgnoreCase.Equals(actual, expected) ? D(ConversationMatch.Match, .95, $"provider-conversation:{actual}") : D(ConversationMatch.Mismatch, .95, $"expected:{expected}", $"actual:{actual}");
     }
 
     private static SemanticDetection<PageHealth> DetectHealth(string url, string body, bool composerVisible, AuthState auth)
     {
-        if (url.StartsWith("chrome-error://", StringComparison.OrdinalIgnoreCase) || Contains(body, "you are offline", "no internet", "network connection was lost")) return D(PageHealth.Offline, .92, "offline-evidence:present");
-        if (Contains(body, "too many requests", "rate limit", "try again in a few minutes", "sending too quickly", "you've reached")) return D(PageHealth.RateLimited, .92, "rate-limit-guidance:present");
+        if (url.StartsWith("chrome-error://", StringComparison.OrdinalIgnoreCase) || Contains(body, "you are offline", "no internet", "network connection was lost")) return D(PageHealth.Offline, .95, "offline-evidence:present");
+        if (Contains(body, "conversation is too long", "maximum conversation length", "context length", "start a new chat to continue", "this conversation has reached its limit")) return D(PageHealth.TempError, .95, "context-limit:explicit-ui");
+        if (Contains(body, "too many requests", "rate limit", "try again in a few minutes", "sending too quickly", "temporary usage limit", "account limit")) return D(PageHealth.RateLimited, .95, "rate-limit:explicit-ui", Contains(body, "sending too quickly", "account limit") ? "account-level:rate-limit" : "rate-limit:provider-guidance");
         if (Contains(body, "something went wrong", "temporary error", "failed to load", "there was an error generating")) return D(PageHealth.TempError, .92, "temporary-error:present");
-        if (Contains(body, "taking longer than expected", "still working on this")) return D(PageHealth.Slow, .75, "slow-guidance:present");
-        return auth == AuthState.Authenticated && composerVisible ? D(PageHealth.Healthy, .75, "authenticated-composer:healthy-surface") : D(PageHealth.Unknown, .3, "page-health:unproven");
+        if (Contains(body, "taking longer than expected", "still working on this")) return D(PageHealth.Slow, .80, "slow-guidance:present");
+        return auth == AuthState.Authenticated && composerVisible ? D(PageHealth.Healthy, .80, "authenticated-composer:healthy-surface") : D(PageHealth.Unknown, .3, "page-health:unproven");
     }
 
     private static async Task<ILocator?> VisibleAsync(IPage page, string selector)
