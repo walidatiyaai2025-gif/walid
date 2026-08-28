@@ -36,6 +36,19 @@ public sealed class VisibleControlTruthTests
     }
 
     [Fact]
+    public void Selected_worker_session_is_the_target_for_confirmed_kill()
+    {
+        var gateway = new RecordingGateway(SnapshotWithWorkers());
+        var shell = new MainViewModel(gateway, new AlwaysConfirm());
+        var screen = new WorkerChatViewModel(shell);
+        screen.SelectedWorker = shell.Snapshot.Workers[3];
+
+        shell.KillSessionCommand.Execute(screen.SelectedWorkerSession?.RuntimeId);
+
+        Assert.Equal((UiAction.KillSession, "runtime-4"), gateway.Executions.Last());
+    }
+
+    [Fact]
     public void Worker_selection_survives_snapshot_refresh_when_worker_still_exists()
     {
         var gateway = new RecordingGateway(SnapshotWithWorkers());
@@ -279,6 +292,11 @@ public sealed class VisibleControlTruthTests
             EvidenceGates: [],
             AttentionItems: [],
             RecoveryEvents: []);
+    }
+
+    private sealed class AlwaysConfirm : Services.IConfirmationService
+    {
+        public bool Confirm(string title, string message, string confirmLabel) => true;
     }
 
     private sealed class RecordingGateway : IPccExecutivePresentationGateway
