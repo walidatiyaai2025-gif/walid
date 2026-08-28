@@ -215,27 +215,42 @@ public sealed record RuntimeSnapshot(
             or HealthState.Cooldown or HealthState.TemporaryError or HealthState.PartialResponse or HealthState.Offline
             or HealthState.Stuck or HealthState.Recovering;
 
+    public bool HasManagerRuntime => Sessions.Any(x =>
+        x.IsPccOwned && string.Equals(x.Role, "Manager", StringComparison.OrdinalIgnoreCase));
+
+    public bool ManagerNeedsStart => HasManagerRuntime &&
+        (LatestManagerHandoff.Contains("start Manager", StringComparison.OrdinalIgnoreCase) ||
+         LatestManagerHandoff.Contains("Select a project, connect Chrome", StringComparison.OrdinalIgnoreCase));
+
     public string OperatorMessage => !GatewayBound
-        ? "Runtime contracts are not bound yet. Operational controls stay disabled."
+        ? "STARTUP — Runtime contracts are not bound yet. PCC keeps controls disabled until it can prove safe state."
         : AttentionCount > 0
-            ? $"{AttentionCount} action{(AttentionCount == 1 ? string.Empty : "s")} require operator attention."
-            : GlobalHealth switch
-            {
-                HealthState.Slow => "SLOW RESPONSE DETECTED · MONITORING ACTIVE · NO ACTION REQUIRED",
-                HealthState.Throttled => "THROTTLING DETECTED · NEW SENDS PACED · NO ACTION REQUIRED",
-                HealthState.RateLimited => "RATE LIMIT DETECTED · NEW SENDS PAUSED · AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
-                HealthState.Cooldown => "COOLDOWN ACTIVE · AUTO RESUME ENABLED · NO ACTION REQUIRED",
-                HealthState.TemporaryError => "TEMPORARY ERROR · AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
-                HealthState.PartialResponse => "PARTIAL RESPONSE · RECONCILIATION ACTIVE · NO ACTION REQUIRED",
-                HealthState.Offline => "OFFLINE · RECOVERY WATCH ACTIVE · NO ACTION REQUIRED",
-                HealthState.Stuck => "STUCK SESSION DETECTED · RECOVERY ACTIVE · NO ACTION REQUIRED",
-                HealthState.Recovering => "AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
-                HealthState.Healthy => "AUTOPILOT · HEALTHY · NO ACTION REQUIRED",
-                HealthState.LoginRequired => "LOGIN REQUIRED · OPEN ATTENTION CENTER",
-                HealthState.Challenge => "ACCOUNT CHALLENGE · OPEN ATTENTION CENTER",
-                HealthState.AdapterUncertain => "NEW SENDS PAUSED · ADAPTER STATE UNCERTAIN · SAFE-FAIL ACTIVE",
-                _ => "Runtime state is being evaluated."
-            };
+            ? $"ACTION REQUIRED — {AttentionCount} item{(AttentionCount == 1 ? string.Empty : "s")} need you. Open 15 Attention and follow the single action shown there."
+            : !HasActiveRun
+                ? "STEP 1 OF 4 — 01 Chrome: confirm the signed-in profile. STEP 2 OF 4 — 02 Projects: choose the project and press Open Project."
+                : GlobalHealth is HealthState.LoginRequired or HealthState.Challenge
+                    ? "ACTION REQUIRED — Open 15 Attention. PCC will take you to the exact ChatGPT login/challenge that needs you."
+                    : !HasManagerRuntime
+                        ? "STEP 3 OF 4 — 01 Chrome: press Connect / Recover Chrome. PCC will create or recover the Manager runtime automatically."
+                        : string.Equals(AutopilotState, "PAUSED", StringComparison.OrdinalIgnoreCase)
+                            ? "STEP 4 OF 4 — AI is PAUSED. Press Resume at the top, then open 04 Manager and press Start / Continue Manager."
+                            : ManagerNeedsStart
+                                ? "STEP 4 OF 4 — 04 Manager: press Start / Continue Manager. After that PCC plans, dispatches Workers, reconciles, and continues automatically."
+                                : GlobalHealth switch
+                                {
+                                    HealthState.Slow => "AUTOPILOT ACTIVE — SLOW RESPONSE DETECTED · MONITORING ACTIVE · NO ACTION REQUIRED",
+                                    HealthState.Throttled => "AUTOPILOT ACTIVE — THROTTLING DETECTED · NEW SENDS PACED · NO ACTION REQUIRED",
+                                    HealthState.RateLimited => "AUTOPILOT ACTIVE — RATE LIMIT DETECTED · NEW SENDS PAUSED · AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
+                                    HealthState.Cooldown => "AUTOPILOT ACTIVE — COOLDOWN ACTIVE · AUTO RESUME ENABLED · NO ACTION REQUIRED",
+                                    HealthState.TemporaryError => "AUTOPILOT ACTIVE — TEMPORARY ERROR · AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
+                                    HealthState.PartialResponse => "AUTOPILOT ACTIVE — PARTIAL RESPONSE · RECONCILIATION ACTIVE · NO ACTION REQUIRED",
+                                    HealthState.Offline => "AUTOPILOT ACTIVE — OFFLINE · RECOVERY WATCH ACTIVE · NO ACTION REQUIRED",
+                                    HealthState.Stuck => "AUTOPILOT ACTIVE — STUCK SESSION DETECTED · RECOVERY ACTIVE · NO ACTION REQUIRED",
+                                    HealthState.Recovering => "AUTOPILOT ACTIVE — AUTO RECOVERY IN PROGRESS · NO ACTION REQUIRED",
+                                    HealthState.Healthy => "AUTOPILOT ACTIVE — HEALTHY · PCC IS RUNNING THE PROJECT · NO ACTION REQUIRED",
+                                    HealthState.AdapterUncertain => "SAFE-FAIL ACTIVE — NEW SENDS PAUSED WHILE PCC PROVES THE CHAT STATE. NO RETRY REQUIRED FROM YOU.",
+                                    _ => "AUTOPILOT PREPARING — PCC is evaluating runtime state. If you need to act, this bar will show one numbered instruction."
+                                };
 
     public static RuntimeSnapshot Unbound { get; } = new(
         GatewayBound: false,
