@@ -14,7 +14,6 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
     private static readonly TimeSpan MonitorInterval = TimeSpan.FromSeconds(5);
     private readonly PccExecutiveRuntimeHost _host;
     private readonly SqliteStateStore _store;
-    private readonly ConversationLifecycleManager _lifecycle;
     private readonly PreventiveRolloverPolicy _policy = new();
     private readonly CancellationTokenSource _shutdown = new();
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -25,7 +24,6 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
     {
         _host = host;
         _store = PccHostRecoveryAccess.Store(_host);
-        _lifecycle = new ConversationLifecycleManager(_store);
         _profileRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PCC Executive", "browser-profiles");
         RecoverInterruptedRolloversAsync().GetAwaiter().GetResult();
         _loop = MonitorAsync(_shutdown.Token);
@@ -76,33 +74,23 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
 
     private async Task<ConversationGrowthObservation> ObserveAsync(BrowserRuntimeRecord runtime, ConversationRecord active, CancellationToken cancellationToken)
     {
-        var messages = 0;
-        long characters = 0;
-        var waveCount = 0;
-        var slowOrStuck = 0;
-        var contextLimit = false;
-        var longComposerFailure = false;
+        var age = DateTimeOffset.UtcNow - active.CreatedAt;
+        if (string.IsNullOrWhiteSpace(runtime.TaskId) || string.IsNullOrWhiteSpace(runtime.ConversationIdentity) || string.IsNullOrWhiteSpace(runtime.ProviderConversationIdentity))
+            return new ConversationGrowthObservation(0, 0, 0, age, runtime.State is BrowserSessionState.Degraded or BrowserSessionState.Recovering ? 1 : 0, false, false);
 
-        var checkpoints = await _store.ListCheckpointsAsync(active.ProjectRunId, cancellationToken).ConfigureAwait(false);
-        foreach (var checkpoint in checkpoints.Where(x => StringComparer.Ordinal.Equals(x.ProjectRunId, active.ProjectRunId)))
-        {
-            if (checkpoint.Kind.Contains("manager", StringComparison.OrdinalIgnoreCase) || checkpoint.Kind.Contains("worker", StringComparison.OrdinalIgnoreCase))
-            {
-                messages++;
-                characters += checkpoint.Payload?.Length ?? 0;
-            }
-            if (checkpoint.Kind.Contains("wave", StringComparison.OrdinalIgnoreCase)) waveCount++;
-        }
-
-        var runtimeCheckpoints = await _store.ListCheckpointsAsync(active.ProjectRunId, cancellationToken).ConfigureAwait(false);
-        foreach (var checkpoint in runtimeCheckpoints.Where(x => x.Payload?.Contains(runtime.RuntimeId, StringComparison.Ordinal) == true))
-        {
-            if (checkpoint.Payload!.Contains("SLOW", StringComparison.OrdinalIgnoreCase) || checkpoint.Payload.Contains("STUCK", StringComparison.OrdinalIgnoreCase)) slowOrStuck++;
-            if (checkpoint.Payload.Contains("CONTEXT_LIMIT", StringComparison.OrdinalIgnoreCase)) contextLimit = true;
-            if (checkpoint.Payload.Contains("LONG_CONVERSATION_COMPOSER", StringComparison.OrdinalIgnoreCase)) longComposerFailure = true;
-        }
-
-        return new ConversationGrowthObservation(messages, characters, waveCount, DateTimeOffset.UtcNow - active.CreatedAt, slowOrStuck, contextLimit, longComposerFailure);
+        var expected = new BrowserDispatchExpectation(runtime.ProjectRunId, runtime.LogicalAgentId, runtime.TaskId!, runtime.ConversationIdentity!, runtime.ProviderConversationIdentity!, runtime.WorkerSlotId);
+        var semantic = await PccHostConversationAccess.BrowserAdapter(_host).InspectAsync(runtime, expected, cancellationToken).ConfigureAwait(false);
+        var evidence = semantic.Input.Evidence
+            .Concat(semantic.Generation.Evidence)
+            .Concat(semantic.Auth.Evidence)
+            .Concat(semantic.Conversation.Evidence)
+            .Concat(semantic.Health.Evidence)
+            .ToArray();
+        var contextLimit = evidence.Any(x => x.Contains("CONTEXT_LIMIT", StringComparison.OrdinalIgnoreCase) || x.Contains("context limit", StringComparison.OrdinalIgnoreCase));
+        var longComposerFailure = evidence.Any(x => x.Contains("LONG_CONVERSATION_COMPOSER", StringComparison.OrdinalIgnoreCase) || x.Contains("conversation too long", StringComparison.OrdinalIgnoreCase));
+        var slowOrStuck = semantic.Health.State is PageHealth.Slow or PageHealth.TempError || semantic.Generation.State == GenerationState.Unknown ? 1 : 0;
+        var capturedCharacters = semantic.CapturedResponseText?.Length ?? 0;
+        return new ConversationGrowthObservation(semantic.AssistantMessageCount, capturedCharacters, 0, age, slowOrStuck, contextLimit, longComposerFailure);
     }
 
     private async Task GovernedRolloverAsync(BrowserRuntimeRecord runtime, ConversationRecord predecessor, string reason, CancellationToken cancellationToken)
@@ -252,7 +240,7 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
         var now = DateTimeOffset.UtcNow;
         var archived = predecessor with { State = ConversationLifecycleState.Archived, RetiredAt = now, SuccessorConversationId = candidate.ConversationId, RolloverReason = reason };
         var successor = candidate with { State = ConversationLifecycleState.Active, UrlOrProviderIdentity = candidateRuntime.ProviderConversationIdentity ?? candidate.UrlOrProviderIdentity };
-        await _lifecycle.CommitRolloverAsync(archived, successor, checkpointId, cancellationToken).ConfigureAwait(false);
+        await _store.CommitRolloverAsync(archived, successor, checkpointId, cancellationToken).ConfigureAwait(false);
         await SaveJournalAsync(archived, successor, checkpointId, "COMMITTED", reason, cancellationToken).ConfigureAwait(false);
 
         var oldRuntime = (await PccHostConversationAccess.RuntimeRegistry(_host).ListAsync(cancellationToken).ConfigureAwait(false))
