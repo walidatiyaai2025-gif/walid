@@ -503,7 +503,7 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
             return Task.CompletedTask;
         }
         public Task<OwnershipMarker?> ReadAsync(string profilePath, CancellationToken cancellationToken = default) =>
-            Task.FromResult(_items.TryGetValue(marker.ProfilePath, out var value) ? value : null);
+            Task.FromResult(_items.TryGetValue(profilePath, out var value) ? value : null);
     }
 
     internal sealed class ControlledOwnershipProof(ControlledExternalState state) : IOwnershipProofService
