@@ -22,7 +22,7 @@ public sealed class BrowserNewSendPausePort : INewSendPausePort
                 ChatGptResilienceState.Paused,
                 FaultScope.Global,
                 PauseUnsafeNewSends: true,
-                RequiresHumanAttention: false,
+                RequiresHumanAction: false,
                 Reason: reason),
             DateTimeOffset.UtcNow);
         return Task.CompletedTask;
