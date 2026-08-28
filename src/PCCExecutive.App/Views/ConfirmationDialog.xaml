@@ -1,0 +1,20 @@
+<Window x:Class="PCCExecutive.App.Views.ConfirmationDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="520" Height="260" WindowStyle="None" ResizeMode="NoResize" WindowStartupLocation="CenterOwner"
+        Background="{StaticResource Brush.Background}" ShowInTaskbar="False">
+    <Border Style="{StaticResource Card}" Margin="1" Padding="22" BorderBrush="#603044">
+        <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <TextBlock Text="{Binding Title}" Style="{StaticResource TitleText}" FontSize="20"/>
+            <StackPanel Grid.Row="1" Margin="0,12">
+                <TextBlock Text="{Binding Message}" FontSize="14"/>
+                <TextBlock Text="This action only targets PCC-owned sessions with positive ownership evidence." Style="{StaticResource MutedText}" Margin="0,10,0,0"/>
+            </StackPanel>
+            <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Cancel" Width="100" Margin="0,0,8,0" IsCancel="True"/>
+                <Button Content="{Binding ConfirmLabel}" Width="150" Style="{StaticResource DangerButton}" IsDefault="True" Click="Confirm_Click"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

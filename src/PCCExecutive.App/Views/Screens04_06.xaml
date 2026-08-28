@@ -1,0 +1,63 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:vm="clr-namespace:PCCExecutive.App.ViewModels"
+                    xmlns:p="clr-namespace:PCCExecutive.App.Presentation">
+    <!-- 04 Manager Workspace -->
+    <DataTemplate DataType="{x:Type vm:ManagerWorkspaceViewModel}">
+        <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+            <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel><TextBlock Text="Manager Workspace" Style="{StaticResource TitleText}"/><TextBlock Text="Stable logical Manager identity; conversation rollover stays in lineage history." Style="{StaticResource MutedText}"/></StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal"><Button Content="Conversation History" Command="{Binding Shell.ConversationHistoryCommand}" CommandParameter="Manager" Margin="0,0,8,0"/><Button Content="Open Chat" Style="{StaticResource PrimaryButton}" Command="{Binding Shell.OpenSessionCommand}" CommandParameter="{Binding Shell.ManagerSession.RuntimeId}"/></StackPanel>
+            </Grid>
+            <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="3*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <StackPanel>
+                    <Border Style="{StaticResource HeroCard}"><StackPanel><TextBlock Text="LATEST STRUCTURED MANAGER RESPONSE / HANDOFF" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.Snapshot.LatestManagerHandoff}" Margin="0,12,0,0" FontSize="14"/></StackPanel></Border>
+                    <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="CURRENT EXECUTION CONTEXT" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.Snapshot.CurrentExecutionFlow}" FontSize="16" FontWeight="SemiBold" Margin="0,8,0,0"/><TextBlock Text="The WPF shell intentionally does not re-render the full ChatGPT website. Use Open Chat to inspect the actual PCC-owned browser conversation." Style="{StaticResource MutedText}" Margin="0,10,0,0"/></StackPanel></Border>
+                </StackPanel>
+                <StackPanel Grid.Column="1">
+                    <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="LOGICAL SESSION" Style="{StaticResource SectionTitle}"/><TextBlock Text="Manager" FontSize="20" FontWeight="SemiBold" Margin="0,7,0,3"/><TextBlock Text="{Binding Shell.ManagerSession.State}"/><TextBlock Text="{Binding Shell.ManagerSession.ConversationOrTask}" Style="{StaticResource MutedText}" Margin="0,6,0,0"/></StackPanel></Border>
+                    <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="COMPLETION SIGNALS" Style="{StaticResource SectionTitle}"/><TextBlock Text="Manager Estimate" Style="{StaticResource MutedText}" Margin="0,8,0,0"/><TextBlock Text="{Binding Shell.Snapshot.ManagerEstimateText}" FontSize="24" FontWeight="SemiBold"/><TextBlock Text="Verified Completion" Style="{StaticResource MutedText}" Margin="0,10,0,0"/><TextBlock Text="{Binding Shell.Snapshot.VerifiedCompletionText}" FontSize="24" FontWeight="SemiBold" Foreground="{StaticResource Brush.Purple}"/></StackPanel></Border>
+                </StackPanel>
+            </Grid>
+        </Grid>
+    </DataTemplate>
+    <!-- 05 Workers Dispatch -->
+    <DataTemplate DataType="{x:Type vm:WorkersDispatchViewModel}">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock Text="Workers Dispatch" Style="{StaticResource TitleText}"/>
+                <TextBlock Text="Automatic Staged is the v1 default. Pacing adapts conservatively to real runtime health." Style="{StaticResource MutedText}" Margin="0,0,0,16"/>
+                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="310"/><ColumnDefinition Width="*"/><ColumnDefinition Width="300"/></Grid.ColumnDefinitions>
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel><TextBlock Text="DISPATCH SETTINGS" Style="{StaticResource SectionTitle}"/>
+                            <TextBlock Text="Mode" Style="{StaticResource MutedText}" Margin="0,12,0,4"/><ComboBox ItemsSource="{Binding Shell.DispatchModes}" SelectedItem="{Binding Shell.SelectedDispatchMode}"/>
+                            <Grid Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Base interval"/><TextBlock Grid.Column="1" Text="{Binding Shell.Snapshot.DispatchSettings.BaseIntervalSeconds, StringFormat={}{0} sec}" FontWeight="SemiBold"/></Grid>
+                            <CheckBox Content="Adaptive Pacing" IsChecked="{Binding Shell.Snapshot.DispatchSettings.AdaptivePacing}" IsHitTestVisible="False"/>
+                            <CheckBox Content="Auto Pause on Limit" IsChecked="{Binding Shell.Snapshot.DispatchSettings.AutoPauseOnLimit}" IsHitTestVisible="False"/>
+                            <CheckBox Content="Auto Resume" IsChecked="{Binding Shell.Snapshot.DispatchSettings.AutoResume}" IsHitTestVisible="False"/>
+                            <CheckBox Content="Duplicate Send Protection" IsChecked="{Binding Shell.Snapshot.DispatchSettings.DuplicateSendProtection}" IsHitTestVisible="False"/>
+                            <Grid Margin="0,10,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Max Workers"/><TextBlock Grid.Column="1" Text="{Binding Shell.Snapshot.DispatchSettings.MaxWorkers}" FontWeight="SemiBold"/></Grid>
+                        </StackPanel>
+                    </Border>
+                    <Border Grid.Column="1" Style="{StaticResource Card}"><StackPanel><TextBlock Text="WORKERS DISPATCH QUEUE" Style="{StaticResource SectionTitle}" Margin="0,0,0,10"/>
+                        <ItemsControl ItemsSource="{Binding Shell.Snapshot.Workers}"><ItemsControl.ItemTemplate><DataTemplate><Border Style="{StaticResource CompactListItem}"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="110"/><ColumnDefinition Width="110"/><ColumnDefinition Width="*"/><ColumnDefinition Width="110"/></Grid.ColumnDefinitions><TextBlock Text="{Binding LogicalName}" FontWeight="SemiBold"/><TextBlock Grid.Column="1" Text="{Binding Role}" Style="{StaticResource MutedText}"/><TextBlock Grid.Column="2" Text="{Binding CurrentTask}"/><TextBlock Grid.Column="3" Text="{Binding State}" Foreground="{StaticResource Brush.Amber}" HorizontalAlignment="Right"/></Grid></Border></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                        <TextBlock Text="No countdown is fabricated. Runtime-provided timing appears only when available." Style="{StaticResource MutedText}" Margin="0,8,0,0"/>
+                    </StackPanel></Border>
+                    <StackPanel Grid.Column="2"><Border Style="{StaticResource HeroCard}"><StackPanel><TextBlock Text="DISPATCH CONTROL" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.Snapshot.RuntimeStatus}" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,4"/><Button Content="Start / Resume Dispatch" Style="{StaticResource PrimaryButton}" Margin="0,12,0,8" Command="{Binding Shell.StartDispatchCommand}"/><Button Content="Pause Dispatch" Command="{Binding Shell.PauseDispatchCommand}"/></StackPanel></Border><Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="LIMIT POLICY" Style="{StaticResource SectionTitle}"/><TextBlock Text="When rate limiting is detected, new sends pause and safe auto-recovery owns the cooldown. No blind repeated sends." Style="{StaticResource MutedText}" Margin="0,8,0,0"/></StackPanel></Border></StackPanel>
+                </Grid>
+            </StackPanel>
+        </ScrollViewer>
+    </DataTemplate>
+    <!-- 06 Worker Chat -->
+    <DataTemplate DataType="{x:Type vm:WorkerChatViewModel}">
+        <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+            <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Worker Chat" Style="{StaticResource TitleText}"/><TextBlock Text="Logical Worker identity remains stable across conversation rollover." Style="{StaticResource MutedText}"/></StackPanel><Button Grid.Column="1" Content="Open Actual Browser Chat" Style="{StaticResource PrimaryButton}" Command="{Binding Shell.OpenSessionCommand}" CommandParameter="{Binding Shell.SelectedWorkerSession.RuntimeId}"/></Grid>
+            <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="250"/><ColumnDefinition Width="*"/><ColumnDefinition Width="310"/></Grid.ColumnDefinitions>
+                <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="WORKERS" Style="{StaticResource SectionTitle}" Margin="0,0,0,10"/><ItemsControl ItemsSource="{Binding Shell.Snapshot.Workers}"><ItemsControl.ItemTemplate><DataTemplate><Border Style="{StaticResource CompactListItem}"><StackPanel><TextBlock Text="{Binding LogicalName}" FontWeight="SemiBold"/><TextBlock Text="{Binding Role}" Style="{StaticResource MutedText}"/><TextBlock Text="{Binding State}" Foreground="{StaticResource Brush.Green}" Margin="0,4,0,0"/></StackPanel></Border></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></Border>
+                <StackPanel Grid.Column="1"><Border Style="{StaticResource HeroCard}"><StackPanel><TextBlock Text="CURRENT TASK" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.SelectedWorker.CurrentTask}" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,0"/></StackPanel></Border><Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="LATEST STRUCTURED RESPONSE / HANDOFF" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.SelectedWorker.LatestHandoff}" Margin="0,10,0,0"/></StackPanel></Border></StackPanel>
+                <StackPanel Grid.Column="2"><Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="WORKER INFO" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.SelectedWorker.LogicalName}" FontSize="19" FontWeight="SemiBold" Margin="0,8,0,2"/><TextBlock Text="{Binding Shell.SelectedWorker.Role}"/><TextBlock Text="Conversation health" Style="{StaticResource MutedText}" Margin="0,12,0,2"/><TextBlock Text="{Binding Shell.SelectedWorker.Health}" Foreground="{StaticResource Brush.Green}" FontWeight="SemiBold"/></StackPanel></Border><Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="TASK PROGRESS" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.SelectedWorker.Progress, StringFormat={}{0}%}" Style="{StaticResource MetricValue}" Foreground="{StaticResource Brush.Cyan}" Margin="0,8,0,0"/><TextBlock Text="Worker-reported progress is not Verified Completion." Style="{StaticResource MutedText}"/></StackPanel></Border></StackPanel>
+            </Grid>
+        </Grid>
+    </DataTemplate>
+</ResourceDictionary>

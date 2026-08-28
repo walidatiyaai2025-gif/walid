@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pcc-executive.local/schemas/release-manifest.schema.json",
+  "title": "PCC Executive Release Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["Product","Version","SourceSha","BuildId","WorkflowRun","Target","Runtime","SelfContained","InstallerFile","InstallerSha256","ApplicationFileHash","GeneratedAt","DatabaseSchemaTarget","MinimumUpgradeVersion","SigningState","SbomReference"],
+  "properties": {
+    "Product": { "const": "PCC Executive" },
+    "Version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$" },
+    "SourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "BuildId": { "type": "string", "minLength": 1 },
+    "WorkflowRun": { "type": "string", "minLength": 1 },
+    "Target": { "const": "win-x64" },
+    "Runtime": { "const": "win-x64" },
+    "SelfContained": { "const": true },
+    "InstallerFile": { "type": "string", "pattern": "^PCCExecutive-[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?-Setup-x64\\.exe$" },
+    "InstallerSha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "ApplicationFileHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "GeneratedAt": { "type": "string", "format": "date-time" },
+    "DatabaseSchemaTarget": { "type": "string", "minLength": 1 },
+    "MinimumUpgradeVersion": { "type": "string", "minLength": 1 },
+    "SigningState": { "enum": ["UNSIGNED_DEV","SIGNING_NOT_CONFIGURED","SIGNED","SIGNATURE_INVALID"] },
+    "SbomReference": { "type": "string", "minLength": 1 }
+  }
+}
