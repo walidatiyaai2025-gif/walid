@@ -17,13 +17,14 @@ if ($sha -notmatch '^[0-9a-f]{40}$') { throw 'Exact source SHA is required.' }
 
 Remove-Item $OutputRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
+
 $publishArgs = @(
     'publish', $appProject,
     '--configuration', $Configuration,
     '--runtime', $Runtime,
     '--self-contained', 'true',
     '--output', $OutputRoot,
-    '-p:Version=' + $version,
+    "-p:Version=$version",
     '-p:SelfContained=true',
     '-p:PublishTrimmed=false',
     '-p:PublishSingleFile=false',
@@ -41,7 +42,20 @@ $updaterProject = Join-Path $repoRoot 'src/PCCExecutive.Updater/PCCExecutive.Upd
 if (Test-Path $updaterProject) {
     $updaterDir = Join-Path $OutputRoot 'updater'
     New-Item -ItemType Directory -Path $updaterDir -Force | Out-Null
-    & dotnet publish $updaterProject --configuration $Configuration --runtime $Runtime --self-contained true --output $updaterDir -p:Version=$version -p:PublishTrimmed=false -p:DebugSymbols=false -p:DebugType=None -p:Deterministic=true -p:ContinuousIntegrationBuild=true
+    $updaterArgs = @(
+        'publish', $updaterProject,
+        '--configuration', $Configuration,
+        '--runtime', $Runtime,
+        '--self-contained', 'true',
+        '--output', $updaterDir,
+        "-p:Version=$version",
+        '-p:PublishTrimmed=false',
+        '-p:DebugSymbols=false',
+        '-p:DebugType=None',
+        '-p:Deterministic=true',
+        '-p:ContinuousIntegrationBuild=true'
+    )
+    & dotnet @updaterArgs
     if ($LASTEXITCODE -ne 0) { throw 'PCCExecutive.Updater self-contained publish failed.' }
     foreach ($script in @('Stage-Update.ps1','Invoke-Upgrade.ps1','update-manifest.schema.json')) {
         Copy-Item (Join-Path $repoRoot "updater/$script") $updaterDir -Force
@@ -55,3 +69,4 @@ $appHash = 'sha256:' + (Get-FileHash $appExe -Algorithm SHA256).Hash.ToLowerInva
     DotNetSdk=(& dotnet --version).Trim(); ApplicationFile='PCCExecutive.exe'; ApplicationFileHash=$appHash
 } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutputRoot 'publish-manifest.json') -Encoding UTF8
 Write-Host "PUBLISH_ROOT=$OutputRoot"
+Write-Host "PUBLISH_SOURCE_SHA=$sha"
