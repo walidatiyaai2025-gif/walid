@@ -147,6 +147,32 @@ public sealed class DurableStateTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Project_lock_can_be_released_on_a_different_thread_and_reacquired()
+    {
+        var isolatedProject = $"PCCEXECUTIVE-LOCK-ASYNC-{Guid.NewGuid():N}";
+        var first = ProjectRunLock.TryAcquire(isolatedProject);
+        Assert.True(first.IsOwned);
+        var acquireThread = Environment.CurrentManagedThreadId;
+
+        var releaseThread = await Task.Factory.StartNew(
+            () =>
+            {
+                var thread = Environment.CurrentManagedThreadId;
+                first.Dispose();
+                first.Dispose();
+                return thread;
+            },
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+
+        Assert.NotEqual(acquireThread, releaseThread);
+        Assert.False(first.IsOwned);
+        using var reacquired = ProjectRunLock.TryAcquire(isolatedProject);
+        Assert.True(reacquired.IsOwned);
+    }
+
+    [Fact]
     public async Task Browser_conversation_history_is_durable_and_project_scoped()
     {
         var path = Path.Combine(_root, "conversation-history.db");
@@ -155,7 +181,7 @@ public sealed class DurableStateTests : IAsyncLifetime
         var record = new ConversationRecord
         {
             ConversationId = "conversation-1",
-            LogicalAgentId = "manager-1",
+            LogicalAgentId = "agent-1",
             ProjectRunId = "run-1",
             Sequence = 1,
             UrlOrProviderIdentity = "provider-conversation-1",
