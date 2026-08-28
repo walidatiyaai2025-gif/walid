@@ -99,12 +99,6 @@
                                 <TextBlock Text="{Binding Snapshot.OperatorMessage}" FontWeight="SemiBold"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                                <TextBlock Text="Chrome profile" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                <ComboBox Width="210" Margin="0,0,10,0"
-                                          ItemsSource="{Binding CurrentScreen.ChromeProfiles}"
-                                          SelectedItem="{Binding CurrentScreen.SelectedChromeProfile, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                          DisplayMemberPath="DisplayLabel"
-                                          ToolTip="Choose the local Chrome profile PCC should copy into its isolated managed browser. Open the Chrome page to change this selection."/>
                                 <Button Content="Pause AI" Margin="0,0,8,0" Command="{Binding PauseAiCommand}" ToolTip="Checkpoints state and stops new dispatches; no session is destroyed."/>
                                 <Button Content="Resume" Command="{Binding ResumeAiCommand}"/>
                             </StackPanel>
