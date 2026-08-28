@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Windows.Input;
 using PCCExecutive.App.Presentation;
 using PCCExecutive.App.Services;
+using PCCExecutive.Application;
 
 namespace PCCExecutive.App.ViewModels;
 
@@ -11,6 +12,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly IPccExecutivePresentationGateway _gateway;
     private readonly IConfirmationService _confirmation;
+    private readonly RuntimeInspectorServices? _runtimeInspector;
     private readonly Dictionary<ScreenId, ScreenViewModelBase> _screens;
     private RuntimeSnapshot _snapshot;
     private ScreenId _selectedScreen;
@@ -23,10 +25,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool _selectedAdaptivePacing;
     private bool _selectedAutoResume;
 
-    public MainViewModel(IPccExecutivePresentationGateway gateway, IConfirmationService? confirmation = null)
+    public MainViewModel(IPccExecutivePresentationGateway gateway, IConfirmationService? confirmation = null, RuntimeInspectorServices? runtimeInspector = null)
     {
         _gateway = gateway;
         _confirmation = confirmation ?? new DenyConfirmationService();
+        _runtimeInspector = runtimeInspector;
         _snapshot = gateway.Snapshot;
         _selectedDispatchMode = _snapshot.DispatchSettings.Mode;
         _selectedProviderMode = ProviderMode.BrowserWeb;
@@ -52,6 +55,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             new(ScreenId.Settings, "13  Settings", "⚙"),
             new(ScreenId.UpdateCenter, "14  Update Center", "↻"),
             new(ScreenId.AttentionCenter, "15  Attention", "!"),
+            new(ScreenId.RuntimeInspector, "16  Runtime Inspector", "⌁"),
             new(ScreenId.ConversationHistory, "History", "↺")
         };
 
@@ -72,6 +76,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             [ScreenId.Settings] = new SettingsViewModel(this),
             [ScreenId.UpdateCenter] = new UpdateCenterViewModel(this),
             [ScreenId.AttentionCenter] = new AttentionCenterViewModel(this),
+            [ScreenId.RuntimeInspector] = new RuntimeInspectorViewModel(this, runtimeInspector),
             [ScreenId.ConversationHistory] = new ConversationHistoryViewModel(this)
         };
         _selectedScreen = _snapshot.HasActiveRun ? ScreenId.Dashboard : ScreenId.ChromeConnection;
@@ -242,6 +247,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void Navigate(ScreenId id)
     {
+        var correlation = _runtimeInspector?.Collector.BeginCorrelation();
+        RecordDiagnostic(RuntimeDiagnosticKind.Navigation, "NAVIGATION_ALLOWED", $"Navigation to {id} allowed.", correlation, screen: SelectedScreen.ToString(), target: id.ToString(), allowed: true);
         SelectedScreen = id;
         CurrentScreen = _screens[id];
         LastUiError = null;
@@ -259,10 +266,40 @@ public sealed class MainViewModel : INotifyPropertyChanged
             async p =>
             {
                 LastUiError = null;
-                await _gateway.ExecuteAsync(action, target?.Invoke(p));
+                var correlation = _runtimeInspector?.Collector.BeginCorrelation();
+                var destination = target?.Invoke(p);
+                RecordDiagnostic(RuntimeDiagnosticKind.UserAction, "COMMAND_INVOKED", $"Command {action} invoked.", correlation, screen: SelectedScreen.ToString(), command: action.ToString(), target: destination);
+                try
+                {
+                    await _gateway.ExecuteAsync(action, destination);
+                    RecordDiagnostic(RuntimeDiagnosticKind.Command, "COMMAND_COMPLETED", $"Command {action} completed.", correlation, screen: SelectedScreen.ToString(), command: action.ToString(), target: destination, allowed: true);
+                }
+                catch (Exception ex)
+                {
+                    RecordDiagnostic(RuntimeDiagnosticKind.Exception, "COMMAND_FAILED", $"Command {action} failed: {ex.GetType().Name}.", correlation, screen: SelectedScreen.ToString(), command: action.ToString(), target: destination, allowed: false, exceptionClassification: ex.GetType().Name);
+                    throw;
+                }
             },
             p => _gateway.CanExecute(action, target?.Invoke(p)),
             ex => LastUiError = ex.Message);
+
+    public void RecordGuardDecision(NavigationGuardResult result, Guid? correlationId = null) =>
+        RecordDiagnostic(RuntimeDiagnosticKind.GuardDecision,
+            result.Allowed ? "GUARD_ALLOWED" : result.MissingPrerequisite?.ReasonCode ?? "GUARD_BLOCKED",
+            result.Allowed ? $"Guard allowed {result.AttemptedStep}." : $"Guard blocked {result.AttemptedStep}; required step {result.MissingPrerequisite?.RequiredStep}.",
+            correlationId, screen: SelectedScreen.ToString(), target: result.AttemptedStep.ToString(), allowed: result.Allowed,
+            afterState: result.NextAction.Instruction,
+            details: result.MissingPrerequisite is null ? null : [new("requiredStep", result.MissingPrerequisite.RequiredStep?.ToString()), new("requiredControl", result.MissingPrerequisite.RequiredControl)]);
+
+    private void RecordDiagnostic(RuntimeDiagnosticKind kind, string reason, string summary, Guid? correlationId = null,
+        string? screen = null, string? control = null, string? command = null, string? target = null, bool? allowed = null,
+        string? beforeState = null, string? afterState = null, string? exceptionClassification = null, IReadOnlyList<RuntimeDiagnosticDetail>? details = null)
+    {
+        if (_runtimeInspector is null) return;
+        var record = _runtimeInspector.Collector.Create(kind, reason, summary, correlationId, screen, control, command, target, allowed, beforeState, afterState,
+            Snapshot.HasActiveRun ? Snapshot.Projects.FirstOrDefault()?.Id : null, exceptionClassification: exceptionClassification, details: details);
+        _ = _runtimeInspector.Collector.RecordAsync(record);
+    }
 
     private AsyncRelayCommand ConfirmedGatewayCommand(
         UiAction action,

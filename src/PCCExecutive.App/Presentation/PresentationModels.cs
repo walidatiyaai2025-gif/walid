@@ -19,6 +19,7 @@ public enum ScreenId
     Settings,
     UpdateCenter,
     AttentionCenter,
+    RuntimeInspector,
     ConversationHistory
 }
 

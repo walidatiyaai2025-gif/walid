@@ -12,6 +12,7 @@
                 <ResourceDictionary Source="Views/Screens07_09.xaml"/>
                 <ResourceDictionary Source="Views/Screens10_12.xaml"/>
                 <ResourceDictionary Source="Views/Screens13_15.xaml"/>
+                <ResourceDictionary Source="Views/RuntimeInspector.xaml"/>
                 <!-- Last-wins authority override: keeps Screen 01 aligned with docs/UI_AUTHORITY.md. -->
                 <ResourceDictionary Source="Views/ChromeConnectionAuthority.xaml"/>
             </ResourceDictionary.MergedDictionaries>

@@ -143,7 +143,7 @@ public sealed class FirstBuildConvergenceTests
                     Assert.Equal(ScreenId.ProjectSelection, vm.Navigation[1].Id);
                     Assert.Equal("02  Projects", vm.Navigation[1].Label);
                     Assert.Equal(ScreenId.Dashboard, vm.Navigation[2].Id);
-                    Assert.Equal(16, vm.Navigation.Count);
+                    Assert.Equal(17, vm.Navigation.Count);
                     Assert.True(vm.RefreshCommand.CanExecute(null));
                     Assert.NotNull(vm.CurrentScreen);
 
