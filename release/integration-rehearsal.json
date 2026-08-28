@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "task": "PCCEXECUTIVE-T0001",
+  "version": "0.1.0",
+  "canonical": {
+    "branch": "task/pcc-executive-t0001-v1",
+    "sha": "8d23b936b79d7f2419981e830ffbe7ee5ac99547"
+  },
+  "databaseSchemaTarget": "UNRESOLVED",
+  "minimumUpgradeVersion": "NONE_FRESH_BASELINE",
+  "signingState": "UNSIGNED_DEV",
+  "chains": [
+    {
+      "owner": "WORKER_1",
+      "name": "FOUNDATION_PCC_GITHUB",
+      "head": "032058791bd009c22691c4db437f02e369057811",
+      "prs": [4, 7],
+      "dependsOn": ["f807c0978d93f06f930108081eaf0ec118f91d06"],
+      "state": "PENDING_PR",
+      "includeInPartialCandidate": true,
+      "reason": "Foundation plus PCC/GitHub child PR content is available but not canonical."
+    },
+    {
+      "owner": "WORKER_2",
+      "name": "PERSISTENCE_RECOVERY",
+      "head": "8d23b936b79d7f2419981e830ffbe7ee5ac99547",
+      "prs": [],
+      "dependsOn": [],
+      "state": "BLOCKED",
+      "includeInPartialCandidate": false,
+      "reason": "Current Worker 2 branch is still at the canonical baseline; PCCExecutive.Infrastructure/persistence implementation is not consumable yet."
+    },
+    {
+      "owner": "WORKER_3",
+      "name": "BROWSER_RESILIENCE",
+      "head": "df1254161311cecf2147bde09458c0893952fee8",
+      "prs": [5, 8],
+      "dependsOn": ["97b4134ccfef67d2c534f774c8a4852ce5cde0ae"],
+      "state": "PENDING_PR",
+      "includeInPartialCandidate": true,
+      "reason": "Browser runtime plus resilience child PR content is available but not canonical."
+    },
+    {
+      "owner": "WORKER_4",
+      "name": "PREMIUM_WPF_UI",
+      "head": "8d23b936b79d7f2419981e830ffbe7ee5ac99547",
+      "prs": [],
+      "dependsOn": [],
+      "state": "BLOCKED",
+      "includeInPartialCandidate": false,
+      "reason": "Current Worker 4 branch is still at the canonical baseline; PCCExecutive.App is not consumable yet."
+    },
+    {
+      "owner": "WORKER_5",
+      "name": "INSTALLER_RELEASE_HARDENING",
+      "head": "2524ada71367da112e55b648820c3f30ce738546",
+      "prs": [6, 9],
+      "dependsOn": ["ddebed8704a508b16186e19441aa1dcb9fcf278c"],
+      "state": "PENDING_PR",
+      "includeInPartialCandidate": true,
+      "reason": "Installer foundation plus release-hardening child PR content is available but not canonical."
+    }
+  ],
+  "expectedModules": [
+    { "name": "DOMAIN", "path": "src/PCCExecutive.Domain/PCCExecutive.Domain.csproj", "owner": "WORKER_1" },
+    { "name": "APPLICATION", "path": "src/PCCExecutive.Application/PCCExecutive.Application.csproj", "owner": "WORKER_1" },
+    { "name": "PCC", "path": "src/PCCExecutive.Pcc/PCCExecutive.Pcc.csproj", "owner": "WORKER_1" },
+    { "name": "GITHUB", "path": "src/PCCExecutive.GitHub/PCCExecutive.GitHub.csproj", "owner": "WORKER_1" },
+    { "name": "PERSISTENCE", "path": "src/PCCExecutive.Infrastructure/PCCExecutive.Infrastructure.csproj", "owner": "WORKER_2" },
+    { "name": "BROWSER", "path": "src/PCCExecutive.Browser/PCCExecutive.Browser.csproj", "owner": "WORKER_3" },
+    { "name": "UI", "path": "src/PCCExecutive.App/PCCExecutive.App.csproj", "owner": "WORKER_4" },
+    { "name": "UPDATER", "path": "src/PCCExecutive.Updater/PCCExecutive.Updater.csproj", "owner": "WORKER_5" },
+    { "name": "INSTALLER", "path": "installer/PCCExecutive.iss", "owner": "WORKER_5" },
+    { "name": "TESTS", "path": "tests", "owner": "MULTI" }
+  ]
+}

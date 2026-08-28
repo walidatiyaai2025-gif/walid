@@ -1,0 +1,88 @@
+name: PCC Executive Integrated Build Rehearsal
+
+on:
+  push:
+    branches:
+      - 'worker/pcc-executive-integrated-build-rehearsal'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rehearsal:
+    name: Exact-head cross-worker convergence rehearsal
+    runs-on: windows-latest
+    env:
+      PCCEXECUTIVE_LIVE_BROWSER: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Exact source and .NET 10 evidence
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts/rehearsal -Force | Out-Null
+          $sha=(git rev-parse HEAD).Trim().ToLowerInvariant()
+          if($sha -ne '${{ github.event.pull_request.head.sha || github.sha }}'.ToLowerInvariant()){throw "EXACT_HEAD_MISMATCH expected=${{ github.event.pull_request.head.sha || github.sha }} actual=$sha"}
+          dotnet --info | Out-File artifacts/rehearsal/dotnet-info-controller.txt
+
+      - name: Install deterministic installer compiler
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Validate rehearsal contracts
+        shell: pwsh
+        run: ./build/Test-IntegratedRehearsal.ps1
+
+      - name: Generate live integration matrix
+        shell: pwsh
+        run: ./build/Get-IntegrationMatrix.ps1 -OutputPath artifacts/rehearsal/integration-matrix.json
+
+      - name: Validate every currently consumable Worker chain
+        shell: pwsh
+        run: |
+          $config=Get-Content release/integration-rehearsal.json -Raw | ConvertFrom-Json
+          foreach($chain in $config.chains){
+            $out="artifacts/rehearsal/chains/$($chain.owner)"
+            New-Item -ItemType Directory -Path $out -Force | Out-Null
+            if($chain.state -eq 'BLOCKED'){
+              [ordered]@{Owner=$chain.owner;SourceSha=$chain.head;State='BLOCKED_DEPENDENCY';Reason=$chain.reason} | ConvertTo-Json | Set-Content "$out/result.json" -Encoding UTF8
+              Write-Host "$($chain.owner) BLOCKED_DEPENDENCY: $($chain.reason)"
+            } else {
+              ./build/Invoke-ChainValidation.ps1 -Owner $chain.owner -HeadSha $chain.head -OutputRoot $out
+            }
+          }
+
+      - name: Resolve Playwright and Chrome packaging strategy
+        shell: pwsh
+        run: |
+          $config=Get-Content release/integration-rehearsal.json -Raw | ConvertFrom-Json
+          $head=($config.chains | Where-Object owner -eq 'WORKER_3').head
+          ./build/Get-PlaywrightPackagingPlan.ps1 -BrowserHead $head -OutputPath artifacts/rehearsal/playwright-packaging.json
+
+      - name: Build temporary combined candidate from available accepted-chain heads
+        shell: pwsh
+        run: ./build/Invoke-IntegratedRehearsal.ps1 -OutputRoot artifacts/rehearsal/combined
+
+      - name: Generate first integrated acceptance report
+        shell: pwsh
+        run: ./build/New-IntegratedReadiness.ps1 -MatrixPath artifacts/rehearsal/integration-matrix.json -CombinedPath artifacts/rehearsal/combined/result.json -PlaywrightPlanPath artifacts/rehearsal/playwright-packaging.json -OutputPath artifacts/release/integrated-readiness.json
+
+      - name: Upload convergence evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integrated-rehearsal-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            artifacts/rehearsal/**
+            artifacts/release/integrated-readiness.json
+          if-no-files-found: warn
+          retention-days: 14
