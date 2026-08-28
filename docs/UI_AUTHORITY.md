@@ -222,6 +222,25 @@ When attention is required, present:
 2. exact location/session;
 3. one clear action.
 
+### 16 — Runtime Inspector
+Purpose: reconstruct operator behavior and runtime decisions without guesswork.
+
+Must show, in a compact evidence-oriented layout:
+- current step/prerequisite truth table;
+- last operator actions with timestamp, screen and control;
+- allowed vs blocked navigation decisions and guard reasons;
+- project, Manager and Worker logical runtime identities;
+- selected Chrome profile/source;
+- PCC-owned process/context evidence;
+- DevTools endpoint/connection state without exposing secrets;
+- latest classified failure/recovery reason;
+- current valid `NEXT ACTION`;
+- recent decision/recovery timeline;
+- active sessions/Workers/dispatch state;
+- a `Copy Diagnostic Snapshot` or equivalent bounded export.
+
+The diagnostic snapshot must exclude authentication tokens, cookies, secrets and sensitive browser data.
+
 ## 3. Shared top-level controls
 
 Where applicable:
@@ -229,6 +248,48 @@ Where applicable:
 - `Resume` continues safe orchestration;
 - `Kill All PCC Sessions` terminates only proven PCC-owned sessions;
 - project and Autopilot state remain visible.
+
+### 3.1 Guided step state
+
+The left navigation and primary workflow guidance must render semantic state, not merely selection.
+
+Required meanings:
+- **COMPLETED**: green semantic treatment plus explicit completion icon/text;
+- **CURRENT**: primary purple/blue accent plus explicit current marker;
+- **BLOCKED / FAILED**: red semantic treatment plus explicit reason/state label;
+- **PENDING**: neutral/muted treatment;
+- **RECOVERING**: warning/animated or active recovery indicator;
+- **ATTENTION REQUIRED**: explicit human-action state.
+
+Color is never the only signal. Every semantic state must have a text/icon/state cue that remains understandable without color perception.
+
+### 3.2 Wrong-path prevention
+
+The UI must prevent the operator from progressing through an invalid execution path.
+
+Examples:
+- Manager controls requiring Chrome + Project remain disabled/guarded until both prerequisites are true;
+- Dispatch/Worker execution controls remain guarded until Manager planning/runtime prerequisites are true;
+- a blocked navigation attempt does not silently navigate to an unusable screen.
+
+When blocked, the UI must present:
+1. the attempted destination/action;
+2. the missing prerequisite(s);
+3. why the action cannot safely continue;
+4. the exact numbered screen and control to use next;
+5. `Go to Required Step` when navigation is safe and deterministic.
+
+### 3.3 NEXT ACTION contract
+
+`NEXT ACTION` is a state-derived control-plane instruction, not decorative copy.
+
+It must:
+- be computed from live canonical state and guard evaluation;
+- point to exactly one highest-priority operator action when human action is required;
+- avoid instructing the operator to perform work that the runtime can safely do automatically;
+- update immediately after success, failure, recovery or prerequisite change;
+- never contradict the semantic state shown in the left navigation;
+- include numbered screen + exact control name for human steps.
 
 ## 4. Status language
 

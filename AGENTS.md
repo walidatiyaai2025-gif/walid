@@ -28,8 +28,9 @@ Before implementation, every Manager/Lead/Worker must read:
 2. `docs/MASTER_PLAN.md`;
 3. `docs/ARCHITECTURE.md`;
 4. `docs/UI_AUTHORITY.md` for visible work;
-5. live PCC routing/governance state;
-6. live GitHub Issue #1 and current PR/branch state.
+5. `docs/GUIDED_RUNTIME_EXECUTION_PLAN.md` for runtime guidance, navigation guards, Runtime Inspector, self-recovery and operator-flow work;
+6. live PCC routing/governance state;
+7. live GitHub Issue #1 and current PR/branch state.
 
 Do not trust stale SHAs or historical prompts.
 
@@ -205,3 +206,72 @@ Every implementation Worker returns at minimum:
 `TASK, STATUS, HEAD, CHANGED, VALIDATION, BLOCKER, NEXT_ACTION`.
 
 Unsupported `DONE` is rejected.
+
+## 18. Guided execution / operator-flow law
+
+PCC Executive must behave as an active project commander, not as a passive collection of screens. The operator must never be required to guess which screen, button or recovery action is correct.
+
+The canonical operator path is modeled as machine-readable prerequisite state, not free-form UI copy. At minimum the primary first-run/runtime path is:
+
+`01 CHROME -> 02 PROJECT -> 04 MANAGER -> 05+ ORCHESTRATION/AUTOPILOT`.
+
+Mandatory behavior:
+
+- every actionable screen exposes a deterministic prerequisite contract;
+- completed prerequisites are visibly marked as completed;
+- missing/failed prerequisites are visibly marked as blocked or failed;
+- the current valid action is visually distinct;
+- future steps are visually muted/locked until their prerequisites are true;
+- downstream navigation that would create an invalid runtime state must be blocked;
+- every blocked action must state **what is missing, why it matters, and the exact numbered action/button to use next**;
+- where safe, the UI provides `Go to Required Step` rather than making the operator navigate manually;
+- `NEXT ACTION` is derived from canonical runtime state and guard evaluation, never from stale text or screen location alone;
+- a technical exception must not be shown as the only instruction when the application can classify and recover it automatically;
+- after a recoverable failure, the application updates step state, recovery state and `NEXT ACTION` atomically.
+
+### 18.1 Step semantic states
+
+The navigation/runtime guidance model must support at least:
+
+- `COMPLETED` — semantic green plus icon/text label;
+- `CURRENT` — primary accent plus explicit current marker;
+- `BLOCKED` / `FAILED` — semantic red plus reason;
+- `PENDING` — neutral/muted;
+- `RECOVERING` — warning/active recovery state;
+- `ATTENTION_REQUIRED` — explicit human action only when automation cannot safely continue.
+
+Status must never be encoded by color alone.
+
+### 18.2 Runtime Inspector requirement
+
+PCC Executive must include a Runtime Inspector capable of reconstructing operator behavior and runtime decisions without asking the operator to describe the sequence from memory.
+
+The inspector must expose at minimum:
+
+- user action trace: screen, control, command, timestamp, allowed/blocked and reason;
+- current project, Manager and Worker runtime identities;
+- Chrome profile/source, PCC-owned runtime/process/context and DevTools endpoint state;
+- current guard evaluation and prerequisite truth table;
+- current valid next action;
+- current/previous recovery reason;
+- recent classified exceptions and connection failures;
+- browser ownership proof and personal-Chrome exclusion evidence;
+- Manager/Worker dispatch state and active session count;
+- decision/recovery timeline sufficient to reconstruct why the application transitioned state.
+
+The Runtime Inspector is diagnostic authority for reproducing owner behavior. It must support copy/export of a bounded diagnostic snapshot that excludes secrets, authentication tokens and sensitive browser data.
+
+## 19. Large work-package execution law
+
+For the guided-runtime initiative, implementation work must be assigned as **large vertical work packages**, not fragmented micro-tasks. Each routed Worker should own a coherent end-to-end slice that includes production code, persistence/state where applicable, UI wiring, tests and acceptance evidence.
+
+Rules:
+
+- prefer 4-6 substantial work packages over dozens of small implementation tasks;
+- one work package may span multiple projects/layers when that is necessary to produce a complete vertical capability;
+- split only at real ownership boundaries: state/navigation, runtime inspection, browser recovery, autopilot/attention, acceptance/release;
+- do not create separate tasks for trivial model, view-model, XAML and test edits that belong to one capability;
+- each work package must have explicit dependencies, exclusive ownership and measurable acceptance criteria;
+- each work package must end in one focused PR or one explicitly coordinated integration handoff;
+- a Worker must not claim completion from UI appearance alone; the capability must be exercised through runtime/state tests;
+- the canonical detailed work packages and sequencing are defined in `docs/GUIDED_RUNTIME_EXECUTION_PLAN.md`.
