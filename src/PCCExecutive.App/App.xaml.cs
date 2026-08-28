@@ -5,7 +5,7 @@ using PCCExecutive.App.ViewModels;
 
 namespace PCCExecutive.App;
 
-public partial class App : Application
+public partial class App : System.Windows.Application
 {
     private TrayIconService? _tray;
     private IntegratedPresentationGateway? _gateway;
