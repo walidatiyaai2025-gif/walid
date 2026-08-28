@@ -115,6 +115,45 @@ jobs:
             -ManifestPath "artifacts/package/PCCExecutive-$version-Setup-x64.manifest.json" `
             -ExpectedSourceSha "${{ github.sha }}"
 
+      - name: Same-version repair smoke
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $installer = (Resolve-Path "artifacts/package/PCCExecutive-$version-Setup-x64.exe").Path
+          $installRoot = Join-Path $env:RUNNER_TEMP 'PCCExecutive-Repair-Smoke'
+          Remove-Item $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+          $args = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=`"$installRoot`"")
+
+          $first = Start-Process -FilePath $installer -ArgumentList $args -PassThru
+          if (-not $first.WaitForExit(90000)) { Stop-Process -Id $first.Id -Force -ErrorAction SilentlyContinue; throw 'Initial repair-smoke install timed out.' }
+          if ($first.ExitCode -ne 0) { throw "Initial repair-smoke install failed: exit=$($first.ExitCode)" }
+
+          $seedDir = Join-Path $env:LOCALAPPDATA 'PCC Executive\Data'
+          New-Item -ItemType Directory -Path $seedDir -Force | Out-Null
+          $seedPath = Join-Path $seedDir 'same-version-repair-smoke.txt'
+          $seed = "preserve-$([Guid]::NewGuid().ToString('N'))"
+          Set-Content $seedPath $seed -Encoding UTF8
+
+          $appPath = Join-Path $installRoot 'PCCExecutive.exe'
+          $app = Start-Process -FilePath $appPath -PassThru
+          Start-Sleep -Seconds 3
+          $app.Refresh()
+          if ($app.HasExited) { throw "Installed app exited before repair smoke: exit=$($app.ExitCode)" }
+
+          $repair = Start-Process -FilePath $installer -ArgumentList $args -PassThru
+          if (-not $repair.WaitForExit(90000)) { Stop-Process -Id $repair.Id -Force -ErrorAction SilentlyContinue; Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue; throw 'Same-version repair timed out.' }
+          if ($repair.ExitCode -ne 0) { Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue; throw "Same-version repair failed: exit=$($repair.ExitCode)" }
+
+          Start-Sleep -Milliseconds 500
+          $app.Refresh()
+          if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue; throw 'Same-version repair did not close the running PCC Executive process before replacement.' }
+          if (-not (Test-Path $seedPath)) { throw 'Same-version repair deleted durable user data.' }
+          if ((Get-Content $seedPath -Raw).Trim() -ne $seed) { throw 'Same-version repair changed durable user data.' }
+
+          $provenance = Get-Content (Join-Path $installRoot 'build-provenance.json') -Raw | ConvertFrom-Json
+          if ([string]$provenance.SourceSha -ne '${{ github.sha }}') { throw "Repair provenance mismatch: $($provenance.SourceSha)" }
+          Write-Host "SAME_VERSION_REPAIR_PASS source=${{ github.sha }}"
+
       - name: Upload user-fix installer
         uses: actions/upload-artifact@v4
         with:
