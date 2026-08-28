@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using PCCExecutive.App.Presentation;
 using PCCExecutive.App.ViewModels;
 using Xunit;
@@ -48,6 +49,45 @@ public sealed class FirstBuildConvergenceTests
         Assert.False(vm.RestartSessionCommand.CanExecute("runtime-unknown"));
         Assert.False(vm.KillSessionCommand.CanExecute("runtime-unknown"));
         Assert.False(vm.KillAllPccSessionsCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void Exact_built_app_completes_integrated_wpf_startup_smoke()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var appExe = Path.Combine(repoRoot, "src", "PCCExecutive.App", "bin", "Release", "net10.0-windows", "PCCExecutive.exe");
+        Assert.True(File.Exists(appExe), $"Expected exact-head WPF executable was not found: {appExe}");
+
+        using var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = appExe,
+            Arguments = "--smoke-test",
+            UseShellExecute = false,
+            CreateNoWindow = false,
+            WorkingDirectory = repoRoot
+        });
+
+        Assert.NotNull(process);
+        if (!process!.WaitForExit(20_000))
+        {
+            process.Kill(entireProcessTree: true);
+            Assert.Fail("PCC Executive startup smoke did not exit within 20 seconds.");
+        }
+
+        Assert.Equal(0, process.ExitCode);
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "VERSION")) &&
+                File.Exists(Path.Combine(directory.FullName, "src", "PCCExecutive.App", "PCCExecutive.App.csproj")))
+                return directory.FullName;
+            directory = directory.Parent;
+        }
+        throw new DirectoryNotFoundException("Could not locate PCC Executive repository root from the test output directory.");
     }
 
     private sealed class ProjectSelectionGateway(bool resolve, bool allowOwnedSessionActions = true) : IPccExecutivePresentationGateway
