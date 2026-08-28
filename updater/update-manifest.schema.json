@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pcc-executive.local/schemas/update-manifest.schema.json",
+  "title": "PCC Executive Update Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "product",
+    "repository",
+    "task",
+    "version",
+    "sourceSha",
+    "artifactHash",
+    "targetArchitecture",
+    "generatedAt",
+    "workflowRun",
+    "buildId",
+    "packageIdentity",
+    "fileName"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "product": { "const": "PCC Executive" },
+    "repository": { "const": "walidatiyaai2025-gif/walid" },
+    "task": { "const": "PCCEXECUTIVE-T0001" },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+    },
+    "sourceSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "artifactHash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "targetArchitecture": { "const": "win-x64" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "workflowRun": { "type": "string", "minLength": 1 },
+    "buildId": { "type": "string", "minLength": 1 },
+    "packageIdentity": { "type": "string", "minLength": 1 },
+    "fileName": {
+      "type": "string",
+      "pattern": "^PCCExecutive-[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?-Setup-x64\\.exe$"
+    }
+  }
+}
