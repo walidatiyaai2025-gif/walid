@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "product": "PCC Executive",
+  "targetArchitecture": "win-x64",
+  "scenarios": [
+    {
+      "id": "fresh-none-to-0.1.0",
+      "from": null,
+      "to": "0.1.0",
+      "kind": "FRESH_INSTALL",
+      "requiredAssertions": ["APPLICATION_FILES_INSTALLED", "APP_LAUNCHES", "VERSION_MATCHES", "NO_USER_DATA_PACKAGED"]
+    },
+    {
+      "id": "upgrade-0.1.0-to-0.1.1",
+      "from": "0.1.0",
+      "to": "0.1.1",
+      "kind": "IN_PLACE_UPGRADE",
+      "requiredAssertions": ["APPLICATION_FILES_REPLACED", "SETTINGS_PRESERVED", "DATABASE_PRESERVED", "CHECKPOINTS_PRESERVED", "BROWSER_PROFILE_POLICY_RESPECTED", "MIGRATIONS_RUN_ONCE", "RESTART_HEALTH_PASS"]
+    },
+    {
+      "id": "upgrade-compatible-0.1.x",
+      "from": "0.1.x",
+      "to": "later-compatible",
+      "kind": "COMPATIBILITY_MATRIX",
+      "requiredAssertions": ["APPLICATION_FILES_REPLACED", "SETTINGS_PRESERVED", "DATABASE_PRESERVED", "CHECKPOINTS_PRESERVED", "MIGRATIONS_RUN_ONCE", "RESTART_HEALTH_PASS"]
+    }
+  ],
+  "failureScenarios": [
+    "PACKAGE_HASH_MISMATCH",
+    "INSTALLER_LAUNCH_FAILURE",
+    "SAFE_SHUTDOWN_REFUSED",
+    "MIGRATION_FAILURE",
+    "APPLICATION_START_FAILURE",
+    "HEALTH_VERIFICATION_FAILURE"
+  ],
+  "failureLaw": "PRESERVE_BACKUP_AND_REPORT_EXACT_STATE; ROLLBACK_SUCCESS_MUST_BE_PROVEN"
+}

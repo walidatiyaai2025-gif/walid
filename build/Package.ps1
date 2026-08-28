@@ -1,161 +1,107 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Release')]
-    [string]$Configuration = 'Release',
-    [ValidateSet('win-x64')]
-    [string]$Runtime = 'win-x64',
+    [ValidateSet('Release')] [string]$Configuration = 'Release',
+    [ValidateSet('win-x64')] [string]$Runtime = 'win-x64',
     [string]$ArtifactsRoot,
-    [string]$InnoCompiler
+    [string]$InnoCompiler,
+    [string]$DatabaseSchemaTarget = $env:PCCEXECUTIVE_DB_SCHEMA_TARGET,
+    [string]$MinimumUpgradeVersion = $env:PCCEXECUTIVE_MINIMUM_UPGRADE_VERSION,
+    [switch]$RequireSigning
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-if ([string]::IsNullOrWhiteSpace($ArtifactsRoot)) {
-    $ArtifactsRoot = Join-Path $repoRoot 'artifacts'
-}
-
+if ([string]::IsNullOrWhiteSpace($ArtifactsRoot)) { $ArtifactsRoot = Join-Path $repoRoot 'artifacts' }
 $version = (Get-Content (Join-Path $repoRoot 'VERSION') -Raw).Trim()
-if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
-    throw "Invalid VERSION '$version'."
-}
-$baseVersion = ($version -split '-', 2)[0]
+if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw "Invalid VERSION '$version'." }
+$baseVersion = ($version -split '-',2)[0]
 $fileVersion = "$baseVersion.0"
+$sourceSha = (& git -C $repoRoot rev-parse HEAD 2>$null).Trim().ToLowerInvariant()
+if ($sourceSha -notmatch '^[0-9a-f]{40}$') { throw "Unable to establish exact SOURCE_SHA: '$sourceSha'." }
 
-$appProject = Join-Path $repoRoot 'src\PCCExecutive.App\PCCExecutive.App.csproj'
-if (-not (Test-Path $appProject)) {
-    throw 'INSTALLER_BLOCKED: src/PCCExecutive.App/PCCExecutive.App.csproj is not integrated yet.'
-}
-
+$appProject = Join-Path $repoRoot 'src/PCCExecutive.App/PCCExecutive.App.csproj'
+if (-not (Test-Path $appProject)) { throw 'INSTALLER_BLOCKED: src/PCCExecutive.App/PCCExecutive.App.csproj is not integrated yet.' }
 & (Join-Path $PSScriptRoot 'Build.ps1') -Configuration $Configuration -RequireProduct
 if ($LASTEXITCODE -ne 0) { throw 'Build/test orchestration failed.' }
 
-$publishDir = Join-Path $ArtifactsRoot "publish\$Runtime"
+$publishDir = Join-Path $ArtifactsRoot "publish/$Runtime"
 $packageDir = Join-Path $ArtifactsRoot 'package'
-Remove-Item $publishDir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $packageDir -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Path $publishDir -Force | Out-Null
 New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
-
-& dotnet publish $appProject --configuration $Configuration --runtime $Runtime --self-contained true --output $publishDir -p:Version=$version -p:DebugSymbols=false -p:DebugType=None
-if ($LASTEXITCODE -ne 0) { throw 'PCCExecutive.App publish failed.' }
-
-$appExe = Join-Path $publishDir 'PCCExecutive.exe'
-if (-not (Test-Path $appExe)) {
-    throw 'INSTALLER_CONTRACT_BLOCKED: app publish must produce PCCExecutive.exe (set AssemblyName accordingly).'
-}
-
-$updaterProject = Join-Path $repoRoot 'src\PCCExecutive.Updater\PCCExecutive.Updater.csproj'
-if (Test-Path $updaterProject) {
-    $updaterDir = Join-Path $publishDir 'updater'
-    New-Item -ItemType Directory -Path $updaterDir -Force | Out-Null
-    & dotnet publish $updaterProject --configuration $Configuration --runtime $Runtime --self-contained true --output $updaterDir -p:Version=$version -p:DebugSymbols=false -p:DebugType=None
-    if ($LASTEXITCODE -ne 0) { throw 'PCCExecutive.Updater publish failed.' }
-
-    Copy-Item (Join-Path $repoRoot 'updater\Stage-Update.ps1') $updaterDir -Force
-    Copy-Item (Join-Path $repoRoot 'updater\Invoke-Upgrade.ps1') $updaterDir -Force
-    Copy-Item (Join-Path $repoRoot 'updater\update-manifest.schema.json') $updaterDir -Force
-}
-
-$forbiddenNames = @('Cookies','Login Data','Web Data','History','Preferences')
-foreach ($name in $forbiddenNames) {
-    if (Get-ChildItem -Path $publishDir -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $name }) {
-        throw "Release payload contains forbidden browser/session material: $name"
-    }
-}
-
-if (Get-ChildItem -Path $publishDir -Recurse -Force -Directory | Where-Object { $_.Name -match '^(User Data|BrowserProfiles?|ChatGPTProfiles?)$' }) {
-    throw 'Release payload contains a browser profile directory.'
-}
-
-if (Get-ChildItem -Path $publishDir -Recurse -Force -File | Where-Object { $_.Extension -match '^\.(db|sqlite|sqlite3)$' }) {
-    throw 'Release payload contains a SQLite/database file; durable user data must never be packaged.'
-}
-
-$sourceSha = $null
-try {
-    $sourceSha = (& git -C $repoRoot rev-parse HEAD 2>$null).Trim()
-}
-catch {
-    $sourceSha = $env:GITHUB_SHA
-}
-if ([string]::IsNullOrWhiteSpace($sourceSha)) {
-    $sourceSha = $env:GITHUB_SHA
-}
-if ($sourceSha -notmatch '^[0-9a-fA-F]{40}$') {
-    throw "Unable to establish exact SOURCE_SHA. Got '$sourceSha'."
-}
-
-$generatedAt = [DateTimeOffset]::UtcNow.ToString('o')
-$workflowRun = if ($env:GITHUB_RUN_ID) { $env:GITHUB_RUN_ID } else { 'local' }
-$repository = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { 'walidatiyaai2025-gif/walid' }
-$buildId = if ($env:GITHUB_RUN_ATTEMPT) { "$workflowRun.$($env:GITHUB_RUN_ATTEMPT)" } else { $workflowRun }
-
-$installedProvenance = [ordered]@{
-    Product = 'PCC Executive'
-    Repository = $repository
-    Task = 'PCCEXECUTIVE-T0001'
-    Version = $version
-    SourceSha = $sourceSha
-    BuildId = $buildId
-    CiRun = $workflowRun
-    TargetArchitecture = $Runtime
-    GeneratedAt = $generatedAt
-}
-$installedProvenance | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $publishDir 'build-provenance.json') -Encoding UTF8
+& (Join-Path $PSScriptRoot 'Publish-Windows.ps1') -Configuration $Configuration -Runtime $Runtime -OutputRoot $publishDir
 
 if ([string]::IsNullOrWhiteSpace($InnoCompiler)) {
     $candidates = @(
-        "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
-        "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
-        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-        "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+        "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe", "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
     )
     $InnoCompiler = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 }
-if ([string]::IsNullOrWhiteSpace($InnoCompiler) -or -not (Test-Path $InnoCompiler)) {
-    throw 'INNO_SETUP_NOT_FOUND: install Inno Setup 6+ or pass -InnoCompiler.'
+if ([string]::IsNullOrWhiteSpace($InnoCompiler) -or -not (Test-Path $InnoCompiler)) { throw 'INNO_SETUP_NOT_FOUND: install Inno Setup 6+ or pass -InnoCompiler.' }
+
+$workflowRun = if ($env:GITHUB_RUN_ID) { $env:GITHUB_RUN_ID } else { 'local' }
+$buildId = if ($env:GITHUB_RUN_ATTEMPT) { "$workflowRun.$($env:GITHUB_RUN_ATTEMPT)" } else { $workflowRun }
+$repository = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { 'walidatiyaai2025-gif/walid' }
+$generatedAt = [DateTimeOffset]::UtcNow.ToString('o')
+if ([string]::IsNullOrWhiteSpace($DatabaseSchemaTarget)) {
+    $schemaPath = Join-Path $repoRoot 'src/PCCExecutive.Infrastructure/SCHEMA_VERSION'
+    $DatabaseSchemaTarget = if (Test-Path $schemaPath) { (Get-Content $schemaPath -Raw).Trim() } else { 'UNRESOLVED' }
 }
+if ([string]::IsNullOrWhiteSpace($MinimumUpgradeVersion)) { $MinimumUpgradeVersion = if ($version -eq '0.1.0') { 'NONE_FRESH_BASELINE' } else { 'UNRESOLVED' } }
 
-$iss = Join-Path $repoRoot 'installer\PCCExecutive.iss'
-$publishFull = (Resolve-Path $publishDir).Path
-$packageFull = (Resolve-Path $packageDir).Path
+$appExe = Join-Path $publishDir 'PCCExecutive.exe'
+$signTargets = @($appExe)
+$updaterExe = Join-Path $publishDir 'updater/PCCExecutive.Updater.exe'
+if (Test-Path $updaterExe) { $signTargets += $updaterExe }
+& (Join-Path $PSScriptRoot 'Sign-Release.ps1') -Files $signTargets -RequireSigned:$RequireSigning
 
-& $InnoCompiler `
-    "/DMyAppVersion=$version" `
-    "/DMyFileVersion=$fileVersion" `
-    "/DSourceDir=$publishFull" `
-    "/DOutputDir=$packageFull" `
-    "/DSourceSha=$sourceSha" `
-    $iss
+[ordered]@{
+    Product='PCC Executive'; Repository=$repository; Task='PCCEXECUTIVE-T0001'; Version=$version; SourceSha=$sourceSha; BuildId=$buildId; CiRun=$workflowRun;
+    TargetArchitecture=$Runtime; Runtime=$Runtime; SelfContained=$true; GeneratedAt=$generatedAt; DatabaseSchemaTarget=$DatabaseSchemaTarget
+} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $publishDir 'build-provenance.json') -Encoding UTF8
+
+$iss = Join-Path $repoRoot 'installer/PCCExecutive.iss'
+& $InnoCompiler "/DMyAppVersion=$version" "/DMyFileVersion=$fileVersion" "/DSourceDir=$((Resolve-Path $publishDir).Path)" "/DOutputDir=$((Resolve-Path $packageDir).Path)" "/DSourceSha=$sourceSha" $iss
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
-
 $artifactName = "PCCExecutive-$version-Setup-x64.exe"
 $installerPath = Join-Path $packageDir $artifactName
-if (-not (Test-Path $installerPath)) {
-    throw "Expected installer artifact was not produced: $installerPath"
-}
+if (-not (Test-Path $installerPath)) { throw "Expected installer artifact was not produced: $installerPath" }
+& (Join-Path $PSScriptRoot 'Sign-Release.ps1') -Files @($installerPath) -RequireSigned:$RequireSigning
 
-$hash = (Get-FileHash $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$manifest = [ordered]@{
-    schemaVersion = 1
-    product = 'PCC Executive'
-    repository = $repository
-    task = 'PCCEXECUTIVE-T0001'
-    version = $version
-    sourceSha = $sourceSha.ToLowerInvariant()
-    artifactHash = "sha256:$hash"
-    targetArchitecture = $Runtime
-    generatedAt = $generatedAt
-    workflowRun = $workflowRun
-    buildId = $buildId
-    packageIdentity = "PCCExecutive/$version/$Runtime/$($sourceSha.ToLowerInvariant())"
-    fileName = $artifactName
+$context = if ($env:CI -or $env:GITHUB_ACTIONS) { 'CI' } else { 'Dev' }
+$signingJson = & (Join-Path $PSScriptRoot 'Get-SigningState.ps1') -Files @($appExe,$installerPath) -Context $context -RequireSigned:$RequireSigning
+$signing = ($signingJson -join "`n") | ConvertFrom-Json
+if ($signing.signingState -eq 'SIGNATURE_INVALID') { throw 'SIGNATURE_INVALID' }
+
+$sbomPath = Join-Path $packageDir "PCCExecutive-$version-sbom.json"
+& (Join-Path $PSScriptRoot 'New-Sbom.ps1') -RepositoryRoot $repoRoot -OutputPath $sbomPath -InstallerCompilerPath $InnoCompiler
+$appHash = 'sha256:' + (Get-FileHash $appExe -Algorithm SHA256).Hash.ToLowerInvariant()
+$installerHash = 'sha256:' + (Get-FileHash $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$packageIdentity = "PCCExecutive/$version/$Runtime/$sourceSha"
+
+$updateManifest = [ordered]@{
+    schemaVersion=2; product='PCC Executive'; repository=$repository; task='PCCEXECUTIVE-T0001'; version=$version; sourceSha=$sourceSha;
+    artifactHash=$installerHash; targetArchitecture=$Runtime; runtime=$Runtime; selfContained=$true; generatedAt=$generatedAt; workflowRun=$workflowRun; buildId=$buildId;
+    packageIdentity=$packageIdentity; fileName=$artifactName; applicationFileHash=$appHash; databaseSchemaTarget=$DatabaseSchemaTarget; minimumUpgradeVersion=$MinimumUpgradeVersion;
+    signingState=[string]$signing.signingState; sbomReference=[IO.Path]::GetFileName($sbomPath)
 }
 $manifestPath = Join-Path $packageDir "PCCExecutive-$version-Setup-x64.manifest.json"
-$manifest | ConvertTo-Json -Depth 4 | Set-Content $manifestPath -Encoding UTF8
+$updateManifest | ConvertTo-Json -Depth 6 | Set-Content $manifestPath -Encoding UTF8
 
+$releaseManifest = [ordered]@{
+    Product='PCC Executive'; Version=$version; SourceSha=$sourceSha; BuildId=$buildId; WorkflowRun=$workflowRun; Target=$Runtime; Runtime=$Runtime; SelfContained=$true;
+    InstallerFile=$artifactName; InstallerSha256=$installerHash; ApplicationFileHash=$appHash; GeneratedAt=$generatedAt; DatabaseSchemaTarget=$DatabaseSchemaTarget;
+    MinimumUpgradeVersion=$MinimumUpgradeVersion; SigningState=[string]$signing.signingState; SbomReference=[IO.Path]::GetFileName($sbomPath)
+}
+$releaseManifestPath = Join-Path $packageDir "PCCExecutive-$version-release-manifest.json"
+$releaseManifest | ConvertTo-Json -Depth 6 | Set-Content $releaseManifestPath -Encoding UTF8
+
+& (Join-Path $PSScriptRoot 'Test-ReleaseManifest.ps1') -ManifestPath $releaseManifestPath -InstallerPath $installerPath -ApplicationPath $appExe -ExpectedSourceSha $sourceSha -ExpectedVersion $version
+& (Join-Path $repoRoot 'tests/installer/Test-Package.ps1') -InstallerPath $installerPath -ManifestPath $manifestPath -ExpectedSourceSha $sourceSha
 Write-Host "INSTALLER=$installerPath"
-Write-Host "MANIFEST=$manifestPath"
-Write-Host "SHA256=$hash"
+Write-Host "UPDATE_MANIFEST=$manifestPath"
+Write-Host "RELEASE_MANIFEST=$releaseManifestPath"
+Write-Host "SBOM=$sbomPath"
+Write-Host "SIGNING_STATE=$($signing.signingState)"
+Write-Host "SHA256=$($installerHash.Substring(7))"
