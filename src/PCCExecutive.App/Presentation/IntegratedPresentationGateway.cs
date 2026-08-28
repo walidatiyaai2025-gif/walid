@@ -36,7 +36,7 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
     private string _projectRepository = "walidatiyaai2025-gif/walid";
     private string _pccState = "NOT_CHECKED";
     private string _githubState = "NOT_CHECKED";
-    private string _autopilot = "READY";
+    private string _autopilot = "UNAVAILABLE";
 
     private IntegratedPresentationGateway(
         SqliteStateStore store,
@@ -118,8 +118,8 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
 
     public bool CanExecute(UiAction action, string? targetId = null) => action switch
     {
-        UiAction.Refresh or UiAction.SelectProject or UiAction.SaveSettings or UiAction.RunVerification => true,
-        UiAction.ConnectChrome or UiAction.PauseAi or UiAction.ResumeAi => _run is not null,
+        UiAction.Refresh or UiAction.SelectProject or UiAction.RunVerification => true,
+        UiAction.ConnectChrome => _run is not null,
         UiAction.OpenSession or UiAction.BringSessionToFront or UiAction.HideSession or UiAction.RestartSession or UiAction.KillSession =>
             _run is not null && !string.IsNullOrWhiteSpace(targetId) && Snapshot.Sessions.Any(x => StringComparer.Ordinal.Equals(x.RuntimeId, targetId) && x.IsPccOwned),
         UiAction.KillAllPccSessions => _run is not null && Snapshot.Sessions.Any(x => x.IsPccOwned),
@@ -136,16 +136,6 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
                 break;
             case UiAction.ConnectChrome:
                 await ConnectManagerChromeAsync(cancellationToken).ConfigureAwait(false);
-                break;
-            case UiAction.PauseAi:
-                RequireActiveRun();
-                _autopilot = "PAUSED";
-                await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
-                break;
-            case UiAction.ResumeAi:
-                RequireActiveRun();
-                _autopilot = "READY";
-                await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
                 break;
             case UiAction.OpenSession:
                 await RunSessionActionAsync(targetId, id => _sessions.OpenAsync(id, cancellationToken), cancellationToken).ConfigureAwait(false);
@@ -165,10 +155,6 @@ public sealed class IntegratedPresentationGateway : IPccExecutivePresentationGat
             case UiAction.KillAllPccSessions:
                 RequireActiveRun();
                 await _sessions.KillAllPccSessionsAsync(cancellationToken).ConfigureAwait(false);
-                await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
-                break;
-            case UiAction.SaveSettings:
-                await _store.SaveSettingsAsync(new PccExecutiveSettings(), cancellationToken).ConfigureAwait(false);
                 await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
                 break;
             case UiAction.RunVerification:
