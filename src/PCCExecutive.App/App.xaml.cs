@@ -5,7 +5,7 @@ using PCCExecutive.App.ViewModels;
 
 namespace PCCExecutive.App;
 
-public partial class App : Application
+public partial class App : System.Windows.Application
 {
     private TrayIconService? _tray;
     private TerminalPresentationGateway? _gateway;
@@ -33,16 +33,16 @@ public partial class App : Application
                 if (snapshot.HasActiveRun && viewModel.SelectedScreen == ScreenId.ProjectSelection)
                     Dispatcher.Invoke(() => viewModel.Navigate(ScreenId.Dashboard));
             };
+
             var window = new MainWindow(viewModel);
             MainWindow = window;
-
             _tray = new TrayIconService(window, viewModel);
             window.Show();
         }
         catch (Exception ex)
         {
             if (!e.Args.Any(arg => string.Equals(arg, "--smoke-test", StringComparison.OrdinalIgnoreCase)))
-                MessageBox.Show(ex.Message, "PCC Executive startup failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                System.Windows.MessageBox.Show(ex.Message, "PCC Executive startup failed", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(2);
         }
     }
