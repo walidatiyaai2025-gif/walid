@@ -133,7 +133,10 @@ public sealed class FirstBuildConvergenceTests
                     Assert.True(window.IsVisible, $"{viewport.Scale} viewport did not show MainWindow.");
                     Assert.True(window.ActualWidth >= window.MinWidth, $"{viewport.Scale} viewport collapsed below minimum width.");
                     Assert.True(window.ActualHeight >= window.MinHeight, $"{viewport.Scale} viewport collapsed below minimum height.");
-                    Assert.Equal(ScreenId.ProjectSelection, vm.SelectedScreen);
+                    Assert.Equal(ScreenId.ChromeConnection, vm.SelectedScreen);
+                    Assert.Equal(ScreenId.ChromeConnection, vm.Navigation[0].Id);
+                    Assert.Equal(ScreenId.ProjectSelection, vm.Navigation[1].Id);
+                    Assert.Equal(ScreenId.Dashboard, vm.Navigation[2].Id);
                     Assert.Equal(16, vm.Navigation.Count);
                     Assert.True(vm.RefreshCommand.CanExecute(null));
                     Assert.NotNull(vm.CurrentScreen);
