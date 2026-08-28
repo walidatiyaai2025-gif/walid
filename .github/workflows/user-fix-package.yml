@@ -57,9 +57,54 @@ jobs:
         shell: pwsh
         run: choco install innosetup --yes --no-progress
 
-      - name: Build installer
+      - name: Publish and smoke exact-head WPF app
         shell: pwsh
-        run: ./build/Package.ps1
+        run: |
+          ./build/Publish-Windows.ps1 -Configuration Release -Runtime win-x64 -OutputRoot artifacts/publish/win-x64
+          ./tests/installer/Smoke-PublishedApp.ps1 `
+            -PublishRoot artifacts/publish/win-x64 `
+            -ExpectedSourceSha "${{ github.sha }}" `
+            -EvidencePath artifacts/release-evidence/published-app-smoke.json
+
+      - name: Build focused installer without unrelated E2E gate
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $baseVersion = ($version -split '-', 2)[0]
+          $fileVersion = "$baseVersion.0"
+          $sourceSha = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $publishDir = (Resolve-Path artifacts/publish/win-x64).Path
+          $packageDir = Join-Path (Get-Location) 'artifacts/package'
+          New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+          $inno = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if (-not $inno) { throw 'INNO_SETUP_NOT_FOUND' }
+          & $inno `
+            "/DMyAppVersion=$version" `
+            "/DMyFileVersion=$fileVersion" `
+            "/DSourceDir=$publishDir" `
+            "/DOutputDir=$packageDir" `
+            "/DSourceSha=$sourceSha" `
+            installer/PCCExecutive.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
+          $installer = Join-Path $packageDir "PCCExecutive-$version-Setup-x64.exe"
+          if (-not (Test-Path $installer)) { throw 'Installer was not produced.' }
+          if ((Get-Item $installer).Length -lt 1MB) { throw 'Installer is unrealistically small.' }
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          [ordered]@{
+            version=$version
+            sourceSha=$sourceSha
+            fileName=(Split-Path $installer -Leaf)
+            targetArchitecture='win-x64'
+            artifactHash="sha256:$hash"
+            buildType='FOCUSED_USER_FIX'
+            generatedAt=[DateTimeOffset]::UtcNow.ToString('o')
+          } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $packageDir "PCCExecutive-$version-Setup-x64.manifest.json") -Encoding UTF8
 
       - name: Verify installer package
         shell: pwsh
@@ -74,6 +119,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: PCCExecutive-user-fix-${{ github.sha }}-win-x64
-          path: artifacts/package/*
+          path: |
+            artifacts/package/*
+            artifacts/release-evidence/published-app-smoke.json
           if-no-files-found: error
           retention-days: 14
