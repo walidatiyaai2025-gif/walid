@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Windows.Input;
 using PCCExecutive.App.Presentation;
 using PCCExecutive.App.Services;
+using PCCExecutive.Application;
 
 namespace PCCExecutive.App.ViewModels;
 
@@ -12,6 +13,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly IPccExecutivePresentationGateway _gateway;
     private readonly IConfirmationService _confirmation;
     private readonly Dictionary<ScreenId, ScreenViewModelBase> _screens;
+    private readonly GuidedExecutionEvaluator _guidedEvaluator = new();
+    private readonly GuidedNavigationGuard _navigationGuard;
     private RuntimeSnapshot _snapshot;
     private ScreenId _selectedScreen;
     private ScreenViewModelBase _currentScreen = null!;
@@ -22,10 +25,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private int _selectedMaxWorkers;
     private bool _selectedAdaptivePacing;
     private bool _selectedAutoResume;
+    private GuidedExecutionEvaluation _guidedExecution = null!;
+    private NavigationGuardResult? _blockedNavigation;
 
     public MainViewModel(IPccExecutivePresentationGateway gateway, IConfirmationService? confirmation = null)
     {
         _gateway = gateway;
+        _navigationGuard = new(_guidedEvaluator);
         _confirmation = confirmation ?? new DenyConfirmationService();
         _snapshot = gateway.Snapshot;
         _selectedDispatchMode = _snapshot.DispatchSettings.Mode;
@@ -74,10 +80,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
             [ScreenId.AttentionCenter] = new AttentionCenterViewModel(this),
             [ScreenId.ConversationHistory] = new ConversationHistoryViewModel(this)
         };
-        _selectedScreen = _snapshot.HasActiveRun ? ScreenId.Dashboard : ScreenId.ChromeConnection;
+        _guidedExecution = _guidedEvaluator.Evaluate(CreateGuidedRuntimeState());
+        _selectedScreen = _guidedExecution.NextAction.Kind == GuidedActionKind.None
+            ? ScreenId.Dashboard
+            : ScreenForStep(_guidedExecution.NextAction.Step);
         _currentScreen = _screens[_selectedScreen];
+        ApplyGuidedProjection();
 
         NavigateCommand = new RelayCommand(p => Navigate(p));
+        GoToRequiredStepCommand = new RelayCommand(_ => GoToRequiredStep(), _ => BlockedNavigation?.NextAction.Step is not null);
         RefreshCommand = GatewayCommand(UiAction.Refresh);
         SelectProjectCommand = new AsyncRelayCommand(
             async p =>
@@ -106,8 +117,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         ConnectChromeCommand = GatewayCommand(UiAction.ConnectChrome);
         PauseAiCommand = GatewayCommand(UiAction.PauseAi);
         ResumeAiCommand = GatewayCommand(UiAction.ResumeAi);
-        StartManagerCommand = GatewayCommand(UiAction.StartManager);
-        StartDispatchCommand = GatewayCommand(UiAction.StartDispatch, _ => SelectedDispatchMode.ToString());
+        StartManagerCommand = GatewayCommand(UiAction.StartManager, requiredStep: GuidedStepId.Manager);
+        StartDispatchCommand = GatewayCommand(UiAction.StartDispatch, _ => SelectedDispatchMode.ToString(), GuidedStepId.Orchestration);
         PauseDispatchCommand = GatewayCommand(UiAction.PauseDispatch);
         OpenSessionCommand = GatewayCommand(UiAction.OpenSession, p => p?.ToString());
         BringSessionToFrontCommand = GatewayCommand(UiAction.BringSessionToFront, p => p?.ToString());
@@ -151,6 +162,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ScreenViewModelBase CurrentScreen { get => _currentScreen; private set => Set(ref _currentScreen, value); }
     public string? LastUiError { get => _lastUiError; private set => Set(ref _lastUiError, value); }
     public bool HasUiError => !string.IsNullOrWhiteSpace(LastUiError);
+    public GuidedExecutionEvaluation GuidedExecution { get => _guidedExecution; private set => Set(ref _guidedExecution, value); }
+    public GuidedNextAction NextAction => GuidedExecution.NextAction;
+    public NavigationGuardResult? BlockedNavigation { get => _blockedNavigation; private set { if (Set(ref _blockedNavigation, value)) OnPropertyChanged(nameof(HasBlockedNavigation)); } }
+    public bool HasBlockedNavigation => BlockedNavigation is not null;
+    public string BlockedActionTitle => BlockedNavigation is null ? string.Empty : $"Cannot open {GuidedExecutionEvaluator.NumberedName(BlockedNavigation.AttemptedStep)}";
+    public string BlockedActionDetail => BlockedNavigation?.MissingPrerequisite is not { } missing ? string.Empty :
+        $"Required prerequisite: {GuidedExecutionEvaluator.NumberedName(missing.RequiredStep ?? missing.Step)} — {missing.Reason} " +
+        (missing.AutomaticallyRecoverable ? "PCC Executive is recovering automatically; no operator action is required yet." : $"Required action: {missing.RequiredControl ?? "Review Status"}.");
 
     public DispatchMode SelectedDispatchMode
     {
@@ -218,6 +237,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public string PccOwnedSessionCountText => Snapshot.GatewayBound ? PccOwnedSessionCount.ToString() : "—";
 
     public ICommand NavigateCommand { get; }
+    public RelayCommand GoToRequiredStepCommand { get; }
     public AsyncRelayCommand RefreshCommand { get; }
     public AsyncRelayCommand SelectProjectCommand { get; }
     public AsyncRelayCommand ConnectChromeCommand { get; }
@@ -242,9 +262,30 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void Navigate(ScreenId id)
     {
+        // Project selection is a safe preparatory screen: the operator may inspect/select a
+        // project while Chrome remains the canonical current prerequisite. Opening a project
+        // does not itself start Manager/dispatch execution.
+        if (id != ScreenId.ProjectSelection && TryMapGuidedStep(id, out var step))
+        {
+            var guard = _navigationGuard.Evaluate(CreateGuidedRuntimeState(), step);
+            if (!guard.Allowed)
+            {
+                BlockedNavigation = guard;
+                LastUiError = $"{BlockedActionTitle}. {BlockedActionDetail}";
+                RaiseBlockedProperties();
+                RuntimeDiagnosticEmitted?.Invoke(this, new(Guid.NewGuid(), Guid.NewGuid(), DateTimeOffset.UtcNow,
+                    RuntimeDiagnosticKind.GuardDecision, guard.MissingPrerequisite?.ReasonCode ?? "NAVIGATION_BLOCKED",
+                    LastUiError, Screen: id.ToString(), Control: "Navigation", Target: id.ToString(), Allowed: false));
+                return;
+            }
+        }
         SelectedScreen = id;
         CurrentScreen = _screens[id];
         LastUiError = null;
+        BlockedNavigation = null;
+        RaiseBlockedProperties();
+        RuntimeDiagnosticEmitted?.Invoke(this, new(Guid.NewGuid(), Guid.NewGuid(), DateTimeOffset.UtcNow,
+            RuntimeDiagnosticKind.Navigation, "NAVIGATION_ALLOWED", $"Opened {id}.", Screen: id.ToString(), Control: "Navigation", Target: id.ToString(), Allowed: true));
     }
 
     public void Navigate(object? parameter)
@@ -254,14 +295,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
         else if (parameter is string text && Enum.TryParse<ScreenId>(text, out var parsed)) Navigate(parsed);
     }
 
-    private AsyncRelayCommand GatewayCommand(UiAction action, Func<object?, string?>? target = null) =>
+    private AsyncRelayCommand GatewayCommand(UiAction action, Func<object?, string?>? target = null, GuidedStepId? requiredStep = null) =>
         new(
             async p =>
             {
                 LastUiError = null;
                 await _gateway.ExecuteAsync(action, target?.Invoke(p));
             },
-            p => _gateway.CanExecute(action, target?.Invoke(p)),
+            p => _gateway.CanExecute(action, target?.Invoke(p)) && (requiredStep is null || IsCommandAllowed(requiredStep.Value)),
             ex => LastUiError = ex.Message);
 
     private AsyncRelayCommand ConfirmedGatewayCommand(
@@ -294,9 +335,83 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(SelectedWorkerSession));
         OnPropertyChanged(nameof(PccOwnedSessionCount));
         OnPropertyChanged(nameof(PccOwnedSessionCountText));
+        GuidedExecution = _guidedEvaluator.Evaluate(CreateGuidedRuntimeState());
+        ApplyGuidedProjection();
+        OnPropertyChanged(nameof(NextAction));
         RaiseAllCommands();
         OnPropertyChanged(nameof(HasUiError));
     }
+
+    public event EventHandler<RuntimeDiagnosticEvent>? RuntimeDiagnosticEmitted;
+
+    private GuidedRuntimeState CreateGuidedRuntimeState()
+    {
+        var manager = Snapshot.Sessions.Any(s => s.IsPccOwned && string.Equals(s.Role, "Manager", StringComparison.OrdinalIgnoreCase));
+        var browserState = Snapshot.GlobalHealth switch
+        {
+            HealthState.Healthy or HealthState.Slow or HealthState.Throttled or HealthState.RateLimited or HealthState.Cooldown or HealthState.PartialResponse => BrowserRecoveryState.Ready,
+            HealthState.Recovering or HealthState.Offline or HealthState.Stuck or HealthState.TemporaryError => BrowserRecoveryState.RecoveringRuntime,
+            HealthState.LoginRequired or HealthState.Challenge => BrowserRecoveryState.LoginRequired,
+            HealthState.AdapterUncertain => BrowserRecoveryState.OwnershipUncertain,
+            _ when manager => BrowserRecoveryState.Ready,
+            _ => BrowserRecoveryState.Unknown,
+        };
+        var managerPlanning = manager && !Snapshot.ManagerNeedsStart && !string.IsNullOrWhiteSpace(Snapshot.CurrentWave) && Snapshot.CurrentWave != "—";
+        return new(Snapshot.GatewayBound, SelectedProviderMode == ProviderMode.BrowserWeb, browserState,
+            Snapshot.HasActiveRun, Snapshot.HasActiveRun, Snapshot.HasActiveRun, manager, managerPlanning,
+            managerPlanning && _gateway.CanExecute(UiAction.StartDispatch), Snapshot.GlobalHealth == HealthState.AdapterUncertain);
+    }
+
+    private bool IsCommandAllowed(GuidedStepId step)
+    {
+        var result = GuidedExecution[step];
+        return result.Satisfied || result.State == GuidedStepState.Current;
+    }
+
+    private void ApplyGuidedProjection()
+    {
+        foreach (var item in Navigation)
+            if (TryMapGuidedStep(item.Id, out var step)) item.Apply(GuidedExecution[step]);
+    }
+
+    private void GoToRequiredStep()
+    {
+        if (BlockedNavigation is not { } blocked) return;
+        var screen = ScreenForStep(blocked.NextAction.Step);
+        BlockedNavigation = null;
+        RaiseBlockedProperties();
+        Navigate(screen);
+    }
+
+    private void RaiseBlockedProperties()
+    {
+        OnPropertyChanged(nameof(BlockedActionTitle));
+        OnPropertyChanged(nameof(BlockedActionDetail));
+        OnPropertyChanged(nameof(HasBlockedNavigation));
+        GoToRequiredStepCommand.RaiseCanExecuteChanged();
+    }
+
+    private static bool TryMapGuidedStep(ScreenId screen, out GuidedStepId step)
+    {
+        step = screen switch
+        {
+            ScreenId.ChromeConnection => GuidedStepId.Chrome,
+            ScreenId.ProjectSelection or ScreenId.Dashboard => GuidedStepId.Project,
+            ScreenId.ManagerWorkspace => GuidedStepId.Manager,
+            ScreenId.WorkersDispatch or ScreenId.WorkerChat or ScreenId.WaveSummary or ScreenId.TaskBoard or ScreenId.EvidenceVerification or ScreenId.LoopGuard => GuidedStepId.Orchestration,
+            _ => default,
+        };
+        return screen is ScreenId.ChromeConnection or ScreenId.ProjectSelection or ScreenId.Dashboard or ScreenId.ManagerWorkspace or
+            ScreenId.WorkersDispatch or ScreenId.WorkerChat or ScreenId.WaveSummary or ScreenId.TaskBoard or ScreenId.EvidenceVerification or ScreenId.LoopGuard;
+    }
+
+    private static ScreenId ScreenForStep(GuidedStepId step) => step switch
+    {
+        GuidedStepId.Chrome => ScreenId.ChromeConnection,
+        GuidedStepId.Project => ScreenId.ProjectSelection,
+        GuidedStepId.Manager => ScreenId.ManagerWorkspace,
+        _ => ScreenId.WorkersDispatch,
+    };
 
     private void RaiseAllCommands()
     {
