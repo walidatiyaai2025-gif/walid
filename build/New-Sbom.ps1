@@ -22,25 +22,31 @@ $frameworks = @()
 foreach ($project in Get-ChildItem (Join-Path $RepositoryRoot 'src') -Recurse -File -Filter '*.csproj' -ErrorAction SilentlyContinue | Sort-Object FullName) {
     [xml]$xml = Get-Content $project.FullName -Raw
     $relativeProject = [IO.Path]::GetRelativePath($RepositoryRoot, $project.FullName).Replace('\\','/')
-    foreach ($group in $xml.Project.PropertyGroup) {
-        if ($group.TargetFramework) { $frameworks += [pscustomobject]@{ project=$relativeProject; targetFramework=[string]$group.TargetFramework } }
-        if ($group.TargetFrameworks) {
-            foreach ($tfm in ([string]$group.TargetFrameworks -split ';')) { $frameworks += [pscustomobject]@{ project=$relativeProject; targetFramework=$tfm } }
+
+    foreach ($node in @($xml.SelectNodes('//TargetFramework'))) {
+        if ($node -and -not [string]::IsNullOrWhiteSpace($node.InnerText)) {
+            $frameworks += [pscustomobject]@{ project=$relativeProject; targetFramework=$node.InnerText.Trim() }
         }
     }
-    foreach ($itemGroup in $xml.Project.ItemGroup) {
-        foreach ($reference in $itemGroup.PackageReference) {
-            if ($null -eq $reference) { continue }
-            $name = [string]$reference.Include
-            if ([string]::IsNullOrWhiteSpace($name)) { $name = [string]$reference.Update }
-            $version = [string]$reference.Version
-            if ([string]::IsNullOrWhiteSpace($version) -and $reference.ChildNodes) {
-                $versionNode = $reference.ChildNodes | Where-Object Name -eq 'Version' | Select-Object -First 1
-                if ($versionNode) { $version = [string]$versionNode.InnerText }
+    foreach ($node in @($xml.SelectNodes('//TargetFrameworks'))) {
+        if ($node -and -not [string]::IsNullOrWhiteSpace($node.InnerText)) {
+            foreach ($tfm in ($node.InnerText -split ';')) {
+                if (-not [string]::IsNullOrWhiteSpace($tfm)) { $frameworks += [pscustomobject]@{ project=$relativeProject; targetFramework=$tfm.Trim() } }
             }
-            if (-not [string]::IsNullOrWhiteSpace($name)) {
-                $packages += [pscustomobject]@{ project=$relativeProject; name=$name; version=$version }
-            }
+        }
+    }
+
+    foreach ($reference in @($xml.SelectNodes('//PackageReference'))) {
+        if (-not $reference) { continue }
+        $name = $reference.GetAttribute('Include')
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = $reference.GetAttribute('Update') }
+        $packageVersion = $reference.GetAttribute('Version')
+        if ([string]::IsNullOrWhiteSpace($packageVersion)) {
+            $versionNode = $reference.SelectSingleNode('Version')
+            if ($versionNode) { $packageVersion = $versionNode.InnerText.Trim() }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($name)) {
+            $packages += [pscustomobject]@{ project=$relativeProject; name=$name; version=$packageVersion }
         }
     }
 }
