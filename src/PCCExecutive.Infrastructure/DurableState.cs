@@ -50,7 +50,7 @@ public interface IDurableStateStore
 public sealed class SqliteStateStore : IDurableStateStore, IBrowserRuntimeRegistry, IDispatchLedger, IConversationCheckpointPort, IConversationLifecycleStore, IAsyncDisposable
 {
     private const int CurrentSchemaVersion = 1;
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = DurabilityJson.CreateOptions();
     private readonly string _connectionString;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
 
@@ -64,7 +64,8 @@ public sealed class SqliteStateStore : IDurableStateStore, IBrowserRuntimeRegist
         {
             DataSource = DatabasePath,
             Mode = SqliteOpenMode.ReadWriteCreate,
-            Cache = SqliteCacheMode.Shared
+            Cache = SqliteCacheMode.Shared,
+            Pooling = false
         }.ToString();
     }
 
