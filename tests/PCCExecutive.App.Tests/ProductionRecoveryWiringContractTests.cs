@@ -20,6 +20,32 @@ public sealed class ProductionRecoveryWiringContractTests
     }
 
     [Fact]
+    public void Startup_composes_browser_recovery_coordinator_and_safe_automatic_resume()
+    {
+        var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
+        var method = Slice(source, "private async Task RecoverStartupBrowserStateAsync", "private static PccExecutiveSettings ParseSettings");
+
+        Assert.Contains("new BrowserStartupRecoveryCoordinator(_runtimeRegistry, _sessions)", method, StringComparison.Ordinal);
+        Assert.Contains("_nextActionRouter.Route", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("DetectOrphansAsync", method, StringComparison.Ordinal);
+        AssertOrdered(method,
+            "ReconcileAsync(runId, cancellationToken)",
+            "if (result.StartupMayContinue)",
+            "ResumeNewSendsAsync(\"STARTUP_BROWSER_RECONCILIATION:SAFE_AUTO_RESUME\"");
+        Assert.Contains("PauseNewSendsAsync(\"STARTUP_BROWSER_RECONCILIATION:RECOVERY_POLICY_UNRESOLVED\"", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Browser_recovery_telemetry_is_routed_to_runtime_diagnostic_contract()
+    {
+        var source = ReadSource("src/PCCExecutive.App/Presentation/BrowserRecoveryDiagnosticSink.cs");
+        Assert.Contains("IBrowserRecoveryTelemetrySink", source, StringComparison.Ordinal);
+        Assert.Contains("RuntimeDiagnosticKind.Recovery", source, StringComparison.Ordinal);
+        Assert.Contains("recoveryEvent.CorrelationId", source, StringComparison.Ordinal);
+        Assert.Contains("diagnostics.RecordAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Startup_does_not_overwrite_recovered_logical_agent_bindings_with_ready_nulls()
     {
         var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");

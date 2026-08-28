@@ -56,7 +56,7 @@ public sealed class AutonomousNextActionRouter(GuidedExecutionEvaluator evaluato
             return new(AutonomousRuntimeAction.RecoverBrowser, guidance, "BROWSER_AUTO_RECOVERY_REQUIRED",
                 "PCC Executive will recover or replace only the affected PCC-owned browser runtime.");
 
-        if (browser.SafeToResume && guidance.NextAction.Kind == GuidedActionKind.Automatic)
+        if (browser.SafeToResume && guidance.NextAction.Kind is GuidedActionKind.Automatic or GuidedActionKind.None)
             return new(AutonomousRuntimeAction.ResumeOrchestration, guidance, "SAFE_AUTO_RESUME",
                 "Browser readiness is reconciled and autonomous orchestration can resume safely.");
 
