@@ -10,10 +10,10 @@ $repo=(Resolve-Path $RepositoryRoot).Path
 if ($BrowserHead -notmatch '^[0-9a-f]{40}$') { throw 'BrowserHead must be an exact 40-character SHA.' }
 $project = (& git -C $repo show "${BrowserHead}:src/PCCExecutive.Browser/PCCExecutive.Browser.csproj") -join "`n"
 if ($LASTEXITCODE -ne 0) { throw 'Browser project is unavailable at the requested exact head.' }
-$host = (& git -C $repo show "${BrowserHead}:src/PCCExecutive.Browser/PlaywrightChromeRuntimeHost.cs") -join "`n"
+$runtimeHostText = (& git -C $repo show "${BrowserHead}:src/PCCExecutive.Browser/PlaywrightChromeRuntimeHost.cs") -join "`n"
 if ($LASTEXITCODE -ne 0) { throw 'Browser runtime host is unavailable at the requested exact head.' }
 $version = if ($project -match 'Microsoft\.Playwright" Version="([^"]+)"') { $Matches[1] } else { 'UNRESOLVED' }
-$systemChrome = $host -match 'ChromeExecutableLocator' -and $host -match 'ConnectOverCDPAsync'
+$systemChrome = $runtimeHostText -match 'ChromeExecutableLocator' -and $runtimeHostText -match 'ConnectOverCDPAsync'
 $result=[ordered]@{
     SchemaVersion=1
     BrowserSourceSha=$BrowserHead
