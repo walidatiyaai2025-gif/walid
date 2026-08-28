@@ -25,6 +25,9 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     private readonly GlobalBrowserSendGate _sendGate;
     private readonly CrashConsistentOrchestrationStore _orchestrationStore;
     private readonly ICanonicalDispatchReservationService _dispatchReservations;
+    private readonly IRuntimeDiagnosticCollector _diagnostics;
+    private readonly RuntimeRecoveryLeaseCoordinator _recoveryLeases = new();
+    private readonly AutonomousNextActionRouter _nextActionRouter = new(new GuidedExecutionEvaluator());
     private AutonomousConversationRolloverRuntime? _rolloverRuntime;
     private readonly HttpClient _pccHttp;
     private readonly HttpClient _githubHttp;
@@ -68,6 +71,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         IAgentProvider agentProvider,
         IChatGptBrowserAdapter browserAdapter,
         GlobalBrowserSendGate sendGate,
+        IRuntimeDiagnosticCollector diagnostics,
         HttpClient pccHttp,
         HttpClient githubHttp,
         ProjectRun? run)
@@ -83,6 +87,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         _agentProvider = agentProvider;
         _browserAdapter = browserAdapter;
         _sendGate = sendGate;
+        _diagnostics = diagnostics;
         _orchestrationStore = new CrashConsistentOrchestrationStore(store);
         _dispatchReservations = new CanonicalDispatchReservationService(store);
         _pccHttp = pccHttp;
@@ -194,7 +199,9 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
             IOwnershipProofService ownership = new OwnershipProofService(profileRoot, markerStore, processInspector);
             var runtimeHost = new PlaywrightChromeRuntimeHost(profileRoot);
             IBrowserRuntimeRegistry registry = store;
-            var controller = new BrowserSessionController(registry, runtimeHost, ownership, markerStore, processInspector);
+            var diagnosticStore = new InMemoryRuntimeDiagnosticStore();
+            IRuntimeDiagnosticCollector diagnostics = new RuntimeDiagnosticCollector(diagnosticStore, diagnosticStore);
+            var controller = new BrowserSessionController(registry, runtimeHost, ownership, markerStore, processInspector, new BrowserRecoveryDiagnosticSink(diagnostics));
 
             var adapter = new PlaywrightChatGptBrowserAdapter(runtimeHost);
             var sendGate = new GlobalBrowserSendGate();
@@ -208,7 +215,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
             var github = new GitHubRestEvidenceClient(githubHttp);
             var baseline = new ProjectBaselineBuilder(pcc, github);
 
-            var gateway = new PccExecutiveRuntimeHost(store, projectLock, pcc, baseline, controller, registry, ownership, newSendPause, agentProvider, adapter, sendGate, pccHttp, githubHttp, run);
+            var gateway = new PccExecutiveRuntimeHost(store, projectLock, pcc, baseline, controller, registry, ownership, newSendPause, agentProvider, adapter, sendGate, diagnostics, pccHttp, githubHttp, run);
             if (selected is not null && run is not null)
             {
                 gateway._projectControlId = selected.ProjectControlId;
@@ -408,26 +415,44 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     private async Task RecoverStartupBrowserStateAsync(CancellationToken cancellationToken = default)
     {
         if (_run is null) return;
-        var orphans = await _sessions.DetectOrphansAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
-        foreach (var orphan in orphans.Where(x => StringComparer.Ordinal.Equals(x.ProjectRunId, _run.Id.ToString())))
+        var runId = _run.Id.ToString();
+        var fingerprint = $"startup:{runId}";
+        if (!_recoveryLeases.TryAcquire(runId, fingerprint, out var lease)) return;
+        using (lease)
         {
-            var recovered = await _sessions.RecoverOrphanAsync(orphan.RuntimeId, cancellationToken).ConfigureAwait(false);
-            _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, recovered.Succeeded ? "RECOVERED" : "RECOVERY_REQUIRED", $"{orphan.RuntimeId}: {recovered.Reason}", recovered.Succeeded));
-            if (!recovered.Succeeded) _autopilot = "RECOVERY_REQUIRED";
-        }
-        var runtimes = await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false);
-        var reconciler = new BrowserSessionReconciliationService();
-        foreach (var agentId in new[] { _managerAgentId!.Value }.Concat(_workerAgentIds))
-        {
-            var session = await _store.LoadLogicalAgentAsync(agentId, cancellationToken).ConfigureAwait(false);
-            if (session is null) continue;
-            var runtime = runtimes.FirstOrDefault(x => !x.IsArchived && StringComparer.Ordinal.Equals(x.ProjectRunId, _run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, agentId.ToString()));
-            var result = reconciler.Reconcile(session, runtime);
-            if (result.Outcome is BrowserReconciliationKind.IDENTITY_MISMATCH or BrowserReconciliationKind.UNKNOWN || (result.Outcome == BrowserReconciliationKind.MISSING_RUNTIME && session.CurrentConversationId is not null))
+            _autopilot = "RECOVERING";
+            var result = await new BrowserStartupRecoveryCoordinator(_runtimeRegistry, _sessions)
+                .ReconcileAsync(runId, cancellationToken).ConfigureAwait(false);
+            foreach (var reconciliation in result.Reconciliations)
             {
-                await _newSendPause.PauseNewSendsAsync($"STARTUP_BROWSER_RECONCILIATION:{result.Reason}", cancellationToken).ConfigureAwait(false);
+                var browserState = reconciliation.Succeeded ? BrowserRecoveryState.Ready
+                    : reconciliation.Reason.Contains("LOGIN", StringComparison.OrdinalIgnoreCase) ? BrowserRecoveryState.LoginRequired
+                    : reconciliation.Reason.Contains("OWNERSHIP", StringComparison.OrdinalIgnoreCase) ? BrowserRecoveryState.OwnershipUncertain
+                    : BrowserRecoveryState.RecoveryFailed;
+                var routing = _nextActionRouter.Route(
+                    new GuidedRuntimeState(true, true, browserState, _projectControlId is not null, true, true,
+                        _managerAgentId is not null, _currentPlan is not null, _currentWave?.State == WaveState.Ready),
+                    new RuntimeRecoveryObservation(reconciliation.RuntimeId, browserState, reconciliation.Reason, "01 Chrome",
+                        RecoveryPolicyExhausted: !reconciliation.Succeeded, SafeToResume: reconciliation.Succeeded));
+                if (routing.Attention is not null)
+                    CaptureProviderAttention(routing.Attention.ReasonCode == "ACCOUNT_CHALLENGE" ? "CHALLENGE" : routing.Attention.ReasonCode,
+                        reconciliation.RuntimeId, routing.Attention.ExactLocation);
+                _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow,
+                    reconciliation.Succeeded ? "RECOVERED" : "RECOVERY_REQUIRED",
+                    $"{reconciliation.RuntimeId}: {reconciliation.Reason}", reconciliation.Succeeded));
+            }
+
+            if (result.StartupMayContinue)
+            {
+                await _newSendPause.ResumeNewSendsAsync("STARTUP_BROWSER_RECONCILIATION:SAFE_AUTO_RESUME", cancellationToken).ConfigureAwait(false);
+                _autopilot = _settings.AutoResume ? "READY" : "PAUSED";
+                foreach (var id in _attention.Where(x => result.Reconciliations.Any(r => r.Succeeded && StringComparer.Ordinal.Equals(r.RuntimeId, x.Value.RuntimeId))).Select(x => x.Key).ToArray())
+                    _attention.Remove(id);
+            }
+            else
+            {
+                await _newSendPause.PauseNewSendsAsync("STARTUP_BROWSER_RECONCILIATION:RECOVERY_POLICY_UNRESOLVED", cancellationToken).ConfigureAwait(false);
                 _autopilot = "RECOVERY_REQUIRED";
-                _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "RECOVERY_REQUIRED", result.Reason, false));
             }
         }
     }
@@ -866,8 +891,12 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     {
         if (errorCode is not ("LOGIN_REQUIRED" or "CHALLENGE")) return;
         var id = $"browser-attention:{runtimeId}";
-        var reason = errorCode == "CHALLENGE" ? "ChatGPT presented a challenge/CAPTCHA that automation must not bypass." : "ChatGPT authentication is required in the isolated PCC-owned profile.";
-        _attention[id] = (new AttentionSummary(id, errorCode, reason, "Open PCC Browser", target, "P0"), runtimeId);
+        var challenge = errorCode == "CHALLENGE";
+        var happened = challenge ? "ChatGPT requires an account challenge." : "ChatGPT sign-in is required.";
+        var reason = challenge
+            ? "PCC Executive cannot complete a CAPTCHA or account challenge. Open this PCC browser and complete the challenge."
+            : "PCC Executive cannot complete account sign-in. Open this PCC browser and complete sign-in.";
+        _attention[id] = (new AttentionSummary(id, happened, reason, challenge ? "Complete challenge" : "Complete sign-in", target, "P0"), runtimeId);
         _autopilot = "ATTENTION_REQUIRED";
     }
 

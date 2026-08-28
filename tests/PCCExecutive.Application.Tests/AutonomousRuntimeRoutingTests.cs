@@ -1,4 +1,5 @@
 using PCCExecutive.Application;
+using Xunit;
 
 namespace PCCExecutive.Application.Tests;
 
@@ -48,6 +49,14 @@ public sealed class AutonomousRuntimeRoutingTests
         Assert.False(leases.TryAcquire("manager", "endpoint:1", out _));
         Assert.True(leases.TryAcquire("manager", "endpoint:2", out var second));
         second!.Dispose();
+    }
+
+    [Fact]
+    public void Fully_ready_runtime_routes_safe_automatic_resume()
+    {
+        var decision = _router.Route(State(BrowserRecoveryState.Ready), new("manager", BrowserRecoveryState.Ready, SafeToResume: true));
+        Assert.Equal(AutonomousRuntimeAction.ResumeOrchestration, decision.Action);
+        Assert.False(decision.RequiresHumanAttention);
     }
 
     private static GuidedRuntimeState State(BrowserRecoveryState state) => new(

@@ -1,8 +1,10 @@
 using System.ComponentModel;
+using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using PCCExecutive.App.Presentation;
 using PCCExecutive.Browser;
+using PCCExecutive.Application;
 
 namespace PCCExecutive.App.ViewModels;
 
@@ -231,4 +233,60 @@ public sealed class SessionMonitorViewModel(MainViewModel shell) : ScreenViewMod
 public sealed class SettingsViewModel(MainViewModel shell) : ScreenViewModelBase(shell);
 public sealed class UpdateCenterViewModel(MainViewModel shell) : ScreenViewModelBase(shell);
 public sealed class AttentionCenterViewModel(MainViewModel shell) : ScreenViewModelBase(shell);
+public sealed class RuntimeInspectorViewModel : ScreenViewModelBase, INotifyPropertyChanged
+{
+    private readonly RuntimeInspectorServices? _services;
+    private string _currentState = "Diagnostic runtime is not configured.";
+    private string _lastExportStatus = "";
+
+    public RuntimeInspectorViewModel(MainViewModel shell, RuntimeInspectorServices? services) : base(shell)
+    {
+        _services = services;
+        RefreshCommand = new AsyncRelayCommand(_ => RefreshAsync(), _ => _services is not null, ex => LastExportStatus = ex.Message);
+        CopySnapshotCommand = new AsyncRelayCommand(_ => CopyAsync(), _ => _services is not null, ex => LastExportStatus = ex.Message);
+        SaveSnapshotCommand = new AsyncRelayCommand(_ => SaveAsync(), _ => _services is not null, ex => LastExportStatus = ex.Message);
+        _ = RefreshAsync();
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    public ObservableCollection<RuntimeDiagnosticRecord> BehaviorTimeline { get; } = [];
+    public ObservableCollection<RuntimeDiagnosticRecord> RecoveryTimeline { get; } = [];
+    public ObservableCollection<RuntimePrerequisiteEvidence> Prerequisites { get; } = [];
+    public ObservableCollection<BrowserRuntimeEvidence> BrowserEvidence { get; } = [];
+    public AsyncRelayCommand RefreshCommand { get; }
+    public AsyncRelayCommand CopySnapshotCommand { get; }
+    public AsyncRelayCommand SaveSnapshotCommand { get; }
+    public string CurrentState { get => _currentState; private set { _currentState = value; Changed(); } }
+    public string LastExportStatus { get => _lastExportStatus; private set { _lastExportStatus = value; Changed(); } }
+
+    public async Task RefreshAsync()
+    {
+        if (_services is null) return;
+        var state = await _services.StateSource.CaptureAsync();
+        var events = await _services.Collector.ReadRecentAsync(250);
+        Replace(Prerequisites, state.Prerequisites); Replace(BrowserEvidence, state.BrowserRuntimes);
+        Replace(BehaviorTimeline, events.Where(e => e.Event.Kind is RuntimeDiagnosticKind.UserAction or RuntimeDiagnosticKind.Navigation or RuntimeDiagnosticKind.Command or RuntimeDiagnosticKind.GuardDecision));
+        Replace(RecoveryTimeline, events.Where(e => e.Event.Kind is RuntimeDiagnosticKind.Recovery or RuntimeDiagnosticKind.StateTransition or RuntimeDiagnosticKind.BrowserHealth or RuntimeDiagnosticKind.Exception or RuntimeDiagnosticKind.Attention));
+        CurrentState = $"Project/run: {state.ProjectRunId ?? "—"} · Provider: {state.Provider} · Browser: {state.BrowserHealth} · Manager: {state.ManagerState} · Workers: {state.WorkerState} · Sessions: {state.ActiveSessionCount} · Dispatch: {state.DispatchState} · Next: {state.NextAction?.Instruction ?? "—"}";
+    }
+
+    private async Task CopyAsync()
+    {
+        var json = await ExportAsync();
+        System.Windows.Clipboard.SetText(json);
+        LastExportStatus = $"Copied redacted snapshot ({json.Length:N0} characters).";
+    }
+
+    private async Task SaveAsync()
+    {
+        var dialog = new Microsoft.Win32.SaveFileDialog { Title = "Save Runtime Diagnostic Snapshot", Filter = "JSON files (*.json)|*.json", FileName = $"pcc-runtime-diagnostic-{DateTime.UtcNow:yyyyMMdd-HHmmss}.json" };
+        if (dialog.ShowDialog() != true) return;
+        await File.WriteAllTextAsync(dialog.FileName, await ExportAsync());
+        LastExportStatus = $"Saved redacted snapshot to {dialog.FileName}.";
+    }
+
+    private Task<string> ExportAsync() => _services!.ExportJson(typeof(RuntimeInspectorViewModel).Assembly.GetName().Version?.ToString() ?? "unknown", Environment.GetEnvironmentVariable("PCC_SOURCE_SHA"), 250, CancellationToken.None);
+    private static void Replace<T>(ObservableCollection<T> target, IEnumerable<T> values) { target.Clear(); foreach (var value in values) target.Add(value); }
+    private void Changed([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
 public sealed class ConversationHistoryViewModel(MainViewModel shell) : ScreenViewModelBase(shell);
