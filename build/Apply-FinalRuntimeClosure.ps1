@@ -2,6 +2,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+git config user.name "pcc-runtime-closure-bot"
+git config user.email "actions@users.noreply.github.com"
 
 function Replace-IfPresent([string]$Path, [string]$Old, [string]$New) {
     $full = Join-Path $root $Path
@@ -93,10 +95,10 @@ $crashStore = 'src/PCCExecutive.Infrastructure/CrashConsistentOrchestrationStore
 # Browser unit fixtures carry the exact WorkerSlot binding.
 $browserTests = 'tests/PCCExecutive.Browser.Tests/BrowserRuntimeTests.cs'
 [void](Replace-IfPresent $browserTests 'new BrowserDispatchRequest("dispatch-1",runtime.ProjectRunId,runtime.LogicalAgentId,runtime.TaskId!,runtime.ConversationIdentity!,runtime.ProviderConversationIdentity!,"prompt")' 'new BrowserDispatchRequest("dispatch-1",runtime.ProjectRunId,runtime.LogicalAgentId,runtime.TaskId!,runtime.ConversationIdentity!,runtime.ProviderConversationIdentity!,"prompt",null,runtime.WorkerSlotId)')
-[void](Replace-IfPresent $browserTests 'new BrowserDispatchRequest("new-dispatch", runtime.ProjectRunId, runtime.LogicalAgentId, runtime.TaskId!, runtime.ConversationIdentity!, "NEW", "prompt")' 'new BrowserDispatchRequest("new-dispatch", runtime.ProjectRunId, runtime.LogicalAgentId, runtime.TaskId!, runtime.ConversationIdentity!, "NEW", "prompt", null, runtime.WorkerSlotId)')
+[void](Replace-IfPresent $browserTests 'new BrowserDispatchRequest("new-dispatch", runtime.ProjectRunId, runtime.LogicalAgentId, runtime.TaskId!, runtime.ConversationIdentity!, "NEW", "prompt")' 'new BrowserDispatchRequest("new-dispatch", runtime.ProjectRunId, runtime.LogicalAgentId,runtime.TaskId!,runtime.ConversationIdentity!, "NEW", "prompt", null, runtime.WorkerSlotId)')
 [void](Replace-IfPresent $browserTests 'private static BrowserDispatchExpectation Expectation(BrowserRuntimeRecord r)=>new(r.ProjectRunId,r.LogicalAgentId,r.TaskId!,r.ConversationIdentity!,r.ProviderConversationIdentity!);' 'private static BrowserDispatchExpectation Expectation(BrowserRuntimeRecord r)=>new(r.ProjectRunId,r.LogicalAgentId,r.TaskId!,r.ConversationIdentity!,r.ProviderConversationIdentity!,r.WorkerSlotId);')
 
-# Acceptance fixtures use an explicit deterministic ownership authority.  Production
+# Acceptance fixtures use an explicit deterministic ownership authority. Production
 # code remains fail-closed and still requires the real IOwnershipProofService.
 $harness = 'tests/PCCExecutive.Browser.Acceptance/AcceptanceHarness.cs'
 [void](Replace-IfPresent $harness @'
