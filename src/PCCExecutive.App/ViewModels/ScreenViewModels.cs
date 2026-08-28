@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using PCCExecutive.App.Presentation;
+using PCCExecutive.Browser;
 
 namespace PCCExecutive.App.ViewModels;
 
@@ -32,8 +33,14 @@ public sealed class ChromeConnectionViewModel : ScreenViewModelBase, INotifyProp
 
         ChromeProfiles = DiscoverChromeProfiles();
         var savedDirectory = LoadSavedProfileDirectory();
-        _selectedChromeProfile = ChromeProfiles.FirstOrDefault(x =>
-            string.Equals(x.DirectoryName, savedDirectory, StringComparison.OrdinalIgnoreCase))
+        var gptDesktopProfile = ChromeProfiles.FirstOrDefault(x =>
+            string.Equals(x.DirectoryName, PlaywrightChromeRuntimeHost.GptDesktopProfileSource, StringComparison.Ordinal));
+
+        // Existing GPTDeskTop ChromeProfile is intentionally preferred when present. That is the
+        // user's already-established ChatGPT browser identity and matches GPTDeskTop's proven
+        // persistent-profile launch model instead of creating a fresh per-runtime browser identity.
+        _selectedChromeProfile = gptDesktopProfile
+            ?? ChromeProfiles.FirstOrDefault(x => string.Equals(x.DirectoryName, savedDirectory, StringComparison.OrdinalIgnoreCase))
             ?? ChromeProfiles.FirstOrDefault();
 
         ApplySelection(_selectedChromeProfile);
@@ -56,9 +63,19 @@ public sealed class ChromeConnectionViewModel : ScreenViewModelBase, INotifyProp
         }
     }
 
-    public string ChromeProfileStatusText => SelectedChromeProfile is null
-        ? "No local Chrome profile was detected. PCC will use a fresh isolated managed profile."
-        : $"Selected: {SelectedChromeProfile.DisplayLabel}. PCC copies it into an isolated managed runtime; your personal Chrome profile is never controlled or killed.";
+    public string ChromeProfileStatusText
+    {
+        get
+        {
+            if (SelectedChromeProfile is null)
+                return "No reusable Chrome profile was detected. Connect GPTDeskTop or choose a local Chrome profile before starting the browser runtime.";
+
+            if (string.Equals(SelectedChromeProfile.DirectoryName, PlaywrightChromeRuntimeHost.GptDesktopProfileSource, StringComparison.Ordinal))
+                return "Using the existing GPTDeskTop signed-in ChromeProfile as the login source. PCC keeps a persistent Manager/Worker profile and reuses it on later launches instead of creating a fresh profile every time.";
+
+            return $"Selected: {SelectedChromeProfile.DisplayLabel}. PCC imports this profile once into a persistent Manager/Worker Chrome profile and reuses it on later launches.";
+        }
+    }
 
     private void ApplySelection(ChromeProfileChoice? selection)
     {
@@ -103,66 +120,89 @@ public sealed class ChromeConnectionViewModel : ScreenViewModelBase, INotifyProp
 
     private static IReadOnlyList<ChromeProfileChoice> DiscoverChromeProfiles()
     {
+        var profiles = new Dictionary<string, ChromeProfileChoice>(StringComparer.OrdinalIgnoreCase);
+
+        var gptDesktopProfile = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "GPTDeskTop",
+            "ChromeProfile");
+        if (Directory.Exists(gptDesktopProfile))
+        {
+            profiles[PlaywrightChromeRuntimeHost.GptDesktopProfileSource] = new ChromeProfileChoice(
+                PlaywrightChromeRuntimeHost.GptDesktopProfileSource,
+                "GPTDeskTop — existing signed-in Chrome");
+        }
+
         var userDataRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Google",
             "Chrome",
             "User Data");
 
-        if (!Directory.Exists(userDataRoot)) return Array.Empty<ChromeProfileChoice>();
-
-        var profiles = new Dictionary<string, ChromeProfileChoice>(StringComparer.OrdinalIgnoreCase);
-        var localState = Path.Combine(userDataRoot, "Local State");
-        if (File.Exists(localState))
+        if (Directory.Exists(userDataRoot))
         {
+            var localState = Path.Combine(userDataRoot, "Local State");
+            if (File.Exists(localState))
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(File.ReadAllText(localState));
+                    if (document.RootElement.TryGetProperty("profile", out var profile) &&
+                        profile.TryGetProperty("info_cache", out var infoCache) &&
+                        infoCache.ValueKind == JsonValueKind.Object)
+                    {
+                        foreach (var item in infoCache.EnumerateObject())
+                        {
+                            if (!IsSafeProfileDirectoryName(item.Name)) continue;
+                            var profilePath = Path.Combine(userDataRoot, item.Name);
+                            if (!Directory.Exists(profilePath)) continue;
+                            var displayName = item.Value.TryGetProperty("name", out var nameElement)
+                                ? nameElement.GetString()
+                                : null;
+                            profiles[item.Name] = new ChromeProfileChoice(
+                                item.Name,
+                                string.IsNullOrWhiteSpace(displayName) ? item.Name : displayName.Trim());
+                        }
+                    }
+                }
+                catch (JsonException)
+                {
+                    // Fall back to directory discovery below.
+                }
+                catch (IOException)
+                {
+                    // Fall back to directory discovery below.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Fall back to directory discovery below.
+                }
+            }
+
             try
             {
-                using var document = JsonDocument.Parse(File.ReadAllText(localState));
-                if (document.RootElement.TryGetProperty("profile", out var profile) &&
-                    profile.TryGetProperty("info_cache", out var infoCache) &&
-                    infoCache.ValueKind == JsonValueKind.Object)
+                foreach (var directory in Directory.EnumerateDirectories(userDataRoot))
                 {
-                    foreach (var item in infoCache.EnumerateObject())
+                    var name = Path.GetFileName(directory);
+                    if (!IsSafeProfileDirectoryName(name)) continue;
+                    if (string.Equals(name, "Default", StringComparison.OrdinalIgnoreCase) ||
+                        name.StartsWith("Profile ", StringComparison.OrdinalIgnoreCase))
                     {
-                        if (!IsSafeProfileDirectoryName(item.Name)) continue;
-                        var profilePath = Path.Combine(userDataRoot, item.Name);
-                        if (!Directory.Exists(profilePath)) continue;
-                        var displayName = item.Value.TryGetProperty("name", out var nameElement)
-                            ? nameElement.GetString()
-                            : null;
-                        profiles[item.Name] = new ChromeProfileChoice(
-                            item.Name,
-                            string.IsNullOrWhiteSpace(displayName) ? item.Name : displayName.Trim());
+                        profiles.TryAdd(name, new ChromeProfileChoice(name, name));
                     }
                 }
             }
-            catch (JsonException)
-            {
-                // Fall back to directory discovery below.
-            }
             catch (IOException)
             {
-                // Fall back to directory discovery below.
             }
             catch (UnauthorizedAccessException)
             {
-                // Fall back to directory discovery below.
-            }
-        }
-
-        foreach (var directory in Directory.EnumerateDirectories(userDataRoot))
-        {
-            var name = Path.GetFileName(directory);
-            if (!IsSafeProfileDirectoryName(name)) continue;
-            if (string.Equals(name, "Default", StringComparison.OrdinalIgnoreCase) ||
-                name.StartsWith("Profile ", StringComparison.OrdinalIgnoreCase))
-            {
-                profiles.TryAdd(name, new ChromeProfileChoice(name, name));
             }
         }
 
         return profiles.Values
-            .OrderBy(x => string.Equals(x.DirectoryName, "Default", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .OrderBy(x => string.Equals(x.DirectoryName, PlaywrightChromeRuntimeHost.GptDesktopProfileSource, StringComparison.Ordinal) ? 0
+                : string.Equals(x.DirectoryName, "Default", StringComparison.OrdinalIgnoreCase) ? 1 : 2)
             .ThenBy(x => x.DisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ToArray();
     }
