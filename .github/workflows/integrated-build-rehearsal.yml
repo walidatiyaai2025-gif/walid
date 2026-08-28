@@ -46,7 +46,7 @@ jobs:
         shell: pwsh
         run: ./build/Get-IntegrationMatrix.ps1 -OutputPath artifacts/rehearsal/integration-matrix.json
 
-      - name: Validate every currently consumable Worker chain
+      - name: Validate every current Worker chain
         shell: pwsh
         run: |
           $config=Get-Content release/integration-rehearsal.json -Raw | ConvertFrom-Json
@@ -68,13 +68,19 @@ jobs:
           $head=($config.chains | Where-Object owner -eq 'WORKER_3').head
           ./build/Get-PlaywrightPackagingPlan.ps1 -BrowserHead $head -OutputPath artifacts/rehearsal/playwright-packaging.json
 
-      - name: Build temporary combined candidate from available accepted-chain heads
+      - name: Build and rehearse current canonical candidate
         shell: pwsh
         run: ./build/Invoke-IntegratedRehearsal.ps1 -OutputRoot artifacts/rehearsal/combined
 
       - name: Generate first integrated acceptance report
         shell: pwsh
         run: ./build/New-IntegratedReadiness.ps1 -MatrixPath artifacts/rehearsal/integration-matrix.json -CombinedPath artifacts/rehearsal/combined/result.json -PlaywrightPlanPath artifacts/rehearsal/playwright-packaging.json -OutputPath artifacts/release/integrated-readiness.json
+
+      - name: Enforce integrated acceptance status
+        shell: pwsh
+        run: |
+          $report=Get-Content artifacts/release/integrated-readiness.json -Raw | ConvertFrom-Json
+          if($report.Overall -ne 'PASS'){ throw "INTEGRATED_REHEARSAL_NOT_READY:$($report.Overall)" }
 
       - name: Upload convergence evidence
         if: always()

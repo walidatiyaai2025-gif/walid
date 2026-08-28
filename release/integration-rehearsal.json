@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "canonical": {
     "branch": "task/pcc-executive-t0001-v1",
-    "sha": "6c0895736777c461c884b5608451bda66e646711"
+    "sha": "c319bbc543dfd5c16afe12b3630b51902a6e8a1e"
   },
-  "databaseSchemaTarget": "UNRESOLVED",
+  "databaseSchemaTarget": "1",
   "minimumUpgradeVersion": "NONE_FRESH_BASELINE",
   "signingState": "UNSIGNED_DEV",
   "chains": [
@@ -18,17 +18,17 @@
       "dependsOn": ["032058791bd009c22691c4db437f02e369057811"],
       "state": "PENDING_PR",
       "includeInPartialCandidate": false,
-      "reason": "Foundation and PCC/GitHub are canonical; current Manager orchestration follow-on is two commits beyond PR #7 and has no accepted PR yet, so validate it independently but do not merge it into the rehearsal candidate."
+      "reason": "Foundation and PCC/GitHub are canonical; current Manager orchestration follow-on is two commits beyond PR #7 and has no accepted PR yet, so validate it independently but do not merge it into the canonical rehearsal candidate."
     },
     {
       "owner": "WORKER_2",
-      "name": "PERSISTENCE_RECOVERY",
-      "head": "8d23b936b79d7f2419981e830ffbe7ee5ac99547",
+      "name": "PERSISTENCE_RECOVERY_CANONICAL_INTEGRATION",
+      "head": "c319bbc543dfd5c16afe12b3630b51902a6e8a1e",
       "prs": [],
       "dependsOn": [],
-      "state": "BLOCKED",
+      "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "Current Worker 2 branch remains at the pre-implementation baseline; PCCExecutive.Infrastructure/persistence is not consumable and databaseSchemaTarget remains UNRESOLVED."
+      "reason": "Integration Lead has integrated durable PCCExecutive.Infrastructure and persistence tests on canonical; the historical Worker 2 branch itself remains stale and is not used as release source."
     },
     {
       "owner": "WORKER_3",
@@ -38,7 +38,7 @@
       "dependsOn": ["97b4134ccfef67d2c534f774c8a4852ce5cde0ae"],
       "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "Browser runtime and resilience are integrated on canonical; current browser-e2e branch has not advanced beyond the integrated resilience head."
+      "reason": "Browser runtime and resilience are integrated; current browser-e2e branch has not advanced beyond the integrated resilience head."
     },
     {
       "owner": "WORKER_4",
@@ -48,7 +48,7 @@
       "dependsOn": [],
       "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "Premium WPF shell exact head is integrated on canonical at 6c0895736777c461c884b5608451bda66e646711."
+      "reason": "Premium WPF shell exact head is integrated on canonical."
     },
     {
       "owner": "WORKER_5",
@@ -58,7 +58,7 @@
       "dependsOn": ["ddebed8704a508b16186e19441aa1dcb9fcf278c"],
       "state": "FOUND",
       "includeInPartialCandidate": false,
-      "reason": "Installer foundation and release hardening are integrated on canonical; this Wave validates the integrated result without restacking the historical child heads."
+      "reason": "Installer foundation and release hardening are integrated on canonical."
     }
   ],
   "expectedModules": [

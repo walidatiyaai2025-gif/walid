@@ -50,7 +50,10 @@ public sealed class FoundationTests
     [Fact]
     public void Missing_dependency_is_rejected_but_completed_dependency_is_allowed()
     {
-        var missing = TaskId.New(); var task = Task(TaskId.New(), "dependent", TaskScope.Create("owner/repo", paths: ["src/a"]), [missing]); var validator = new WaveValidator();
+        var missing = TaskId.New();
+        var dependencies = new HashSet<TaskId> { missing };
+        var task = Task(TaskId.New(), "dependent", TaskScope.Create("owner/repo", paths: ["src/a"]), dependencies);
+        var validator = new WaveValidator();
         var invalid = validator.Validate(new WavePlan(WaveId.New(), new ManagerEstimate(20), [task], []), new FakeCompletedIndex());
         Assert.Contains(invalid.Issues, x => x.Code == "MISSING_DEPENDENCY");
         var valid = validator.Validate(new WavePlan(WaveId.New(), new ManagerEstimate(20), [task], []), new FakeCompletedIndex(completedIds: [missing]));
