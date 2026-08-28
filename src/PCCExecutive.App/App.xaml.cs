@@ -39,7 +39,7 @@ public partial class App : System.Windows.Application
         catch (Exception ex)
         {
             if (!smokeTest)
-                MessageBox.Show(ex.Message, "PCC Executive startup failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                System.Windows.MessageBox.Show(ex.Message, "PCC Executive startup failed", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(2);
         }
     }
