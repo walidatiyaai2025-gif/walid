@@ -144,10 +144,13 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
         var providerIdentity = candidateRuntime.ProviderConversationIdentity ?? "NEW";
         var logicalConversation = new ConversationId(Guid.Parse(candidate.ConversationId));
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(packet))).ToLowerInvariant();
+        var projectRunId = new ProjectRunId(Guid.Parse(predecessor.ProjectRunId));
         var taskKey = candidateRuntime.TaskId ?? $"rollover:{predecessor.LogicalAgentId}";
-        var taskId = PCCExecutive.Application.CanonicalDispatchIdentity.StableTask(new ProjectRunId(Guid.Parse(predecessor.ProjectRunId)), taskKey);
-        var waveId = PCCExecutive.Application.CanonicalDispatchIdentity.StableWave(new ProjectRunId(Guid.Parse(predecessor.ProjectRunId)), taskKey);
-        var correlation = new PCCExecutive.Application.DurableDispatchCorrelation(new ProjectRunId(Guid.Parse(predecessor.ProjectRunId)), new LogicalAgentId(Guid.Parse(predecessor.LogicalAgentId)), candidateRuntime.WorkerSlotId is null ? null : new WorkerSlotId(int.Parse(candidateRuntime.WorkerSlotId)), taskId, waveId, logicalConversation, providerIdentity, hash);
+        var taskId = Guid.TryParse(candidateRuntime.TaskId, out var durableTaskGuid)
+            ? new TaskId(durableTaskGuid)
+            : PCCExecutive.Application.CanonicalDispatchIdentity.StableTask(projectRunId, taskKey);
+        var waveId = PCCExecutive.Application.CanonicalDispatchIdentity.StableWave(projectRunId, taskKey);
+        var correlation = new PCCExecutive.Application.DurableDispatchCorrelation(projectRunId, new LogicalAgentId(Guid.Parse(predecessor.LogicalAgentId)), candidateRuntime.WorkerSlotId is null ? null : new WorkerSlotId(int.Parse(candidateRuntime.WorkerSlotId)), taskId, waveId, logicalConversation, providerIdentity, hash);
         var dispatch = await new CanonicalDispatchReservationService(_store).ReserveOrRecoverAsync(correlation, cancellationToken).ConfigureAwait(false);
         var request = new PCCExecutive.Application.AgentRequest(correlation.ProjectRunId, correlation.LogicalAgentId, logicalConversation, dispatch.Id, packet, hash, correlation.WorkerSlotId, candidateRuntime.WorkerSlotId is null ? null : taskId, candidateRuntime.WorkerSlotId is null ? null : waveId, providerIdentity);
         var result = await PccHostConversationAccess.AgentProvider(_host).SendAsync(request, cancellationToken).ConfigureAwait(false);
