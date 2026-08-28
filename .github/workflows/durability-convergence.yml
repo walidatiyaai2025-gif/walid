@@ -1,0 +1,53 @@
+name: PCC Executive Durability Convergence
+
+on:
+  pull_request:
+    paths:
+      - 'src/PCCExecutive.Infrastructure/**'
+      - 'tests/PCCExecutive.Infrastructure.Tests/**'
+      - 'tests/data-safety/**'
+      - 'docs/DURABILITY_ACCEPTANCE.md'
+      - '.github/workflows/durability-convergence.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  infrastructure:
+    name: Infrastructure build and persistence tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Verify exact PR head
+        shell: pwsh
+        run: |
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = '${{ github.event.pull_request.head.sha }}'.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "EXACT_HEAD_MISMATCH expected=$expected actual=$actual" }
+          Write-Host "EXACT_HEAD=$actual"
+
+      - name: Restore Infrastructure tests
+        run: dotnet restore tests/PCCExecutive.Infrastructure.Tests/PCCExecutive.Infrastructure.Tests.csproj
+
+      - name: Build Infrastructure
+        run: dotnet build src/PCCExecutive.Infrastructure/PCCExecutive.Infrastructure.csproj --configuration Release --no-restore
+
+      - name: Execute Infrastructure persistence tests
+        run: dotnet test tests/PCCExecutive.Infrastructure.Tests/PCCExecutive.Infrastructure.Tests.csproj --configuration Release --no-restore --logger "trx;LogFileName=Infrastructure.Tests.trx" --results-directory artifacts/durability-test-results
+
+      - name: Upload persistence test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: durability-test-results-${{ github.event.pull_request.head.sha }}
+          path: artifacts/durability-test-results
+          if-no-files-found: warn
+          retention-days: 14

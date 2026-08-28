@@ -1,0 +1,217 @@
+name: PCC Executive Windows CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'task/**'
+      - 'worker/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pcc-executive-windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  infrastructure:
+    name: Release infrastructure
+    runs-on: windows-latest
+    outputs:
+      dotnet_ready: ${{ steps.product.outputs.dotnet_ready }}
+      package_ready: ${{ steps.product.outputs.package_ready }}
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Validate installer/updater/CI infrastructure
+        shell: pwsh
+        run: ./build/Test-ReleaseInfrastructure.ps1
+
+      - name: Resolve exact candidate source
+        id: source
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($sha -notmatch '^[0-9a-f]{40}$') { throw "Invalid exact source SHA: $sha" }
+          if ($sha -ne '${{ github.event.pull_request.head.sha || github.sha }}'.ToLowerInvariant()) {
+            throw "EXACT_HEAD_MISMATCH expected=${{ github.event.pull_request.head.sha || github.sha }} actual=$sha"
+          }
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+          New-Item -ItemType Directory -Path artifacts/provenance -Force | Out-Null
+          Set-Content artifacts/provenance/SOURCE_SHA.txt $sha -Encoding ascii
+
+      - name: Detect integrated .NET and package source
+        id: product
+        shell: pwsh
+        run: |
+          $dotnetReady = (
+            (Test-Path 'PCCExecutive.sln') -or
+            (Test-Path 'PCCExecutive.slnx') -or
+            [bool](Get-ChildItem src -Recurse -File -Filter '*.csproj' -ErrorAction SilentlyContinue | Select-Object -First 1)
+          )
+          $packageReady = Test-Path 'src/PCCExecutive.App/PCCExecutive.App.csproj'
+          "dotnet_ready=$($dotnetReady.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "package_ready=$($packageReady.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          if (-not $packageReady) {
+            "### Installer lane: BLOCKED_DEPENDENCY`nNo integrated PCCExecutive.App project exists on this exact head; no placeholder installer will be fabricated." >> $env:GITHUB_STEP_SUMMARY
+          }
+
+  build_test:
+    name: .NET 10 build and tests
+    needs: infrastructure
+    if: needs.infrastructure.outputs.dotnet_ready == 'true'
+    runs-on: windows-latest
+    env:
+      PCCEXECUTIVE_LIVE_BROWSER: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore, build, and test every deterministic project
+        shell: pwsh
+        run: ./build/Build.ps1 -Configuration Release -RequireProduct
+
+      - name: Upload test results
+        if: always() && hashFiles('tests/**/*.csproj') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ needs.infrastructure.outputs.source_sha }}
+          path: |
+            artifacts/test-results
+            artifacts/build/source-sha.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  package:
+    name: Build verify and smoke published app
+    needs:
+      - infrastructure
+      - build_test
+    if: needs.infrastructure.outputs.package_ready == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install Inno Setup 6+
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build exact-head installer candidate
+        shell: pwsh
+        run: ./build/Package.ps1
+
+      - name: Verify package provenance and hash
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          ./tests/installer/Test-Package.ps1 `
+            -InstallerPath "artifacts/package/PCCExecutive-$version-Setup-x64.exe" `
+            -ManifestPath "artifacts/package/PCCExecutive-$version-Setup-x64.manifest.json" `
+            -ExpectedSourceSha "${{ needs.infrastructure.outputs.source_sha }}"
+
+      - name: Upload exact-head installer candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: PCCExecutive-${{ needs.infrastructure.outputs.source_sha }}-win-x64
+          path: artifacts/package/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload self-contained publish tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: PCCExecutive-${{ needs.infrastructure.outputs.source_sha }}-publish-win-x64
+          path: artifacts/publish/win-x64/**
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload pre-installer launch evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: PCCExecutive-${{ needs.infrastructure.outputs.source_sha }}-preinstall-evidence
+          path: artifacts/release-evidence/**
+          if-no-files-found: error
+          retention-days: 14
+
+  installer_smoke:
+    name: Fresh install first-run persistence and uninstall smoke
+    needs:
+      - infrastructure
+      - package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: PCCExecutive-${{ needs.infrastructure.outputs.source_sha }}-win-x64
+          path: artifacts/package
+
+      - name: Fresh install and launch smoke
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          New-Item -ItemType Directory -Path artifacts/install-evidence -Force | Out-Null
+          ./tests/installer/Smoke-FreshInstall.ps1 `
+            -InstallerPath "artifacts/package/PCCExecutive-$version-Setup-x64.exe" `
+            -ExpectedVersion $version `
+            -ExpectedSourceSha "${{ needs.infrastructure.outputs.source_sha }}" `
+            -EvidencePath "artifacts/install-evidence/fresh-install.json"
+
+      - name: First-run durable state smoke
+        shell: pwsh
+        run: |
+          $schema = [int](Get-Content 'src/PCCExecutive.Infrastructure/SCHEMA_VERSION' -Raw).Trim()
+          ./tests/installer/Smoke-FirstRun.ps1 `
+            -InstallRoot "$env:LOCALAPPDATA/PCC Executive Smoke/Fresh" `
+            -ExpectedSchemaVersion $schema `
+            -EvidencePath "artifacts/install-evidence/first-run.json"
+
+      - name: Persistence close and reopen smoke
+        shell: pwsh
+        run: |
+          ./tests/installer/Smoke-Persistence.ps1 `
+            -InstallRoot "$env:LOCALAPPDATA/PCC Executive Smoke/Fresh" `
+            -EvidencePath "artifacts/install-evidence/persistence-reopen.json"
+
+      - name: Uninstall preserve-data smoke
+        shell: pwsh
+        run: |
+          ./tests/installer/Smoke-Uninstall.ps1 `
+            -InstallRoot "$env:LOCALAPPDATA/PCC Executive Smoke/Fresh"
+
+      - name: Upload install and first-run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PCCExecutive-${{ needs.infrastructure.outputs.source_sha }}-install-smoke-evidence
+          path: artifacts/install-evidence/**
+          if-no-files-found: warn
+          retention-days: 14

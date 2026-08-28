@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "allowedStates": ["PASS", "FAIL", "PENDING", "BLOCKED_DEPENDENCY", "NOT_APPLICABLE"],
+  "gates": [
+    { "name": "BUILD", "dependencies": ["WPF App", "Domain", "Application", "Infrastructure", "Browser", "PCC Adapter", "GitHub Adapter", "Updater"] },
+    { "name": "UNIT_TESTS", "dependencies": ["Domain", "Application"] },
+    { "name": "INTEGRATION_TESTS", "dependencies": ["Infrastructure"] },
+    { "name": "BROWSER_DETERMINISTIC_TESTS", "dependencies": ["Browser"] },
+    { "name": "PERSISTENCE_TESTS", "dependencies": ["Infrastructure"] },
+    { "name": "UI_BUILD", "dependencies": ["WPF App"] },
+    { "name": "PACKAGE_BUILD", "dependencies": ["WPF App", "Updater", "Installer"] },
+    { "name": "PACKAGE_HASH", "dependencies": ["Installer"] },
+    { "name": "INSTALL_SMOKE", "dependencies": ["WPF App", "Installer"] },
+    { "name": "UPGRADE_SMOKE", "dependencies": ["WPF App", "Infrastructure", "Updater", "Installer"] },
+    { "name": "DATA_PRESERVATION", "dependencies": ["Infrastructure", "Updater", "Installer"] },
+    { "name": "UNINSTALL_SMOKE", "dependencies": ["Installer"] },
+    { "name": "PROVENANCE", "dependencies": [] },
+    { "name": "SECURITY_SCAN", "dependencies": [] }
+  ]
+}

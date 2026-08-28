@@ -1,0 +1,153 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:vm="clr-namespace:PCCExecutive.App.ViewModels"
+                    xmlns:p="clr-namespace:PCCExecutive.App.Presentation">
+    <!-- 01 Chrome Connection -->
+    <DataTemplate DataType="{x:Type vm:ChromeConnectionViewModel}">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock Text="Chrome Connection" Style="{StaticResource TitleText}"/>
+                <TextBlock Text="Browser-first execution provider · ChatGPT Web / Chrome · no API key required" Style="{StaticResource MutedText}" Margin="0,0,0,18"/>
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <Border Style="{StaticResource HeroCard}" Grid.Column="0">
+                        <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="48" Height="48" CornerRadius="12" Background="{StaticResource Brush.PurpleGradient}" Margin="0,0,14,0">
+                                    <TextBlock Text="◉" FontSize="26" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="ChatGPT Web / Chrome" FontSize="20" FontWeight="SemiBold"/>
+                                    <TextBlock Text="PRIMARY EXECUTION PROVIDER" Style="{StaticResource SectionTitle}" Foreground="#BFA7FF"/>
+                                </StackPanel>
+                            </StackPanel>
+                            <Border Grid.Row="1" Style="{StaticResource SeparatorLine}"/>
+                            <Grid Grid.Row="2">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <StackPanel><TextBlock Text="Runtime" Style="{StaticResource MutedText}"/><TextBlock Text="{Binding Shell.Snapshot.RuntimeStatus}" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,0"/></StackPanel>
+                                <StackPanel Grid.Column="1"><TextBlock Text="Health" Style="{StaticResource MutedText}"/><TextBlock Text="{Binding Shell.Snapshot.HealthText}" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,0"/></StackPanel>
+                                <StackPanel Grid.Column="2"><TextBlock Text="Owned sessions" Style="{StaticResource MutedText}"/><TextBlock Text="{Binding Shell.PccOwnedSessionCountText}" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,0"/></StackPanel>
+                            </Grid>
+                            <WrapPanel Grid.Row="3" Margin="0,18,0,0">
+                                <Button Content="Connect / Recover Chrome" Style="{StaticResource PrimaryButton}" Command="{Binding Shell.ConnectChromeCommand}" Margin="0,0,8,8" ToolTip="Enabled only after a project is selected. Creates or recovers only PCC-owned Chrome."/>
+                                <Button Content="Open PCC Browser" Command="{Binding Shell.OpenSessionCommand}" CommandParameter="{Binding Shell.ManagerSession.RuntimeId}" Margin="0,0,8,8" ToolTip="Enabled only when the Manager runtime has positive PCC ownership proof."/>
+                                <Button Content="Bring to Front" Command="{Binding Shell.BringSessionToFrontCommand}" CommandParameter="{Binding Shell.ManagerSession.RuntimeId}" Margin="0,0,8,8" ToolTip="Enabled only for the proven PCC-owned Manager runtime."/>
+                                <Button Content="Refresh State" Command="{Binding Shell.RefreshCommand}" Margin="0,0,8,8"/>
+                            </WrapPanel>
+                        </Grid>
+                    </Border>
+                    <StackPanel Grid.Column="1">
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="SAFETY CONTRACT" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock Text="PCC-owned sessions only" FontSize="17" FontWeight="SemiBold" Margin="0,6,0,4"/>
+                                <TextBlock Text="Personal Chrome is excluded from PCC process controls. Unknown ownership never becomes killable." Style="{StaticResource MutedText}"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="OPTIONAL PROVIDERS" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock Text="OpenAI API" FontWeight="SemiBold" Margin="0,8,0,2"/>
+                                <TextBlock Text="Optional and disabled until explicitly configured." Style="{StaticResource MutedText}"/>
+                                <TextBlock Text="Hybrid" FontWeight="SemiBold" Margin="0,12,0,2"/>
+                                <TextBlock Text="Secondary mode; never required for Browser-first operation." Style="{StaticResource MutedText}"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Grid>
+            </StackPanel>
+        </ScrollViewer>
+    </DataTemplate>
+    <!-- 02 Project Selection -->
+    <DataTemplate DataType="{x:Type vm:ProjectSelectionViewModel}">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <Grid Margin="0,0,0,16"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <StackPanel><TextBlock Text="Project Selection" Style="{StaticResource TitleText}"/><TextBlock Text="Choose or resolve a project through live Project Control Center routing. No demo project is synthesized." Style="{StaticResource MutedText}"/></StackPanel>
+                    <Button Grid.Column="1" Content="Refresh PCC Projects" Command="{Binding Shell.RefreshCommand}"/>
+                </Grid>
+                <Border Style="{StaticResource Card}" Margin="0,0,0,12">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="RESOLVE PCC PROJECT" Style="{StaticResource SectionTitle}"/>
+                            <TextBox x:Name="ProjectLookup" MinWidth="420" Margin="0,8,0,0" ToolTip="Enter a PCC Project ID, display name or routed alias."/>
+                            <TextBlock Text="Resolution failure keeps you on this screen and shows the real gateway error." Style="{StaticResource MutedText}" Margin="0,6,0,0"/>
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="Resolve &amp; Open Project" Command="{Binding Shell.SelectProjectCommand}" CommandParameter="{Binding Text, ElementName=ProjectLookup}" Margin="12,22,0,0" VerticalAlignment="Top">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Text, ElementName=ProjectLookup}" Value="">
+                                            <Setter Property="IsEnabled" Value="False"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                    </Grid>
+                </Border>
+                <ItemsControl ItemsSource="{Binding Shell.Snapshot.Projects}">
+                    <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Style="{StaticResource Card}" Width="360" MinHeight="165">
+                                <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <StackPanel><TextBlock Text="{Binding DisplayName}" FontSize="19" FontWeight="SemiBold"/><TextBlock Text="{Binding Repository}" Style="{StaticResource MutedText}"/></StackPanel>
+                                        <Border Grid.Column="1" Style="{StaticResource GreenChip}"><TextBlock Text="{Binding State}" Foreground="{StaticResource Brush.Green}" FontSize="10"/></Border>
+                                    </Grid>
+                                    <Grid Grid.Row="1" Margin="0,16"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                        <StackPanel><TextBlock Text="VERIFIED" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding VerifiedCompletion, StringFormat={}{0}%}" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource Brush.Purple}"/></StackPanel>
+                                        <StackPanel Grid.Column="1"><TextBlock Text="CURRENT WAVE" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding CurrentWave}" FontSize="18" FontWeight="SemiBold" Margin="0,4,0,0"/></StackPanel>
+                                    </Grid>
+                                    <Button Grid.Row="2" Content="Open Project" Style="{StaticResource PrimaryButton}" Command="{Binding DataContext.Shell.SelectProjectCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" CommandParameter="{Binding Id}" ToolTip="Starts or restores the selected project through the canonical runtime adapter."/>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                    <ItemsControl.Style>
+                        <Style TargetType="ItemsControl">
+                            <Style.Triggers><Trigger Property="HasItems" Value="False"><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ItemsControl"><ContentControl ContentTemplate="{StaticResource EmptyStateTemplate}"/></ControlTemplate></Setter.Value></Setter></Trigger></Style.Triggers>
+                        </Style>
+                    </ItemsControl.Style>
+                </ItemsControl>
+            </StackPanel>
+        </ScrollViewer>
+    </DataTemplate>
+    <!-- 03 Dashboard -->
+    <DataTemplate DataType="{x:Type vm:DashboardViewModel}">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <StackPanel><TextBlock Text="Executive Dashboard" Style="{StaticResource TitleText}"/><TextBlock Text="Evidence-backed project truth with low-noise autonomous operation." Style="{StaticResource MutedText}"/></StackPanel>
+                    <Border Grid.Column="1" Style="{StaticResource PurpleChip}" VerticalAlignment="Center"><TextBlock Text="{Binding Shell.Snapshot.AutopilotState}" Foreground="#D8C7FF" FontWeight="SemiBold"/></Border>
+                </Grid>
+                <UniformGrid Columns="6" Margin="0,0,0,4">
+                    <Border Style="{StaticResource HeroCard}"><StackPanel><TextBlock Text="VERIFIED COMPLETION" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.Snapshot.VerifiedCompletionText}" Style="{StaticResource MetricValue}" Foreground="{StaticResource Brush.Purple}"/><TextBlock Text="Evidence engine" Style="{StaticResource MutedText}"/></StackPanel></Border>
+                    <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="MANAGER ESTIMATE" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.Snapshot.ManagerEstimateText}" Style="{StaticResource MetricValue}"/><TextBlock Text="Planning signal only" Style="{StaticResource MutedText}"/></StackPanel></Border>
+                    <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="CURRENT WAVE" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.Snapshot.CurrentWave}" Style="{StaticResource MetricValue}"/><TextBlock Text="{Binding Shell.Snapshot.CompletionMode}" Style="{StaticResource MutedText}"/></StackPanel></Border>
+                    <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="ACTIVE WORKERS" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.Snapshot.ActiveWorkersText}" Style="{StaticResource MetricValue}" Foreground="{StaticResource Brush.Green}"/><TextBlock Text="Maximum 5" Style="{StaticResource MutedText}"/></StackPanel></Border>
+                    <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="P0 / P1" Style="{StaticResource SectionTitle}"/><StackPanel Orientation="Horizontal"><TextBlock Text="{Binding Shell.Snapshot.P0CountText}" Style="{StaticResource MetricValue}" Foreground="{StaticResource Brush.Red}"/><TextBlock Text=" / " Style="{StaticResource MetricValue}" Foreground="{StaticResource Brush.Muted}"/><TextBlock Text="{Binding Shell.Snapshot.P1CountText}" Style="{StaticResource MetricValue}" Foreground="{StaticResource Brush.Amber}"/></StackPanel><TextBlock Text="Open priority issues" Style="{StaticResource MutedText}"/></StackPanel></Border>
+                    <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="ATTENTION" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.Snapshot.AttentionCountText}" Style="{StaticResource MetricValue}" Foreground="{Binding Shell.Snapshot.AttentionAccent}"/><TextBlock Text="Operator actions" Style="{StaticResource MutedText}"/></StackPanel></Border>
+                </UniformGrid>
+                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel><TextBlock Text="WORKER POOL" Style="{StaticResource SectionTitle}" Margin="0,0,0,10"/>
+                            <ItemsControl ItemsSource="{Binding Shell.Snapshot.Workers}">
+                                <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="5"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate><DataTemplate><Border Style="{StaticResource CompactListItem}" Margin="0,0,8,0"><StackPanel><TextBlock Text="{Binding LogicalName}" FontWeight="SemiBold"/><TextBlock Text="{Binding Role}" Style="{StaticResource MutedText}"/><TextBlock Text="{Binding Progress, StringFormat={}{0}%}" FontSize="24" FontWeight="SemiBold" Foreground="{StaticResource Brush.Cyan}" Margin="0,10,0,0"/><TextBlock Text="{Binding State}" Style="{StaticResource MutedText}"/></StackPanel></Border></DataTemplate></ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+                    <StackPanel Grid.Column="1">
+                        <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="CHATGPT HEALTH" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.Snapshot.HealthText}" FontSize="21" FontWeight="SemiBold" Foreground="{Binding Shell.Snapshot.HealthAccent}" Margin="0,7,0,3"/><TextBlock Text="{Binding Shell.Snapshot.OperatorMessage}" Style="{StaticResource MutedText}"/></StackPanel></Border>
+                        <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="LOOP GUARD" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.Snapshot.LoopGuardState}" FontSize="17" FontWeight="SemiBold" Margin="0,7,0,3"/><TextBlock Text="Stops repeated no-progress execution instead of generating endless traffic." Style="{StaticResource MutedText}"/></StackPanel></Border>
+                    </StackPanel>
+                </Grid>
+                <Border Style="{StaticResource HeroCard}" Margin="0"><StackPanel><TextBlock Text="CURRENT EXECUTION FLOW" Style="{StaticResource SectionTitle}"/><TextBlock Text="{Binding Shell.Snapshot.CurrentExecutionFlow}" FontSize="16" FontWeight="SemiBold" Margin="0,8,0,0"/><TextBlock Text="Manager → validate wave → staged dispatch → collect handoffs → reconcile evidence → Manager decision" Style="{StaticResource MutedText}" Margin="0,6,0,0"/></StackPanel></Border>
+            </StackPanel>
+        </ScrollViewer>
+    </DataTemplate>
+</ResourceDictionary>

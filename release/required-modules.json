@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "requiredForIntegratedCandidate": [
+    { "name": "WPF App", "path": "src/PCCExecutive.App/PCCExecutive.App.csproj" },
+    { "name": "Domain", "path": "src/PCCExecutive.Domain/PCCExecutive.Domain.csproj" },
+    { "name": "Application", "path": "src/PCCExecutive.Application/PCCExecutive.Application.csproj" },
+    { "name": "Infrastructure", "path": "src/PCCExecutive.Infrastructure/PCCExecutive.Infrastructure.csproj" },
+    { "name": "Browser", "path": "src/PCCExecutive.Browser/PCCExecutive.Browser.csproj" },
+    { "name": "PCC Adapter", "path": "src/PCCExecutive.Pcc/PCCExecutive.Pcc.csproj" },
+    { "name": "GitHub Adapter", "path": "src/PCCExecutive.GitHub/PCCExecutive.GitHub.csproj" },
+    { "name": "Updater", "path": "src/PCCExecutive.Updater/PCCExecutive.Updater.csproj" },
+    { "name": "Installer", "path": "installer/PCCExecutive.iss" }
+  ],
+  "testFamilies": [
+    { "name": "Unit", "patterns": ["tests/*Domain.Tests/*.csproj", "tests/*Application.Tests/*.csproj"] },
+    { "name": "Integration", "patterns": ["tests/*Integration.Tests/*.csproj"] },
+    { "name": "Browser Deterministic", "patterns": ["tests/*Browser.Tests/*.csproj"] },
+    { "name": "Persistence", "patterns": ["tests/*Infrastructure.Tests/*.csproj", "tests/*Persistence.Tests/*.csproj"] },
+    { "name": "E2E", "patterns": ["tests/*E2E.Tests/*.csproj"] }
+  ]
+}
