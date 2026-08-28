@@ -27,11 +27,26 @@ if ($manifest.applicationFileHash -notmatch '^sha256:[0-9a-f]{64}$') { throw 'UN
 if (@('UNSIGNED_DEV','SIGNING_NOT_CONFIGURED','SIGNED','SIGNATURE_INVALID') -notcontains [string]$manifest.signingState) { throw 'UNVERIFIED_PACKAGE: invalid signing state.' }
 if ($manifest.signingState -eq 'SIGNATURE_INVALID') { throw 'UNVERIFIED_PACKAGE: signature is invalid.' }
 if ($RequireSigned -and $manifest.signingState -ne 'SIGNED') { throw "UNVERIFIED_PACKAGE: SIGNED package required, manifest state=$($manifest.signingState)." }
+
 $expected = [string]$manifest.artifactHash
 if ($expected -notmatch '^sha256:([0-9a-f]{64})$') { throw 'UNVERIFIED_PACKAGE: artifactHash is not a SHA-256 identity.' }
 $expectedHash = $Matches[1]
 $actual = (Get-FileHash $package.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actual -ne $expectedHash) { throw "UNVERIFIED_PACKAGE: SHA-256 mismatch. expected=$expectedHash actual=$actual" }
+
+$authenticode = Get-AuthenticodeSignature -FilePath $package.FullName
+if ($manifest.signingState -eq 'SIGNED') {
+    if ($authenticode.Status -ne 'Valid') {
+        throw "UNVERIFIED_PACKAGE: manifest claims SIGNED but Authenticode status is $($authenticode.Status)."
+    }
+}
+elseif ($authenticode.Status -eq 'Valid') {
+    throw "UNVERIFIED_PACKAGE: Authenticode signature is valid but manifest signingState is $($manifest.signingState)."
+}
+if ($RequireSigned -and $authenticode.Status -ne 'Valid') {
+    throw "UNVERIFIED_PACKAGE: valid Authenticode signature required; actual status=$($authenticode.Status)."
+}
+
 $parsedDate = [DateTimeOffset]::MinValue
 if (-not [DateTimeOffset]::TryParse([string]$manifest.generatedAt, [ref]$parsedDate)) { throw 'UNVERIFIED_PACKAGE: generatedAt is not a valid timestamp.' }
 
@@ -43,7 +58,8 @@ Copy-Item -LiteralPath $package.FullName -Destination $stagedPackage -Force
 Copy-Item -LiteralPath $manifestFile.FullName -Destination $stagedManifest -Force
 $stageRecord = [ordered]@{
     State='VERIFIED_STAGED'; Version=$manifest.version; SourceSha=$manifest.sourceSha; ArtifactHash=$manifest.artifactHash; PackageIdentity=$manifest.packageIdentity;
-    SigningState=$manifest.signingState; DatabaseSchemaTarget=$manifest.databaseSchemaTarget; VerifiedAt=[DateTimeOffset]::UtcNow.ToString('o'); PackagePath=$stagedPackage; ManifestPath=$stagedManifest
+    SigningState=$manifest.signingState; AuthenticodeStatus=[string]$authenticode.Status; DatabaseSchemaTarget=$manifest.databaseSchemaTarget;
+    VerifiedAt=[DateTimeOffset]::UtcNow.ToString('o'); PackagePath=$stagedPackage; ManifestPath=$stagedManifest
 }
 $recordPath = Join-Path $stageDir 'verified-stage.json'
 $stageRecord | ConvertTo-Json -Depth 4 | Set-Content $recordPath -Encoding UTF8
