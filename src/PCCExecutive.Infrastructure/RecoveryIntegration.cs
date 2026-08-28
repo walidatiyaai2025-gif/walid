@@ -386,10 +386,13 @@ public sealed class BrowserSessionReconciliationService
             return new(BrowserReconciliationKind.IDENTITY_MISMATCH, runtime.RuntimeId, "Runtime identity does not match the durable logical session.");
         if (storedSession.CurrentConversationId is not null &&
             !string.IsNullOrWhiteSpace(runtime.ConversationIdentity) &&
-            !StringComparer.Ordinal.Equals(runtime.ConversationIdentity, storedSession.CurrentConversationId.Value.ToString()))
+            !ConversationIdentityMatches(runtime.ConversationIdentity, storedSession.CurrentConversationId.Value))
             return new(BrowserReconciliationKind.IDENTITY_MISMATCH, runtime.RuntimeId, "Runtime conversation does not match the durable active conversation.");
         return new(BrowserReconciliationKind.MATCHED, runtime.RuntimeId, "Durable logical session matches the PCC-owned Browser runtime.");
     }
+
+    private static bool ConversationIdentityMatches(string runtimeIdentity, ConversationId durableIdentity) =>
+        Guid.TryParse(runtimeIdentity, out var runtimeConversation) && runtimeConversation == durableIdentity.Value;
 }
 
 public sealed record RolloverIntent(
