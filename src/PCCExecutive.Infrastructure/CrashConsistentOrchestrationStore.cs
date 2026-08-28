@@ -39,11 +39,17 @@ public sealed class CrashConsistentOrchestrationStore : IOrchestrationStateStore
         _schema = new DurabilitySchemaManager(store.DatabasePath, _policy);
     }
 
-    public Task SaveAsync(OrchestrationRecoverySnapshot snapshot, CancellationToken cancellationToken = default) =>
-        CommitAsync(snapshot, "ORCHESTRATION_SNAPSHOT", $"snapshot:{snapshot.ProjectRun.Id}:{snapshot.SavedAt.UtcDateTime.Ticks}", new NoCrashFaultInjector(), cancellationToken);
+    public async Task SaveAsync(OrchestrationRecoverySnapshot snapshot, CancellationToken cancellationToken = default)
+    {
+        var merged = await DispatchMergedOrchestrationStateStore.MergeAsync(_store, snapshot, cancellationToken).ConfigureAwait(false);
+        await CommitAsync(merged, "ORCHESTRATION_SNAPSHOT", $"snapshot:{merged.ProjectRun.Id}:{merged.SavedAt.UtcDateTime.Ticks}", new NoCrashFaultInjector(), cancellationToken).ConfigureAwait(false);
+    }
 
-    public Task<OrchestrationRecoverySnapshot?> LoadAsync(ProjectRunId projectRunId, CancellationToken cancellationToken = default) =>
-        new SqliteOrchestrationStateStore(_store).LoadAsync(projectRunId, cancellationToken);
+    public async Task<OrchestrationRecoverySnapshot?> LoadAsync(ProjectRunId projectRunId, CancellationToken cancellationToken = default)
+    {
+        var snapshot = await new SqliteOrchestrationStateStore(_store).LoadAsync(projectRunId, cancellationToken).ConfigureAwait(false);
+        return snapshot is null ? null : await DispatchMergedOrchestrationStateStore.MergeAsync(_store, snapshot, cancellationToken).ConfigureAwait(false);
+    }
 
     public Task<DurableCommitResult> CreateWaveAsync(OrchestrationRecoverySnapshot snapshot, ICrashFaultInjector? faultInjector = null, CancellationToken cancellationToken = default)
     {

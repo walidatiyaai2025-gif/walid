@@ -37,12 +37,14 @@ public sealed class AutonomousDispatchJournal
     public async Task<PCCExecutive.Domain.Dispatch?> FindEquivalentAsync(
         ProjectRunId projectRunId,
         LogicalAgentId logicalAgentId,
+        TaskId taskId,
+        ConversationId conversationId,
         string contentHash,
         CancellationToken cancellationToken = default)
     {
         var dispatches = await ListAsync(projectRunId, cancellationToken).ConfigureAwait(false);
         return dispatches
-            .Where(x => x.LogicalAgentId == logicalAgentId && StringComparer.OrdinalIgnoreCase.Equals(x.ContentHash, contentHash))
+            .Where(x => x.LogicalAgentId == logicalAgentId && x.TaskId == taskId && x.ConversationId == conversationId && StringComparer.OrdinalIgnoreCase.Equals(x.ContentHash, contentHash))
             .OrderByDescending(x => x.PreparedAt)
             .FirstOrDefault();
     }

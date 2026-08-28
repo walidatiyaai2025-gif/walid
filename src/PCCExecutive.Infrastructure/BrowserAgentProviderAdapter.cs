@@ -80,7 +80,9 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
         if (_durableStore is not null)
         {
             journal = new AutonomousDispatchJournal(_durableStore);
-            var existing = await journal.FindEquivalentAsync(request.ProjectRunId, request.LogicalAgentId, request.ContentHash, cancellationToken).ConfigureAwait(false);
+            var taskId = request.TaskId ?? new TaskId(StableGuid($"runtime-task:{request.ProjectRunId}:{runtime.TaskId}"));
+            var waveId = request.WaveId ?? new WaveId(StableGuid($"runtime-wave:{request.ProjectRunId}:{runtime.TaskId}"));
+            var existing = await journal.FindEquivalentAsync(request.ProjectRunId, request.LogicalAgentId, taskId, request.ConversationId, request.ContentHash, cancellationToken).ConfigureAwait(false);
             if (existing is not null)
             {
                 var reconciled = await journal.ReconcileAsync(existing, cancellationToken).ConfigureAwait(false);
@@ -95,8 +97,6 @@ public sealed class BrowserAgentProviderAdapter : IAgentProvider
             }
             else
             {
-                var taskId = request.TaskId ?? new TaskId(StableGuid($"runtime-task:{request.ProjectRunId}:{runtime.TaskId}"));
-                var waveId = request.WaveId ?? new WaveId(StableGuid($"runtime-wave:{request.ProjectRunId}:{runtime.TaskId}"));
                 domainDispatch = new PCCExecutive.Domain.Dispatch(
                     effectiveDispatchId,
                     request.ProjectRunId,
