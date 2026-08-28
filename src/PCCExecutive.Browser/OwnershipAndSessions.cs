@@ -345,29 +345,69 @@ public sealed class BrowserSessionController
             if (!proof.IsProven)
                 return new(false, runtimeId, proof.Reason, runtime);
 
-            var recovered = await _host.RecoverAsync(runtime, cancellationToken).ConfigureAwait(false);
-            if (!recovered)
-                return new(false, runtimeId, "OWNED_PROCESS_RECOVERY_FAILED", runtime);
+            try
+            {
+                var recovered = await _host.RecoverAsync(runtime, cancellationToken).ConfigureAwait(false);
+                if (recovered)
+                {
+                    var now = DateTimeOffset.UtcNow;
+                    var updated = runtime with { State = BrowserSessionState.Ready, LastHeartbeatAt = now, LastActivityAt = now };
+                    await _registry.UpsertAsync(updated, cancellationToken).ConfigureAwait(false);
+                    return new(true, runtimeId, "OWNED_PROCESS_RECOVERED", updated);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+                // A stale DevToolsActivePort / refused CDP endpoint is a recoverable browser-runtime
+                // condition. Never let it escape into WPF startup and terminate the application.
+            }
 
-            var now = DateTimeOffset.UtcNow;
-            var updated = runtime with { State = BrowserSessionState.Ready, LastHeartbeatAt = now, LastActivityAt = now };
-            await _registry.UpsertAsync(updated, cancellationToken).ConfigureAwait(false);
-            return new(true, runtimeId, "OWNED_PROCESS_RECOVERED", updated);
+            try
+            {
+                // Positive ownership proof was established above, so it is safe to terminate only
+                // this PCC-owned stale process before reusing the persistent Manager/Worker profile.
+                await _host.KillAsync(runtime, proof, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                return new(false, runtimeId, $"OWNED_PROCESS_RECOVERY_FAILED:{ex.GetType().Name}", runtime);
+            }
         }
 
         var archived = runtime with { State = BrowserSessionState.Archived, IsArchived = true, LastActivityAt = DateTimeOffset.UtcNow };
         await _registry.UpsertAsync(archived, cancellationToken).ConfigureAwait(false);
 
-        var replacement = await CreateAsync(new BrowserSessionRequest(
-            runtime.ProjectRunId,
-            runtime.LogicalAgentId,
-            runtime.WorkerSlotId,
-            runtime.TaskId,
-            runtime.ConversationIdentity,
-            runtime.ProviderConversationIdentity,
-            runtime.Visibility), cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var replacement = await CreateAsync(new BrowserSessionRequest(
+                runtime.ProjectRunId,
+                runtime.LogicalAgentId,
+                runtime.WorkerSlotId,
+                runtime.TaskId,
+                runtime.ConversationIdentity,
+                runtime.ProviderConversationIdentity,
+                runtime.Visibility), cancellationToken).ConfigureAwait(false);
 
-        return new(true, replacement.RuntimeId, "DEAD_ORPHAN_REPLACED_WITH_NEW_PCC_RUNTIME", replacement);
+            return new(true, replacement.RuntimeId, "STALE_OR_DEAD_ORPHAN_REPLACED_WITH_NEW_PCC_RUNTIME", replacement);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Replacement failure is surfaced as a semantic recovery state. Startup stays alive so
+            // the operator gets one clear guided action instead of a raw ECONNREFUSED dialog.
+            return new(false, runtimeId, $"PCC_RUNTIME_REPLACEMENT_FAILED:{ex.GetType().Name}", archived);
+        }
     }
 
     public async Task<ResourceGovernorSnapshot> CaptureResourceSnapshotAsync(CancellationToken cancellationToken = default)
