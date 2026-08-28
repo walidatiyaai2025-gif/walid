@@ -29,10 +29,12 @@
                                 <StackPanel Grid.Column="1"><TextBlock Text="Health" Style="{StaticResource MutedText}"/><TextBlock Text="{Binding Shell.Snapshot.HealthText}" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,0"/></StackPanel>
                                 <StackPanel Grid.Column="2"><TextBlock Text="Owned sessions" Style="{StaticResource MutedText}"/><TextBlock Text="{Binding Shell.PccOwnedSessionCountText}" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,0"/></StackPanel>
                             </Grid>
-                            <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,18,0,0">
-                                <Button Content="Connect / Recover Chrome" Style="{StaticResource PrimaryButton}" Command="{Binding Shell.ConnectChromeCommand}" Margin="0,0,8,0" ToolTip="Enabled only when the Browser runtime exposes a safe connection action."/>
-                                <Button Content="Refresh State" Command="{Binding Shell.RefreshCommand}"/>
-                            </StackPanel>
+                            <WrapPanel Grid.Row="3" Margin="0,18,0,0">
+                                <Button Content="Connect / Recover Chrome" Style="{StaticResource PrimaryButton}" Command="{Binding Shell.ConnectChromeCommand}" Margin="0,0,8,8" ToolTip="Enabled only after a project is selected. Creates or recovers only PCC-owned Chrome."/>
+                                <Button Content="Open PCC Browser" Command="{Binding Shell.OpenSessionCommand}" CommandParameter="{Binding Shell.ManagerSession.RuntimeId}" Margin="0,0,8,8" ToolTip="Enabled only when the Manager runtime has positive PCC ownership proof."/>
+                                <Button Content="Bring to Front" Command="{Binding Shell.BringSessionToFrontCommand}" CommandParameter="{Binding Shell.ManagerSession.RuntimeId}" Margin="0,0,8,8" ToolTip="Enabled only for the proven PCC-owned Manager runtime."/>
+                                <Button Content="Refresh State" Command="{Binding Shell.RefreshCommand}" Margin="0,0,8,8"/>
+                            </WrapPanel>
                         </Grid>
                     </Border>
                     <StackPanel Grid.Column="1">
@@ -62,9 +64,30 @@
         <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel>
                 <Grid Margin="0,0,0,16"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                    <StackPanel><TextBlock Text="Project Selection" Style="{StaticResource TitleText}"/><TextBlock Text="Choose a project resolved through live Project Control Center routing." Style="{StaticResource MutedText}"/></StackPanel>
+                    <StackPanel><TextBlock Text="Project Selection" Style="{StaticResource TitleText}"/><TextBlock Text="Choose or resolve a project through live Project Control Center routing. No demo project is synthesized." Style="{StaticResource MutedText}"/></StackPanel>
                     <Button Grid.Column="1" Content="Refresh PCC Projects" Command="{Binding Shell.RefreshCommand}"/>
                 </Grid>
+                <Border Style="{StaticResource Card}" Margin="0,0,0,12">
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="RESOLVE PCC PROJECT" Style="{StaticResource SectionTitle}"/>
+                            <TextBox x:Name="ProjectLookup" MinWidth="420" Margin="0,8,0,0" ToolTip="Enter a PCC Project ID, display name or routed alias."/>
+                            <TextBlock Text="Resolution failure keeps you on this screen and shows the real gateway error." Style="{StaticResource MutedText}" Margin="0,6,0,0"/>
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="Resolve &amp; Open Project" Command="{Binding Shell.SelectProjectCommand}" CommandParameter="{Binding Text, ElementName=ProjectLookup}" Margin="12,22,0,0" VerticalAlignment="Top">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Text, ElementName=ProjectLookup}" Value="">
+                                            <Setter Property="IsEnabled" Value="False"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                    </Grid>
+                </Border>
                 <ItemsControl ItemsSource="{Binding Shell.Snapshot.Projects}">
                     <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
                     <ItemsControl.ItemTemplate>
