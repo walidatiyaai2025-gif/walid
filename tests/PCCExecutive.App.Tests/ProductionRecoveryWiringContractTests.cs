@@ -30,9 +30,10 @@ public sealed class ProductionRecoveryWiringContractTests
         Assert.DoesNotContain("DetectOrphansAsync", method, StringComparison.Ordinal);
         AssertOrdered(method,
             "ReconcileAsync(runId, cancellationToken)",
-            "if (result.StartupMayContinue)",
+            "identityReconciler.Reconcile(session, runtime)",
+            "if (result.StartupMayContinue && identityConverged)",
             "ResumeNewSendsAsync(\"STARTUP_BROWSER_RECONCILIATION:SAFE_AUTO_RESUME\"");
-        Assert.Contains("PauseNewSendsAsync(\"STARTUP_BROWSER_RECONCILIATION:RECOVERY_POLICY_UNRESOLVED\"", method, StringComparison.Ordinal);
+        Assert.Contains("STARTUP_BROWSER_RECONCILIATION:{reason}", method, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -25,7 +25,6 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     private readonly GlobalBrowserSendGate _sendGate;
     private readonly CrashConsistentOrchestrationStore _orchestrationStore;
     private readonly ICanonicalDispatchReservationService _dispatchReservations;
-    private readonly IRuntimeDiagnosticCollector _diagnostics;
     private readonly RuntimeRecoveryLeaseCoordinator _recoveryLeases = new();
     private readonly AutonomousNextActionRouter _nextActionRouter = new(new GuidedExecutionEvaluator());
     private AutonomousConversationRolloverRuntime? _rolloverRuntime;
@@ -71,7 +70,6 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         IAgentProvider agentProvider,
         IChatGptBrowserAdapter browserAdapter,
         GlobalBrowserSendGate sendGate,
-        IRuntimeDiagnosticCollector diagnostics,
         HttpClient pccHttp,
         HttpClient githubHttp,
         ProjectRun? run)
@@ -87,7 +85,6 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         _agentProvider = agentProvider;
         _browserAdapter = browserAdapter;
         _sendGate = sendGate;
-        _diagnostics = diagnostics;
         _orchestrationStore = new CrashConsistentOrchestrationStore(store);
         _dispatchReservations = new CanonicalDispatchReservationService(store);
         _pccHttp = pccHttp;
@@ -215,7 +212,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
             var github = new GitHubRestEvidenceClient(githubHttp);
             var baseline = new ProjectBaselineBuilder(pcc, github);
 
-            var gateway = new PccExecutiveRuntimeHost(store, projectLock, pcc, baseline, controller, registry, ownership, newSendPause, agentProvider, adapter, sendGate, diagnostics, pccHttp, githubHttp, run);
+            var gateway = new PccExecutiveRuntimeHost(store, projectLock, pcc, baseline, controller, registry, ownership, newSendPause, agentProvider, adapter, sendGate, pccHttp, githubHttp, run);
             if (selected is not null && run is not null)
             {
                 gateway._projectControlId = selected.ProjectControlId;
@@ -442,7 +439,26 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                     $"{reconciliation.RuntimeId}: {reconciliation.Reason}", reconciliation.Succeeded));
             }
 
-            if (result.StartupMayContinue)
+            var identityConverged = true;
+            var runtimes = await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false);
+            var identityReconciler = new BrowserSessionReconciliationService();
+            foreach (var agentId in new[] { _managerAgentId!.Value }.Concat(_workerAgentIds))
+            {
+                var session = await _store.LoadLogicalAgentAsync(agentId, cancellationToken).ConfigureAwait(false);
+                if (session is null) continue;
+                var runtime = runtimes
+                    .Where(x => !x.IsArchived && StringComparer.Ordinal.Equals(x.ProjectRunId, runId) && StringComparer.Ordinal.Equals(x.LogicalAgentId, agentId.ToString()))
+                    .OrderByDescending(x => x.LastActivityAt)
+                    .FirstOrDefault();
+                var identity = identityReconciler.Reconcile(session, runtime);
+                var unsafeIdentity = identity.Outcome is BrowserReconciliationKind.IDENTITY_MISMATCH or BrowserReconciliationKind.UNKNOWN ||
+                    (identity.Outcome == BrowserReconciliationKind.MISSING_RUNTIME && session.CurrentConversationId is not null);
+                if (!unsafeIdentity) continue;
+                identityConverged = false;
+                _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "RECOVERY_REQUIRED", identity.Reason, false));
+            }
+
+            if (result.StartupMayContinue && identityConverged)
             {
                 await _newSendPause.ResumeNewSendsAsync("STARTUP_BROWSER_RECONCILIATION:SAFE_AUTO_RESUME", cancellationToken).ConfigureAwait(false);
                 _autopilot = _settings.AutoResume ? "READY" : "PAUSED";
@@ -451,7 +467,8 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
             }
             else
             {
-                await _newSendPause.PauseNewSendsAsync("STARTUP_BROWSER_RECONCILIATION:RECOVERY_POLICY_UNRESOLVED", cancellationToken).ConfigureAwait(false);
+                var reason = identityConverged ? "RECOVERY_POLICY_UNRESOLVED" : "LOGICAL_IDENTITY_UNRESOLVED";
+                await _newSendPause.PauseNewSendsAsync($"STARTUP_BROWSER_RECONCILIATION:{reason}", cancellationToken).ConfigureAwait(false);
                 _autopilot = "RECOVERY_REQUIRED";
             }
         }
