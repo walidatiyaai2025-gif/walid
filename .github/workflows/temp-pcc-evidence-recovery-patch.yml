@@ -1,0 +1,35 @@
+name: One-shot PCC evidence recovery patch
+
+on:
+  push:
+    branches:
+      - worker/pcc-github-evidence-recovery
+    paths:
+      - tools/apply_pcc_evidence_recovery_patch.py
+      - .github/workflows/temp-pcc-evidence-recovery-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: worker/pcc-github-evidence-recovery
+          fetch-depth: 0
+      - name: Apply deterministic patch
+        run: python3 tools/apply_pcc_evidence_recovery_patch.py
+      - name: Commit patched runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git diff --cached --quiet && { echo "No patch changes produced"; exit 1; }
+          git commit -m "fix(runtime): recover GitHub evidence rate-limit stalls"
+          git push origin HEAD:worker/pcc-github-evidence-recovery
