@@ -52,6 +52,20 @@ public sealed class AutonomousRuntimeRoutingTests
     }
 
     [Fact]
+    public void Recovery_lease_forget_allows_same_fingerprint_after_state_change()
+    {
+        var leases = new RuntimeRecoveryLeaseCoordinator();
+        Assert.True(leases.TryAcquire("run-1", "startup:run-1", out var first));
+        first!.Dispose();
+        Assert.False(leases.TryAcquire("run-1", "startup:run-1", out _));
+
+        leases.Forget("run-1");
+
+        Assert.True(leases.TryAcquire("run-1", "startup:run-1", out var refreshed));
+        refreshed!.Dispose();
+    }
+
+    [Fact]
     public void Fully_ready_runtime_routes_safe_automatic_resume()
     {
         var decision = _router.Route(State(BrowserRecoveryState.Ready), new("manager", BrowserRecoveryState.Ready, SafeToResume: true));
