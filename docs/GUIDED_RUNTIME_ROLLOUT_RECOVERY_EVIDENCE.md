@@ -10,7 +10,7 @@ This file preserves source-control and acceptance evidence recovered from the in
 
 ## Integrated source-control state
 
-The terminal convergence branch now contains both parents:
+The terminal convergence branch contains both source parents:
 
 - prior convergence head: `48fa140012691dd52b49931c0ad37a1f424844bc`
 - GR-005 final pushed head: `12f994954e97d59e0b46c9c0d21bcf7ba173a9a5`
@@ -24,6 +24,25 @@ GR-005 preserved checkpoints observed in the rollout:
 - `017cd9cb4b27f808c27e2fc3158fb37057ea499e` — 55-case guided-runtime acceptance matrix
 - `e99c0f3619c6a4599ee868d7586666578556f07a` — same-version repair/data-preservation acceptance wiring
 - `12f994954e97d59e0b46c9c0d21bcf7ba173a9a5` — production E2E diagnostics-composition adaptation
+
+## Worker branch inventory and semantic integration proof
+
+Worker branch heads at recovery time:
+
+- GR-001: `da6737179649038d791267a4b774e621dfe3f820`
+- GR-002: `bdf8fdc50f64c152ef29246c2ab4dbed782811a8`
+- GR-003: `c2361771f371588decdcfecb3ecebf4d26282fba`
+- GR-004: `eb7d52ae1ab9042b1c5cac8a9b4d180fc3d155ec`
+- GR-005: `12f994954e97d59e0b46c9c0d21bcf7ba173a9a5`
+
+The GR-001 through GR-004 branches are graph-diverged from convergence because the lead integrated/recomposed their work during convergence. Do **not** blindly merge those worker branches merely because `git rev-list` shows worker-only commits. Representative production files were compared directly and are byte-identical between worker and convergence:
+
+- GR-001 `src/PCCExecutive.Application/GuidedExecution.cs` — blob `42e44dd48c7392baf8dfd570c752fb8015b19f10` on both refs.
+- GR-002 `src/PCCExecutive.Application/RuntimeDiagnostics.cs` — blob `63ea155d99de0b754bb81e62a19498ec07baba0c` on both refs.
+- GR-003 `src/PCCExecutive.Browser/BrowserStartupRecoveryCoordinator.cs` — blob `843fa9ed5fae7f34c0ad94927eb6b83ad35196b0` on both refs.
+- GR-004 `src/PCCExecutive.Application/AutonomousRuntimeRouting.cs` — blob `3c3076d425325b2b3eec86447511945524135741` on both refs.
+
+Therefore terminal closure should treat GR-001..004 as already represented in convergence and only investigate a worker branch when an exact-head failure identifies a concrete missing behavior/file.
 
 GR-002 final evidence reported by its subagent:
 
@@ -103,7 +122,7 @@ This supports that no known GR-005 source remained only local at that checkpoint
 Do not repeat GR-001 through GR-004 implementation unless a failing exact-head gate proves a regression. Start from current `codex/pcc-guided-runtime-terminal-convergence` and close only the remaining proof/integration gaps:
 
 1. Fetch and verify exact current convergence HEAD.
-2. Confirm working tree is clean and no newer worker commit is missing.
+2. Confirm working tree is clean and no newer worker commit is missing semantically; do not blindly merge graph-diverged worker branches.
 3. Build Release exact head.
 4. Re-run all required test families, especially PCCExecutive.E2E after the final GR-004 + GR-005 composition.
 5. Re-run Guided Runtime 55-case matrix, Release Hardening, and Release Infrastructure gates.
