@@ -6,6 +6,8 @@ namespace PCCExecutive.Application;
 
 public static class ManagerPlanningPromptBuilder
 {
+    public const int MaximumFormatRepairAttempts = 1;
+
     public static string Build(
         string projectControlId,
         string displayName,
@@ -78,6 +80,14 @@ public static class ManagerPlanningPromptBuilder
         text.AppendLine("Your previous response cannot be consumed by PCC. Re-emit the same intended plan in the required machine-readable contract. Do not explain, apologize, quote the previous response, or use markdown fences.");
         text.AppendLine(OutputContract());
         return text.ToString().TrimEnd();
+    }
+
+    public static bool CanSubmitOrReconcileFormatRepair(int attemptsUsed, string? lastRejectedResponseHash, string currentRejectedResponseHash)
+    {
+        if (attemptsUsed < 0) throw new ArgumentOutOfRangeException(nameof(attemptsUsed));
+        if (string.IsNullOrWhiteSpace(currentRejectedResponseHash)) throw new ArgumentException("Rejected response hash is required.", nameof(currentRejectedResponseHash));
+        if (attemptsUsed == 0) return true;
+        return attemptsUsed <= MaximumFormatRepairAttempts && StringComparer.Ordinal.Equals(lastRejectedResponseHash, currentRejectedResponseHash);
     }
 
     private static string OutputContract()
