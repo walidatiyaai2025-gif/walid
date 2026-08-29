@@ -46,4 +46,13 @@ public sealed class ManagerPlanningPromptBuilderTests
         Assert.Contains("Return exactly one JSON object and nothing else", first, StringComparison.Ordinal);
         Assert.Contains("Do not explain", first, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Format_repair_policy_allows_one_physical_attempt_and_same_response_reconciliation_only()
+    {
+        Assert.True(ManagerPlanningPromptBuilder.CanSubmitOrReconcileFormatRepair(0, null, "hash-a"));
+        Assert.True(ManagerPlanningPromptBuilder.CanSubmitOrReconcileFormatRepair(1, "hash-a", "hash-a"));
+        Assert.False(ManagerPlanningPromptBuilder.CanSubmitOrReconcileFormatRepair(1, "hash-a", "hash-b"));
+        Assert.False(ManagerPlanningPromptBuilder.CanSubmitOrReconcileFormatRepair(2, "hash-a", "hash-a"));
+    }
 }
