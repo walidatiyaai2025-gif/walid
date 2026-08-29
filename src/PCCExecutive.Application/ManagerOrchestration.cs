@@ -139,11 +139,7 @@ public sealed class StructuredManagerPlanParser
                 }
             }
 
-            if (!Enum.TryParse<ProjectScopeKind>(item.TargetScope ?? "Project", true, out var targetScope))
-            {
-                targetScope = ProjectScopeKind.Project;
-                findings.Add(new("TARGET_SCOPE_INVALID", "TargetScope must be Project, Core, or Variant.", PlanFindingSeverity.Block, id));
-            }
+            var targetScope = ParseTargetScope(item.TargetScope, item.TargetVariant, id, findings);
 
             var executionMode = ParseExecutionMode(item.RecommendedExecutionMode, id, findings);
             var priority = ParsePriority(item.Priority, id, findings);
@@ -266,6 +262,39 @@ public sealed class StructuredManagerPlanParser
             findings.Add(new("RELATED_PR_INVALID", "RelatedPullRequest must be a PR number or array of PR numbers.", PlanFindingSeverity.Block, taskId));
         }
         return result.Distinct().ToArray();
+    }
+
+    private static ProjectScopeKind ParseTargetScope(
+        string? value,
+        string? targetVariant,
+        TaskId taskId,
+        List<ManagerPlanFinding> findings)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return ProjectScopeKind.Project;
+        var text = value.Trim();
+        if (Enum.TryParse<ProjectScopeKind>(text, true, out var direct)) return direct;
+
+        var normalized = new string(text.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
+        if (normalized.Contains("VARIANT", StringComparison.Ordinal)) return ProjectScopeKind.Variant;
+        if (normalized.Contains("CORE", StringComparison.Ordinal)) return ProjectScopeKind.Core;
+        if (normalized.Contains("PROJECT", StringComparison.Ordinal)) return ProjectScopeKind.Project;
+
+        if (!string.IsNullOrWhiteSpace(targetVariant))
+        {
+            findings.Add(new(
+                "TARGET_SCOPE_NORMALIZED",
+                $"TargetScope '{value}' is not canonical; TargetVariant is present so PCC normalized it to Variant. Live routing validation remains authoritative.",
+                PlanFindingSeverity.Info,
+                taskId));
+            return ProjectScopeKind.Variant;
+        }
+
+        findings.Add(new(
+            "TARGET_SCOPE_NORMALIZED",
+            $"TargetScope '{value}' is a work-area label rather than a canonical project scope; PCC normalized it to Project. Live routing validation remains authoritative.",
+            PlanFindingSeverity.Info,
+            taskId));
+        return ProjectScopeKind.Project;
     }
 
     private static ManagerExecutionMode ParseExecutionMode(string? value, TaskId taskId, List<ManagerPlanFinding> findings)
