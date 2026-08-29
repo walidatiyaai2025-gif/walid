@@ -1,5 +1,6 @@
 using PCCExecutive.App.Presentation;
 using PCCExecutive.App.ViewModels;
+using PCCExecutive.Application;
 using Xunit;
 
 namespace PCCExecutive.App.Tests;
