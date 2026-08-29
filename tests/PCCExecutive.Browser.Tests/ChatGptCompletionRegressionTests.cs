@@ -28,4 +28,15 @@ public sealed class ChatGptCompletionRegressionTests
         Assert.NotEqual(ResponseCompleteness.Complete, generating.ResponseCompleteness);
         Assert.Equal(ResponseCompleteness.Partial, partial.ResponseCompleteness);
     }
+    [Fact]
+    public void Modern_conversation_turn_markup_is_detected_as_completed_assistant_response()
+    {
+        var snapshot = new DeterministicHtmlFixtureProbe().Inspect(ChatGptAdapterFixtures.ResponseCompleteModernTurn);
+
+        Assert.Equal(1, snapshot.AssistantMessageCount);
+        Assert.Equal(GenerationState.Complete, snapshot.Generation.State);
+        Assert.Equal(ResponseCompleteness.Complete, snapshot.ResponseCompleteness);
+        Assert.False(string.IsNullOrWhiteSpace(snapshot.CapturedResponseText));
+    }
+
 }

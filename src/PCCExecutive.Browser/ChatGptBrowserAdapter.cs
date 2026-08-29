@@ -81,8 +81,8 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
 {
     public const string CurrentAdapterVersion = "chatgpt-web-semantic-v3";
     private const string ComposerSelector = "textarea, [contenteditable='true'][role='textbox'], [contenteditable='true'][data-lexical-editor='true'], [data-testid='composer-text-input']";
-    private const string AssistantSelector = "[data-message-author-role='assistant']";
-    private const string UserSelector = "[data-message-author-role='user']";
+    private const string AssistantSelector = "[data-message-author-role='assistant'], [data-turn='assistant']";
+    private const string UserSelector = "[data-message-author-role='user'], [data-turn='user']";
     private const string StopSelector = "button[aria-label*='Stop' i], button:has-text('Stop generating'), [data-testid='stop-button']";
     private const string LoginSelector = "a[href*='/auth/login'], button:has-text('Log in'), button:has-text('Sign in')";
     private const string ContinueSelector = "button:has-text('Continue generating'), button:has-text('Continue')";
@@ -95,7 +95,7 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
 
     public async Task<string?> GetCurrentConversationIdentityAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default)
     {
-        var page = await _pages.GetPageAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
+        var page = await ExpectedPageAsync(runtime, runtime.ProviderConversationIdentity, cancellationToken).ConfigureAwait(false);
         if (page is null) return null;
         if (Normalize(page.Url, out var identity)) return identity;
 
@@ -137,7 +137,7 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
             if (!Normalize(page.Url, out var providerIdentity)) continue;
             try
             {
-                var messages = await page.Locator(UserSelector).AllInnerTextsAsync().ConfigureAwait(false);
+                var messages = await UserMessageTextsAsync(page).ConfigureAwait(false);
                 candidates.Add(new ChatGptConversationEvidenceCandidate(providerIdentity, messages.ToArray()));
             }
             catch (PlaywrightException)
@@ -154,20 +154,21 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
 
     public async Task<ChatGptSemanticSnapshot> InspectAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, CancellationToken cancellationToken = default)
     {
-        var page = await _pages.GetPageAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
+        var page = await ExpectedPageAsync(runtime, expectation.ProviderConversationIdentity, cancellationToken).ConfigureAwait(false);
         if (page is null) return Unknown("playwright-page:missing");
         try
         {
             var body = await BodyAsync(page).ConfigureAwait(false);
             var composer = await VisibleAsync(page, ComposerSelector).ConfigureAwait(false);
-            var assistantCount = await page.Locator(AssistantSelector).CountAsync().ConfigureAwait(false);
+            var assistantTexts = await AssistantTextsAsync(page).ConfigureAwait(false);
+            var assistantCount = assistantTexts.Count;
             var stopVisible = await HasVisibleAsync(page, StopSelector).ConfigureAwait(false);
             var continueVisible = await HasVisibleAsync(page, ContinueSelector).ConfigureAwait(false);
             var retryVisible = await HasVisibleAsync(page, RetrySelector).ConfigureAwait(false);
             // Response actions in the current ChatGPT UI can exist in the DOM but stay hidden until
             // hover. They are useful evidence when present, but must not be the only completion gate.
             var responseActionsPresent = assistantCount > 0 && await HasAnyAsync(page, ResponseActionSelector).ConfigureAwait(false);
-            var response = assistantCount > 0 ? await LastAssistantAsync(page, assistantCount).ConfigureAwait(false) : null;
+            var response = assistantCount > 0 ? assistantTexts[^1] : null;
             var assistantTextPresent = !string.IsNullOrWhiteSpace(response);
 
             var input = composer is null
@@ -196,7 +197,7 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
         Func<CancellationToken, Task<PreEnterAuthorizationDecision>> authorizeBeforeEnter,
         CancellationToken cancellationToken = default)
     {
-        var page = await _pages.GetPageAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
+        var page = await ExpectedPageAsync(runtime, expectation.ProviderConversationIdentity, cancellationToken).ConfigureAwait(false);
         if (page is null) return new(false, false, false, "BROWSER_PAGE_MISSING", new[] { "submission:not-triggered" });
         var triggered = false;
         try
@@ -285,6 +286,92 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
         if (Contains(body, "something went wrong", "temporary error", "failed to load", "there was an error generating")) return D(PageHealth.TempError, .92, "temporary-error:present");
         if (Contains(body, "taking longer than expected", "still working on this")) return D(PageHealth.Slow, .80, "slow-guidance:present");
         return auth == AuthState.Authenticated && composerVisible ? D(PageHealth.Healthy, .80, "authenticated-composer:healthy-surface") : D(PageHealth.Unknown, .3, "page-health:unproven");
+    }
+
+    private async Task<IPage?> ExpectedPageAsync(BrowserRuntimeRecord runtime, string? expectedProviderIdentity, CancellationToken cancellationToken)
+    {
+        if (_pages is IPlaywrightPageCatalog catalog &&
+            !string.IsNullOrWhiteSpace(expectedProviderIdentity) &&
+            !string.Equals(expectedProviderIdentity, "NEW", StringComparison.OrdinalIgnoreCase) &&
+            Normalize(expectedProviderIdentity, out var expected))
+        {
+            var pages = await catalog.GetPagesAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
+            var exact = pages
+                .Where(x => !x.IsClosed && Normalize(x.Url, out var actual) && StringComparer.OrdinalIgnoreCase.Equals(actual, expected))
+                .ToArray();
+            if (exact.Length > 0) return exact[^1];
+        }
+
+        return await _pages.GetPageAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<IReadOnlyList<string>> AssistantTextsAsync(IPage page)
+    {
+        try
+        {
+            var texts = await page.EvaluateAsync<string[]>(
+                """
+                () => {
+                  const read = (el) => ((el && (el.innerText || el.textContent)) || '').trim();
+                  const explicit = Array.from(document.querySelectorAll("[data-message-author-role='assistant'], [data-turn='assistant']"))
+                    .map(read).filter(Boolean);
+                  if (explicit.length) return explicit;
+
+                  const turns = Array.from(document.querySelectorAll("article[data-testid^='conversation-turn-'], [data-testid^='conversation-turn-']"));
+                  return turns.filter(turn => {
+                    const role = (turn.getAttribute('data-turn') || '').toLowerCase();
+                    if (role === 'assistant') return true;
+                    if (role === 'user') return false;
+
+                    const labels = Array.from(turn.querySelectorAll('h1,h2,h3,h4,h5,h6,[aria-label]'))
+                      .map(el => `${read(el)} ${el.getAttribute('aria-label') || ''}`)
+                      .join(' ').toLowerCase();
+                    if (labels.includes('chatgpt said') || labels.includes('assistant said')) return true;
+                    if (labels.includes('you said') || labels.includes('user said')) return false;
+
+                    // Current ChatGPT assistant turns carry rendered markdown while user bubbles do not.
+                    return !!turn.querySelector('.markdown, [class*="markdown"], [data-message-content="assistant"]');
+                  }).map(read).filter(Boolean);
+                }
+                """).ConfigureAwait(false);
+            return texts ?? Array.Empty<string>();
+        }
+        catch (PlaywrightException)
+        {
+            return Array.Empty<string>();
+        }
+    }
+
+    private static async Task<IReadOnlyList<string>> UserMessageTextsAsync(IPage page)
+    {
+        try
+        {
+            var explicitTexts = await page.Locator(UserSelector).AllInnerTextsAsync().ConfigureAwait(false);
+            if (explicitTexts.Count > 0) return explicitTexts.ToArray();
+
+            var texts = await page.EvaluateAsync<string[]>(
+                """
+                () => {
+                  const read = (el) => ((el && (el.innerText || el.textContent)) || '').trim();
+                  return Array.from(document.querySelectorAll("article[data-testid^='conversation-turn-'], [data-testid^='conversation-turn-']"))
+                    .filter(turn => {
+                      const role = (turn.getAttribute('data-turn') || '').toLowerCase();
+                      if (role === 'user') return true;
+                      if (role === 'assistant') return false;
+                      const labels = Array.from(turn.querySelectorAll('h1,h2,h3,h4,h5,h6,[aria-label]'))
+                        .map(el => `${read(el)} ${el.getAttribute('aria-label') || ''}`)
+                        .join(' ').toLowerCase();
+                      return labels.includes('you said') || labels.includes('user said');
+                    })
+                    .map(read).filter(Boolean);
+                }
+                """).ConfigureAwait(false);
+            return texts ?? Array.Empty<string>();
+        }
+        catch (PlaywrightException)
+        {
+            return Array.Empty<string>();
+        }
     }
 
     private static async Task<ILocator?> VisibleAsync(IPage page, string selector)

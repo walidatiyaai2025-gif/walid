@@ -10,6 +10,7 @@ public static class ChatGptAdapterFixtures
     public static ChatGptHtmlFixture Generating { get; } = F("generating", "conv-a", "<textarea data-testid='composer-text-input'></textarea><button data-testid='stop-button'>Stop</button><article data-message-author-role='assistant'>working</article>");
     public static ChatGptHtmlFixture ResponseComplete { get; } = F("response-complete", "conv-a", "<textarea data-testid='composer-text-input'></textarea><article data-message-author-role='assistant'>done<button data-testid='copy-turn-action-button'>Copy</button></article>");
     public static ChatGptHtmlFixture ResponseCompleteWithoutActions { get; } = F("response-complete-without-actions", "conv-a", "<textarea data-testid='composer-text-input'></textarea><article data-message-author-role='assistant'>{\"ManagerEstimate\":25,\"Tasks\":[]}</article>");
+    public static ChatGptHtmlFixture ResponseCompleteModernTurn { get; } = F("response-complete-modern-turn", "conv-a", "<textarea data-testid='composer-text-input'></textarea><article data-testid='conversation-turn-2'><h6 class='sr-only'>ChatGPT said:</h6><div class='markdown'>{\"ManagerEstimate\":25,\"Tasks\":[]}</div></article>");
     public static ChatGptHtmlFixture SlowGeneration { get; } = F("slow-generation", "conv-a", "<textarea data-testid='composer-text-input'></textarea><button data-testid='stop-button'>Stop</button><div>taking longer than expected</div>");
     public static ChatGptHtmlFixture SendingTooFast { get; } = F("sending-too-fast", "conv-a", "<textarea data-testid='composer-text-input'></textarea><div>sending too quickly - try again in a few minutes</div>");
     public static ChatGptHtmlFixture TemporaryError { get; } = F("temporary-error", "conv-a", "<textarea data-testid='composer-text-input'></textarea><div>something went wrong</div>");
@@ -26,7 +27,7 @@ public static class ChatGptAdapterFixtures
 
     public static IReadOnlyList<ChatGptHtmlFixture> All { get; } = new[]
     {
-        HealthyIdle, Generating, ResponseComplete, ResponseCompleteWithoutActions, SlowGeneration, SendingTooFast, TemporaryError,
+        HealthyIdle, Generating, ResponseComplete, ResponseCompleteWithoutActions, ResponseCompleteModernTurn, SlowGeneration, SendingTooFast, TemporaryError,
         LoginRequired, Challenge, PartialResponse, ContextLimit, ChangedUnknownUi, UncertainSubmission,
         WrongConversation, ContinuationSuccessful, ContinuationFailed, Offline
     };
@@ -42,7 +43,7 @@ public sealed class DeterministicHtmlFixtureProbe
     {
         var html = fixture.Html;
         var composer = Has(html, "composer-text-input") || Has(html, "<textarea");
-        var assistant = Has(html, "data-message-author-role='assistant'") ? 1 : 0;
+        var assistant = Has(html, "data-message-author-role='assistant'", "data-turn='assistant'", "chatgpt said:", "class='markdown'") ? 1 : 0;
         var stop = Has(html, "stop-button");
         var responseAction = Has(html, "copy-turn-action-button");
         var challenge = Has(html, "verify you are human");
