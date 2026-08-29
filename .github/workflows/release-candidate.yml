@@ -1,0 +1,154 @@
+name: PCC Executive Windows Release Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_mode:
+        description: Review may remain blocked; production requires all gates
+        type: choice
+        required: true
+        default: review
+        options: [review, production]
+      database_schema_target:
+        description: Worker 2 schema/migration target identity
+        required: true
+        default: UNRESOLVED
+        type: string
+      minimum_upgrade_version:
+        description: Minimum supported upgrade source or NONE_FRESH_BASELINE
+        required: true
+        default: NONE_FRESH_BASELINE
+        type: string
+      require_signing:
+        description: Require configured Authenticode certificate
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    name: Exact-head release acceptance
+    runs-on: windows-latest
+    env:
+      PCCEXECUTIVE_LIVE_BROWSER: '0'
+      PCCEXECUTIVE_DB_SCHEMA_TARGET: ${{ inputs.database_schema_target }}
+      PCCEXECUTIVE_MINIMUM_UPGRADE_VERSION: ${{ inputs.minimum_upgrade_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Exact-head and hardening preflight
+        shell: pwsh
+        run: |
+          $sha=(git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($sha -ne '${{ github.sha }}'.ToLowerInvariant()) { throw "EXACT_HEAD_MISMATCH $sha" }
+          ./build/Test-ReleaseHardening.ps1
+          $mode = if ('${{ inputs.candidate_mode }}' -eq 'production') { 'ProductionCandidate' } else { 'ReviewCandidate' }
+          ./build/Get-ReleaseReadiness.ps1 -Mode $mode -ModulesOnly -OutputPath artifacts/release/module-readiness.json
+          if ('${{ inputs.candidate_mode }}' -eq 'production' -and '${{ inputs.database_schema_target }}' -eq 'UNRESOLVED') { throw 'BLOCKED_DEPENDENCY: database_schema_target is unresolved.' }
+
+      - name: Restore and build integrated product
+        shell: pwsh
+        run: |
+          ./build/Build.ps1 -Configuration Release -RequireProduct
+          ./build/Write-GateEvidence.ps1 -Gate BUILD
+
+      - name: Unit tests
+        shell: pwsh
+        run: ./build/Run-ReleaseTestFamily.ps1 -Family Unit -Require
+
+      - name: Integration tests
+        shell: pwsh
+        run: ./build/Run-ReleaseTestFamily.ps1 -Family Integration -Require
+
+      - name: Browser deterministic tests
+        shell: pwsh
+        run: ./build/Run-ReleaseTestFamily.ps1 -Family 'Browser Deterministic' -Require
+
+      - name: Persistence tests
+        shell: pwsh
+        run: ./build/Run-ReleaseTestFamily.ps1 -Family Persistence -Require
+
+      - name: WPF UI build
+        shell: pwsh
+        run: |
+          dotnet build src/PCCExecutive.App/PCCExecutive.App.csproj --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'UI_BUILD failed.' }
+          ./build/Write-GateEvidence.ps1 -Gate UI_BUILD
+
+      - name: NuGet vulnerability check
+        shell: pwsh
+        run: ./build/Test-NuGetVulnerabilities.ps1
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build self-contained installer
+        shell: pwsh
+        run: |
+          $sign = [bool]::Parse('${{ inputs.require_signing }}')
+          ./build/Package.ps1 -RequireSigning:$sign
+          ./build/Write-GateEvidence.ps1 -Gate PACKAGE_BUILD
+          ./build/Write-GateEvidence.ps1 -Gate PACKAGE_HASH
+          ./build/Write-GateEvidence.ps1 -Gate PROVENANCE
+          ./build/Write-GateEvidence.ps1 -Gate SECURITY_SCAN -Details 'NuGet vulnerability query plus release payload secret/profile guard passed.'
+
+      - name: Fresh install smoke
+        shell: pwsh
+        run: |
+          $v=(Get-Content VERSION -Raw).Trim()
+          ./tests/installer/Smoke-FreshInstall.ps1 -InstallerPath "artifacts/package/PCCExecutive-$v-Setup-x64.exe" -ExpectedVersion $v
+          ./build/Write-GateEvidence.ps1 -Gate INSTALL_SMOKE
+
+      - name: Same-version repair smoke
+        shell: pwsh
+        run: |
+          $v=(Get-Content VERSION -Raw).Trim()
+          ./tests/installer/Smoke-Repair.ps1 `
+            -InstallerPath "artifacts/package/PCCExecutive-$v-Setup-x64.exe" `
+            -ExpectedVersion $v `
+            -ExpectedSourceSha "${{ github.sha }}" `
+            -InstallRoot "$env:LOCALAPPDATA/PCC Executive Smoke/Fresh" `
+            -EvidencePath "artifacts/release-evidence/same-version-repair.json"
+
+      - name: Uninstall preserve-data smoke
+        shell: pwsh
+        run: |
+          ./tests/installer/Smoke-Uninstall.ps1 -InstallRoot "$env:LOCALAPPDATA/PCC Executive Smoke/Fresh"
+          ./build/Write-GateEvidence.ps1 -Gate UNINSTALL_SMOKE
+
+      - name: Upgrade/data-preservation gate status
+        shell: pwsh
+        run: |
+          if ('${{ inputs.minimum_upgrade_version }}' -eq 'NONE_FRESH_BASELINE') {
+            ./build/Write-GateEvidence.ps1 -Gate UPGRADE_SMOKE -Status NOT_APPLICABLE -Details 'Initial 0.1.0 fresh baseline; future 0.1.0->0.1.1 matrix remains mandatory.'
+            ./build/Write-GateEvidence.ps1 -Gate DATA_PRESERVATION -Status NOT_APPLICABLE -Details 'Initial fresh baseline; upgrade preservation harness is present and becomes mandatory when previous installer exists.'
+          } else {
+            throw 'BLOCKED_DEPENDENCY: previous-version installer injection is required to execute Upgrade/Data Preservation smoke.'
+          }
+
+      - name: Final machine-checkable release gate
+        shell: pwsh
+        run: |
+          $mode = if ('${{ inputs.candidate_mode }}' -eq 'production') { 'ProductionCandidate' } else { 'ReviewCandidate' }
+          ./build/Get-ReleaseReadiness.ps1 -Mode $mode -OutputPath artifacts/release/readiness-final.json
+
+      - name: Upload review candidate and provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: PCCExecutive-${{ github.sha }}-win-x64-${{ inputs.candidate_mode }}
+          path: |
+            artifacts/package/*
+            artifacts/release/*
+            artifacts/release-evidence/*
+          if-no-files-found: error
+          retention-days: 14

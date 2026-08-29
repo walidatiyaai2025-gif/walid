@@ -1,0 +1,22 @@
+using PCCExecutive.App.Presentation;
+using Xunit;
+
+namespace PCCExecutive.E2E;
+
+public sealed class ProductionRuntimeHostCompositionTests
+{
+    [Fact]
+    public async Task Final_32_stage_gate_executes_real_production_PccExecutiveRuntimeHost_composition()
+    {
+        await using var host = PccExecutiveRuntimeHost.Create();
+        var snapshot = host.Snapshot;
+
+        Assert.NotNull(snapshot);
+        Assert.True(snapshot.GatewayBound);
+        Assert.NotNull(snapshot.Projects);
+        Assert.NotNull(snapshot.Sessions);
+        Assert.NotNull(snapshot.Workers);
+        Assert.NotNull(snapshot.DispatchSettings);
+        Assert.False(string.IsNullOrWhiteSpace(snapshot.AutopilotState));
+    }
+}

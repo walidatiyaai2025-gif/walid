@@ -1,0 +1,49 @@
+name: PCC Executive Live Browser Acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live_browser:
+    name: Opt-in live ChatGPT browser acceptance
+    runs-on: [self-hosted, Windows, X64, pcc-browser-acceptance]
+    env:
+      PCCEXECUTIVE_LIVE_BROWSER: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Require integrated source
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'src/PCCExecutive.App/PCCExecutive.App.csproj')) {
+            throw 'Live-browser acceptance requires an integrated application.'
+          }
+
+      - name: Build exact head
+        shell: pwsh
+        run: ./build/Build.ps1 -Configuration Release -RequireProduct -NormalTestFilter 'Category!=LiveBrowser'
+
+      - name: Run only opted-in live-browser tests
+        shell: pwsh
+        run: |
+          $tests = Get-ChildItem tests -Recurse -File -Filter '*.csproj'
+          if (-not $tests) { throw 'No test projects found.' }
+          foreach ($test in $tests) {
+            dotnet test $test.FullName --configuration Release --filter 'Category=LiveBrowser'
+            if ($LASTEXITCODE -ne 0) { throw "Live-browser acceptance failed: $($test.FullName)" }
+          }
+
+      - name: Privacy invariant
+        shell: pwsh
+        run: |
+          "Live browser profiles, cookies, ChatGPT session state and credentials are intentionally not uploaded as workflow artifacts." >> $env:GITHUB_STEP_SUMMARY

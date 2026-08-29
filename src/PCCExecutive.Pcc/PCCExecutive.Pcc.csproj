@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\PCCExecutive.Domain\PCCExecutive.Domain.csproj" />
+    <ProjectReference Include="..\PCCExecutive.Application\PCCExecutive.Application.csproj" />
+  </ItemGroup>
+</Project>

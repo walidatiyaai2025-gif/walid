@@ -1,0 +1,56 @@
+name: PCC Executive Release Hardening
+
+on:
+  push:
+    branches:
+      - 'worker/pcc-executive-release-hardening'
+      - 'task/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hardening:
+    name: Supply-chain and release hardening
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Verify exact checked-out source
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($sha -ne '${{ github.event.pull_request.head.sha || github.sha }}'.ToLowerInvariant()) { throw "EXACT_HEAD_MISMATCH checked=$sha expected=${{ github.event.pull_request.head.sha || github.sha }}" }
+
+      - name: Run deterministic release-hardening tests
+        shell: pwsh
+        run: ./build/Test-ReleaseHardening.ps1
+
+      - name: Run deterministic update-integrity tests
+        shell: pwsh
+        run: ./build/Test-UpdateIntegrity.ps1
+
+      - name: Generate dependency and tool provenance
+        shell: pwsh
+        run: ./build/New-Sbom.ps1 -OutputPath artifacts/release/sbom-preflight.json
+
+      - name: Generate live integration readiness report
+        shell: pwsh
+        run: ./build/Get-ReleaseReadiness.ps1 -Mode Foundation -OutputPath artifacts/release/readiness.json
+
+      - name: Upload readiness evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-readiness-${{ github.event.pull_request.head.sha || github.sha }}
+          path: artifacts/release/*
+          if-no-files-found: error
+          retention-days: 14
