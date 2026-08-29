@@ -96,6 +96,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <Border Margin="18,14,18,0" Padding="14,10" CornerRadius="8" Background="#111A2A" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1">
@@ -116,9 +117,8 @@
                         </Grid>
                     </Border>
 
-                    <!-- Always-visible runtime activity strip. The application must never appear to
-                         be working silently: it exposes the current state, current wave, latest
-                         Manager/provider handoff, and loop-guard retry state. -->
+                    <!-- Always-visible semantic runtime state. This deliberately does not trust the
+                         raw AutopilotState label when stronger evidence says sends are paused/stalled. -->
                     <Border Grid.Row="1" Margin="18,8,18,0" Padding="12,9" CornerRadius="8" Background="#0A1726" BorderBrush="#28405E" BorderThickness="1">
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -130,9 +130,9 @@
                             <Border Background="#152B42" CornerRadius="5" Padding="8,4" Margin="0,0,10,0" VerticalAlignment="Center">
                                 <TextBlock Text="LIVE STATUS" Foreground="#7DD3FC" FontSize="10" FontWeight="Bold"/>
                             </Border>
-                            <TextBlock Grid.Column="1" Text="{Binding Snapshot.AutopilotState}" Foreground="#FBBF24" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBlock x:Name="LiveStateText" Grid.Column="1" Text="INITIALIZING" Foreground="#FBBF24" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
                             <StackPanel Grid.Column="2">
-                                <TextBlock Text="{Binding Snapshot.LatestManagerHandoff}" TextWrapping="Wrap" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="LiveDetailText" Text="Reading canonical runtime state..." TextWrapping="Wrap" FontWeight="SemiBold"/>
                                 <TextBlock Text="{Binding Snapshot.CurrentWave, StringFormat='Stage: {0}'}" Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,2,0,0"/>
                             </StackPanel>
                             <Border Grid.Column="3" Style="{StaticResource Chip}" Margin="10,0,0,0" VerticalAlignment="Center">
@@ -141,11 +141,33 @@
                         </Grid>
                     </Border>
 
-                    <Border Grid.Row="2" Margin="18" Background="Transparent">
+                    <Border Grid.Row="2" Margin="18,18,18,8" Background="Transparent">
                         <ContentControl Content="{Binding CurrentScreen}"/>
                     </Border>
 
-                    <Border Grid.RowSpan="3" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="18" Padding="12,8" Background="#34121C" BorderBrush="#7F1D32" BorderThickness="1" CornerRadius="8"
+                    <!-- Persistent activity/status bar. The animated UI heartbeat proves the shell is
+                         alive; the indeterminate progress bar runs only while runtime work/recovery is
+                         actually active. Paused/stalled states stay visually static and explicit. -->
+                    <Border Grid.Row="3" Margin="18,0,18,14" Padding="10,7" CornerRadius="7" Background="#07131F" BorderBrush="#223B55" BorderThickness="1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="ActivityPulseText" Text="●" Foreground="#34D399" FontSize="14" FontWeight="Bold" VerticalAlignment="Center" ToolTip="UI heartbeat — this animation continues while the PCC Executive window is responsive."/>
+                            <TextBlock x:Name="RuntimeActivityStateText" Grid.Column="1" Text="INITIALIZING" Foreground="#7DD3FC" FontSize="10" FontWeight="Bold" VerticalAlignment="Center" Margin="8,0,12,0"/>
+                            <ProgressBar x:Name="RuntimeActivityProgress" Grid.Column="2" Width="92" Height="4" IsIndeterminate="True" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <TextBlock x:Name="RuntimeActivityDetailText" Grid.Column="3" Text="Loading runtime activity..." Foreground="#D6E3F0" FontSize="10" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="RuntimeActivityAgeText" Grid.Column="4" Text="Runtime event: now" Foreground="{StaticResource Brush.Muted}" FontSize="10" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                            <TextBlock x:Name="RuntimeAutoResumeText" Grid.Column="5" Text="Auto-resume: —" Foreground="{StaticResource Brush.Muted}" FontSize="10" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.RowSpan="4" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="18,18,18,58" Padding="12,8" Background="#34121C" BorderBrush="#7F1D32" BorderThickness="1" CornerRadius="8"
                             Visibility="{Binding HasUiError, Converter={StaticResource BoolToVisibility}}">
                         <StackPanel MaxWidth="560">
                             <TextBlock Text="{Binding BlockedActionTitle}" Foreground="#FFD6DE" FontWeight="Bold"/>
