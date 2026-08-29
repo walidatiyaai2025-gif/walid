@@ -94,6 +94,7 @@
                 <Grid Grid.Column="1">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
@@ -115,11 +116,36 @@
                         </Grid>
                     </Border>
 
-                    <Border Grid.Row="1" Margin="18" Background="Transparent">
+                    <!-- Always-visible runtime activity strip. The application must never appear to
+                         be working silently: it exposes the current state, current wave, latest
+                         Manager/provider handoff, and loop-guard retry state. -->
+                    <Border Grid.Row="1" Margin="18,8,18,0" Padding="12,9" CornerRadius="8" Background="#0A1726" BorderBrush="#28405E" BorderThickness="1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Background="#152B42" CornerRadius="5" Padding="8,4" Margin="0,0,10,0" VerticalAlignment="Center">
+                                <TextBlock Text="LIVE STATUS" Foreground="#7DD3FC" FontSize="10" FontWeight="Bold"/>
+                            </Border>
+                            <TextBlock Grid.Column="1" Text="{Binding Snapshot.AutopilotState}" Foreground="#FBBF24" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="{Binding Snapshot.LatestManagerHandoff}" TextWrapping="Wrap" FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding Snapshot.CurrentWave, StringFormat='Stage: {0}'}" Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,2,0,0"/>
+                            </StackPanel>
+                            <Border Grid.Column="3" Style="{StaticResource Chip}" Margin="10,0,0,0" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Snapshot.LoopGuardState, StringFormat='Loop: {0}'}" Foreground="{StaticResource Brush.Muted}" FontSize="10"/>
+                            </Border>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Row="2" Margin="18" Background="Transparent">
                         <ContentControl Content="{Binding CurrentScreen}"/>
                     </Border>
 
-                    <Border Grid.RowSpan="2" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="18" Padding="12,8" Background="#34121C" BorderBrush="#7F1D32" BorderThickness="1" CornerRadius="8"
+                    <Border Grid.RowSpan="3" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="18" Padding="12,8" Background="#34121C" BorderBrush="#7F1D32" BorderThickness="1" CornerRadius="8"
                             Visibility="{Binding HasUiError, Converter={StaticResource BoolToVisibility}}">
                         <StackPanel MaxWidth="560">
                             <TextBlock Text="{Binding BlockedActionTitle}" Foreground="#FFD6DE" FontWeight="Bold"/>
