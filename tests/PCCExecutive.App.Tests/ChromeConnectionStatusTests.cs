@@ -1,4 +1,5 @@
 using PCCExecutive.App.Presentation;
+using Xunit;
 
 namespace PCCExecutive.App.Tests;
 
@@ -22,7 +23,7 @@ public sealed class ChromeConnectionStatusTests
                 DateTimeOffset.UtcNow,
                 IsPccOwned: true,
                 ProcessId: 1234,
-                HealthState.Unknown)
+                Health: HealthState.Unknown)
         ]);
 
         Assert.Equal(HealthState.Unknown, snapshot.GlobalHealth);
@@ -45,7 +46,7 @@ public sealed class ChromeConnectionStatusTests
                 DateTimeOffset.UtcNow,
                 IsPccOwned: false,
                 ProcessId: 1234,
-                HealthState.Unknown)
+                Health: HealthState.Unknown)
         ]);
 
         Assert.False(snapshot.ChromeConnectionProven);
@@ -67,7 +68,7 @@ public sealed class ChromeConnectionStatusTests
                 DateTimeOffset.UtcNow,
                 IsPccOwned: true,
                 ProcessId: 1234,
-                HealthState.Recovering)
+                Health: HealthState.Recovering)
         ], HealthState.Recovering);
 
         Assert.False(snapshot.ChromeConnectionProven);
