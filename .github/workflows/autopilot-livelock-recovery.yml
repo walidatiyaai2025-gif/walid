@@ -23,7 +23,7 @@ jobs:
 
       - name: Apply livelock fix
         shell: pwsh
-        run: python .github/scripts/apply_autopilot_livelock_fix.py
+        run: python .github/scripts/apply_autopilot_livelock_fix_v2.py
 
       - name: Run focused recovery tests
         shell: pwsh
@@ -38,8 +38,9 @@ jobs:
         run: |
           Remove-Item .github/workflows/autopilot-livelock-recovery.yml
           Remove-Item .github/scripts/apply_autopilot_livelock_fix.py
+          Remove-Item .github/scripts/apply_autopilot_livelock_fix_v2.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs tests/PCCExecutive.App.Tests/ProductionRecoveryWiringContractTests.cs .github/workflows/autopilot-livelock-recovery.yml .github/scripts/apply_autopilot_livelock_fix.py
+          git add src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs tests/PCCExecutive.App.Tests/AutopilotLivelockRecoveryContractTests.cs .github/workflows/autopilot-livelock-recovery.yml .github/scripts/apply_autopilot_livelock_fix.py .github/scripts/apply_autopilot_livelock_fix_v2.py
           git commit -m "fix(runtime): break recovered Manager autopilot livelock"
           git push origin HEAD:worker/pcc-autopilot-livelock-recovery
