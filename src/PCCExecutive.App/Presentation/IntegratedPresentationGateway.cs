@@ -157,8 +157,11 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                             _run = _run is null ? null : _run with { State = ProjectRunState.ManagerPlanning };
                             _runtimeErrorFingerprint = null;
                             _runtimeErrorCount = 0;
-                            _autopilot = "RECOVERING";
-                            _latestManagerHandoff = "RECOVERING_EVIDENCE — retrying the previous pre-plan infrastructure failure automatically.";
+                            var prePlanRecovery = PrePlanAutoRecoveryPolicy.Classify(loop.RuntimeErrorFingerprint);
+                            _autopilot = prePlanRecovery == PrePlanAutoRecoveryMode.ExistingManagerResponse ? "PLANNING" : "RECOVERING";
+                            _latestManagerHandoff = prePlanRecovery == PrePlanAutoRecoveryMode.ExistingManagerResponse
+                                ? "RECOVERING_MANAGER_RESPONSE — reparsing the already-received Manager response with the current schema; no resend will occur."
+                                : "RECOVERING_EVIDENCE — retrying the previous pre-plan infrastructure failure automatically.";
                             if (_run is not null) store.SaveProjectRunAsync(_run).GetAwaiter().GetResult();
                             store.SaveCheckpointAsync(new DurableCheckpoint($"loop-guard:{run.Id}", run.Id.ToString(), "loop-guard-v2", JsonSerializer.Serialize(new DurableLoopGuard(loop.PlanFingerprints, loop.VerifiedCompletion, null, 0, false)), DateTimeOffset.UtcNow)).GetAwaiter().GetResult();
                         }

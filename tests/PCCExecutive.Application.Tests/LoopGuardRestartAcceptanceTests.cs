@@ -55,6 +55,15 @@ public sealed class LoopGuardRestartAcceptanceTests
         Assert.Equal(StagnationAction.CONTINUE, result.Action);
     }
 
+    [Theory]
+    [InlineData("Manager response rejected: MANAGER_PLAN_NOT_STRUCTURED", PrePlanAutoRecoveryMode.ExistingManagerResponse)]
+    [InlineData("MANAGER_PLAN_NOT_STRUCTURED: ExpectedRoutingIdentity", PrePlanAutoRecoveryMode.ExistingManagerResponse)]
+    [InlineData("PCC_BRANCH_403", PrePlanAutoRecoveryMode.EvidenceRefresh)]
+    public void Restart_reuses_received_manager_response_after_schema_failure(string fingerprint, PrePlanAutoRecoveryMode expected)
+    {
+        Assert.Equal(expected, PrePlanAutoRecoveryPolicy.Classify(fingerprint));
+    }
+
     private static StagnationObservation Observation(
         int offset,
         string task,
