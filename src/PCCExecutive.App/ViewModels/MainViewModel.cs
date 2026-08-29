@@ -410,7 +410,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
             _ when manager => BrowserRecoveryState.Ready,
             _ => BrowserRecoveryState.Unknown,
         };
-        var managerPlanning = manager && !Snapshot.ManagerNeedsStart && !string.IsNullOrWhiteSpace(Snapshot.CurrentWave) && Snapshot.CurrentWave != "—";
+        // A Manager browser session is not the same thing as a validated Manager plan. Keep step 04
+        // CURRENT while PLANNING/reading ChatGPT, and mark it completed only after the runtime has
+        // accepted a structured plan and moved into a post-validation orchestration state.
+        var managerPlanning = manager && Snapshot.AutopilotState is
+            "READY_TO_DISPATCH" or "DISPATCHING" or "WAITING_WORKERS" or "MANAGER_REVIEW" or "CLOSURE_VERIFY" or "DONE";
         return new(Snapshot.GatewayBound, SelectedProviderMode == ProviderMode.BrowserWeb, browserState,
             Snapshot.HasActiveRun, Snapshot.HasActiveRun, Snapshot.HasActiveRun, manager, managerPlanning,
             managerPlanning && _gateway.CanExecute(UiAction.StartDispatch), Snapshot.GlobalHealth == HealthState.AdapterUncertain);
