@@ -133,7 +133,7 @@ public sealed class ProductionRecoveryWiringContractTests
         Assert.Contains("_browserAdapter.GetCurrentConversationIdentityAsync(runtime", reconcile, StringComparison.Ordinal);
         Assert.Contains("no resend and no Loop Guard error", reconcile, StringComparison.Ordinal);
         Assert.DoesNotContain("Manager conversation identity is not yet proven", reconcile, StringComparison.Ordinal);
-        Assert.Contains("_autopilot is "PLANNING" or "MANAGER_REVIEW" or "RECONCILING_CONVERSATION"", loop, StringComparison.Ordinal);
+        Assert.Contains("_autopilot is \"PLANNING\" or \"MANAGER_REVIEW\" or \"RECONCILING_CONVERSATION\"", loop, StringComparison.Ordinal);
     }
 
     [Fact]
