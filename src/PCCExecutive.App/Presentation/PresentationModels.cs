@@ -242,21 +242,34 @@ public sealed record RuntimeSnapshot(
     public string BlockerCountText => GatewayBound ? BlockerCount.ToString() : "—";
     public string VerifiedCompletionText => VerifiedCompletion is null ? "—" : $"{VerifiedCompletion}%";
     public string ManagerEstimateText => ManagerEstimate is null ? "—" : $"{ManagerEstimate}%";
-    public string HealthText => GlobalHealth switch
-    {
-        HealthState.RateLimited => "RATE LIMITED",
-        HealthState.TemporaryError => "TEMPORARY ERROR",
-        HealthState.PartialResponse => "PARTIAL RESPONSE",
-        HealthState.LoginRequired => "LOGIN REQUIRED",
-        HealthState.AdapterUncertain => "ADAPTER UNCERTAIN",
-        _ => GlobalHealth.ToString().ToUpperInvariant()
-    };
+
+    // Browser runtime lifecycle and ChatGPT semantic health are different facts. The runtime host
+    // intentionally keeps GlobalHealth=Unknown until semantic ChatGPT evidence exists, but Screen 01
+    // must still report the connection fact once a live Manager runtime has positive PCC ownership.
+    // This avoids the old false "UNKNOWN" after a successful Connect without fabricating HEALTHY.
+    public bool ChromeConnectionProven => GatewayBound && Sessions.Any(x =>
+        x.IsPccOwned &&
+        string.Equals(x.Role, "Manager", StringComparison.OrdinalIgnoreCase) &&
+        x.State is "READY" or "HIDDEN" or "VISIBLE" or "ACTIVE");
+
+    public string HealthText => GlobalHealth == HealthState.Unknown && ChromeConnectionProven
+        ? "CHROME CONNECTED"
+        : GlobalHealth switch
+        {
+            HealthState.RateLimited => "RATE LIMITED",
+            HealthState.TemporaryError => "TEMPORARY ERROR",
+            HealthState.PartialResponse => "PARTIAL RESPONSE",
+            HealthState.LoginRequired => "LOGIN REQUIRED",
+            HealthState.AdapterUncertain => "ADAPTER UNCERTAIN",
+            _ => GlobalHealth.ToString().ToUpperInvariant()
+        };
 
     public string HealthAccent => GlobalHealth switch
     {
         HealthState.Healthy => "#6EE7B7",
         HealthState.Slow or HealthState.Throttled or HealthState.RateLimited or HealthState.Cooldown => "#FBBF24",
         HealthState.Recovering => "#8B5CF6",
+        HealthState.Unknown when ChromeConnectionProven => "#6EE7B7",
         HealthState.Unknown => "#8FA3B8",
         _ => "#FB7185"
     };
