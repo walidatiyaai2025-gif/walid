@@ -1,2 +1,2 @@
-source_commit=c0c2ab77f39b5b53edc420a5ed448093803174d0
-purpose=trigger exact-head Windows CI for bounded Manager structured-response recovery
+source_commit=8ae00330197a1d2ed10e994b4e8a0a30bcf6d6a9
+purpose=trigger exact-head Windows CI for bounded Manager structured-response recovery with canonical durable repair dispatch
