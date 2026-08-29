@@ -23,6 +23,14 @@ jobs:
           dotnet-version: 10.0.x
       - name: Apply ChatGPT assistant turn binding fix
         run: python .github/scripts/apply_chatgpt_turn_binding_fix.py
+      - name: Update deterministic fixture inventory
+        shell: pwsh
+        run: |
+          $path = 'tests/PCCExecutive.Browser.Tests/ResilienceHardeningTests.cs'
+          $text = Get-Content -Raw $path
+          $text = $text.Replace('Assert.Equal(17, ChatGptAdapterFixtures.All.Count);', 'Assert.Equal(18, ChatGptAdapterFixtures.All.Count);')
+          $text = $text.Replace('Assert.Contains(ChatGptAdapterFixtures.All, x => x.Name == "response-complete-without-actions");', 'Assert.Contains(ChatGptAdapterFixtures.All, x => x.Name == "response-complete-without-actions");' + [Environment]::NewLine + '        Assert.Contains(ChatGptAdapterFixtures.All, x => x.Name == "response-complete-modern-turn");')
+          Set-Content -NoNewline -Encoding utf8 $path $text
       - name: Browser regression tests
         run: dotnet test tests/PCCExecutive.Browser.Tests/PCCExecutive.Browser.Tests.csproj -c Release
       - name: Full deterministic solution
@@ -33,6 +41,6 @@ jobs:
           git rm .github/scripts/apply_chatgpt_turn_binding_fix.py .github/workflows/assistant-turn-binding-fix.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/PCCExecutive.Browser/ChatGptBrowserAdapter.cs tests/PCCExecutive.Browser.Tests/ChatGptAdapterFixtures.cs tests/PCCExecutive.Browser.Tests/ChatGptCompletionRegressionTests.cs
+          git add src/PCCExecutive.Browser/ChatGptBrowserAdapter.cs tests/PCCExecutive.Browser.Tests/ChatGptAdapterFixtures.cs tests/PCCExecutive.Browser.Tests/ChatGptCompletionRegressionTests.cs tests/PCCExecutive.Browser.Tests/ResilienceHardeningTests.cs
           git commit -m "fix(browser): bind and detect current ChatGPT assistant turns"
           git push origin HEAD:worker/pcc-autopilot-livelock-recovery
