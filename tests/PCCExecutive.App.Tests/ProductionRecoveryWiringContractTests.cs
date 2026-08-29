@@ -106,6 +106,22 @@ public sealed class ProductionRecoveryWiringContractTests
     }
 
     [Fact]
+    public void Manager_start_recovers_and_proves_pcc_chrome_before_live_evidence_or_planning()
+    {
+        var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
+        var readiness = Slice(source, "private async Task<bool> EnsureManagerChromeReadyAsync", "private async Task StartManagerAsync");
+        var start = Slice(source, "private async Task StartManagerAsync", "private string BuildManagerPrompt");
+
+        Assert.Contains("RECOVERING_CHROME", readiness, StringComparison.Ordinal);
+        Assert.Contains("ConnectManagerChromeAsync(cancellationToken)", readiness, StringComparison.Ordinal);
+        Assert.Contains("_ownership.ProveAsync(runtime", readiness, StringComparison.Ordinal);
+        Assert.Contains("CHROME_READY", readiness, StringComparison.Ordinal);
+        AssertOrdered(start,
+            "EnsureManagerChromeReadyAsync(cancellationToken)",
+            "_baseline.BuildAsync");
+    }
+
+    [Fact]
     public void Normal_disposal_invokes_safe_shutdown_coordinator()
     {
         var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
