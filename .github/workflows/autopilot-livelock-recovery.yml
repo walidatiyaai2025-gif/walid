@@ -25,6 +25,13 @@ jobs:
         shell: pwsh
         run: python .github/scripts/apply_autopilot_livelock_fix_v2.py
 
+      - name: Fix generated regression imports
+        shell: pwsh
+        run: |
+          $path = 'tests/PCCExecutive.App.Tests/AutopilotLivelockRecoveryContractTests.cs'
+          $body = Get-Content $path -Raw
+          Set-Content -Path $path -Value ("using System;`r`nusing System.IO;`r`n" + $body) -Encoding utf8
+
       - name: Run focused recovery tests
         shell: pwsh
         run: dotnet test tests/PCCExecutive.App.Tests/PCCExecutive.App.Tests.csproj -c Release
