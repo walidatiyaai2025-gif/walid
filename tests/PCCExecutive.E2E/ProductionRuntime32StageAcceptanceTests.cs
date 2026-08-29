@@ -51,7 +51,11 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         Stage(7);
 
         await h.ConnectManagerAsync();
+        var autopilotCancellation = ProductionRuntimeAcceptanceHarness.GetField<CancellationTokenSource>(h.Host, "_autopilotCancellation");
+        autopilotCancellation.Cancel();
         await h.StartManagerAsync();
+        var autopilotTask = ProductionRuntimeAcceptanceHarness.GetField<Task?>(h.Host, "_autopilotTask");
+        if (autopilotTask is not null) await autopilotTask;
         var managerRuntime = await h.RuntimeForAsync(h.ManagerAgentId);
         var managerPrompt = h.Adapter.SubmittedPrompts.Last(x => x.RuntimeId == managerRuntime.RuntimeId).Prompt;
         Assert.Contains("PCC_SOURCE_SHA:", managerPrompt, StringComparison.Ordinal);
