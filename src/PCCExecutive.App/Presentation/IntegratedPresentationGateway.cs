@@ -869,11 +869,25 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         var baseline = _managerBaseline ?? throw new InvalidOperationException("Manager planning baseline is unavailable for structured-response repair.");
         var repairPrompt = ManagerPlanningPromptBuilder.BuildFormatRepair(rejectedResponseHash, parsed.Findings, baseline);
         var repairHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(repairPrompt))).ToLowerInvariant();
+        var repairConversation = new ConversationId(Guid.Parse(runtime.ConversationIdentity));
+        var repairTaskKey = $"{runtime.TaskId ?? $"manager-plan:{run.Id}"}:format-repair:{rejectedResponseHash}";
+        var repairTaskId = CanonicalDispatchIdentity.StableTask(run.Id, repairTaskKey);
+        var repairWaveId = CanonicalDispatchIdentity.StableWave(run.Id, repairTaskKey);
+        var repairCorrelation = new DurableDispatchCorrelation(
+            run.Id,
+            managerAgentId,
+            null,
+            repairTaskId,
+            repairWaveId,
+            repairConversation,
+            runtime.ProviderConversationIdentity,
+            repairHash);
+        var repairDispatch = await _dispatchReservations.ReserveOrRecoverAsync(repairCorrelation, cancellationToken).ConfigureAwait(false);
         var request = new AgentRequest(
             run.Id,
             managerAgentId,
-            new ConversationId(Guid.Parse(runtime.ConversationIdentity)),
-            DispatchId.New(),
+            repairConversation,
+            repairDispatch.Id,
             repairPrompt,
             repairHash,
             null,
@@ -1652,5 +1666,6 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         public bool ContainsFingerprint(string fingerprint) => false;
     }
 }
+
 
 
