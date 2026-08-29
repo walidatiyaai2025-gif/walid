@@ -778,6 +778,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         }
         var prompt = BuildManagerPrompt(run, baseline.Value);
         _managerBaseline = baseline.Value;
+        await ResetManagerFormatRepairStateAsync(run, cancellationToken).ConfigureAwait(false);
         await _store.SaveCheckpointAsync(new DurableCheckpoint($"manager-baseline:{run.Id}", run.Id.ToString(), "manager-baseline-v1", JsonSerializer.Serialize(baseline.Value), DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt))).ToLowerInvariant();
         await PersistAgentBindingAsync(managerAgentId, null, null, managerConversation, cancellationToken).ConfigureAwait(false);
@@ -815,7 +816,97 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     }
 
     private string BuildManagerPrompt(ProjectRun run, ProjectBaselineSnapshot baseline) =>
-        $"PROJECT_ID: {_projectControlId}\nDISPLAY_NAME: {_projectDisplay}\nREPOSITORY: {_projectRepository}\nPROJECT_RUN: {run.Id}\nPCC_SOURCE_SHA: {baseline.PccSourceSha}\nROUTING_IDENTITY: {baseline.RoutingIdentity}\nDEFAULT_BRANCH: {baseline.DefaultBranch}\nDEFAULT_HEAD: {baseline.DefaultHeadSha}\nVERIFIED_COMPLETION: {run.VerifiedCompletion.Percent}\nMANAGER_ESTIMATE: {run.ManagerEstimate.Percent}\nACTIVE_WORKERS: 0/5\nAUTOPILOT: {_autopilot}\n\nReturn one JSON object only; do not use markdown fences. Required top-level fields: ManagerEstimate, ExpectedHead, ExpectedRoutingIdentity, ProjectDecision, KnownBlockers, Tasks (0..5). Prefer ExpectedRoutingIdentity as the exact ROUTING_IDENTITY string above; a structured object is accepted only when its supplied fields match fresh live routing. Each task requires TaskId GUID, Objective, Repository, Paths, Components, ExclusiveResources, Dependencies, AcceptanceCriteria, EvidenceExpected, Priority, SuggestedWorkerSlot (1..5), Reason, KnownBlockers, RequiredPreviousTasks, RecommendedExecutionMode, TargetScope, TargetVariant, ExpectedHead, RelatedPullRequest, ExpectedPullRequestState, TargetBranch, FeatureExpansion. TargetScope MUST be exactly Project, Core, or Variant; never put component/work-area labels such as UI, Runtime, Browser, Installer, Release, Desktop, or App in TargetScope. Put those labels in Components or Paths instead. Priority may be integer or P0/P1/... with P0 highest. Dependencies and RequiredPreviousTasks should contain intra-wave TaskId GUIDs only; external PR/head prerequisites belong in KnownBlockers. RelatedPullRequest may be one integer or an integer array. Prefer RecommendedExecutionMode values AutomaticStaged, Sequential, or Manual. TargetBranch may propose a new valid Git branch but never implies merge authorization.";
+        ManagerPlanningPromptBuilder.Build(_projectControlId ?? baseline.ProjectControlId, _projectDisplay, _projectRepository, run, baseline, _autopilot);
+
+    private sealed record DurableManagerFormatRepair(string? RejectedResponseHash, int AttemptsUsed, string? RepairContentHash, DateTimeOffset? SubmittedAt);
+
+    private static string ManagerFormatRepairCheckpointKey(ProjectRun run) => $"manager-format-repair:{run.Id}";
+
+    private async Task<DurableManagerFormatRepair> LoadManagerFormatRepairStateAsync(ProjectRun run, CancellationToken cancellationToken)
+    {
+        var checkpoint = await _store.LoadCheckpointAsync(ManagerFormatRepairCheckpointKey(run), cancellationToken).ConfigureAwait(false);
+        if (checkpoint is null || string.IsNullOrWhiteSpace(checkpoint.Payload))
+            return new DurableManagerFormatRepair(null, 0, null, null);
+        try
+        {
+            return JsonSerializer.Deserialize<DurableManagerFormatRepair>(checkpoint.Payload)
+                ?? new DurableManagerFormatRepair(null, 0, null, null);
+        }
+        catch (JsonException)
+        {
+            return new DurableManagerFormatRepair(null, 0, null, null);
+        }
+    }
+
+    private Task ResetManagerFormatRepairStateAsync(ProjectRun run, CancellationToken cancellationToken) =>
+        _store.SaveCheckpointAsync(
+            new DurableCheckpoint(
+                ManagerFormatRepairCheckpointKey(run),
+                run.Id.ToString(),
+                "manager-format-repair-v1",
+                JsonSerializer.Serialize(new DurableManagerFormatRepair(null, 0, null, null)),
+                DateTimeOffset.UtcNow),
+            cancellationToken);
+
+    private async Task<bool> TryRepairManagerResponseFormatAsync(
+        ProjectRun run,
+        LogicalAgentId managerAgentId,
+        BrowserRuntimeRecord runtime,
+        ChatGptSemanticSnapshot semantic,
+        ManagerPlanParseResult parsed,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(semantic.CapturedResponseText))
+            return false;
+        if (string.IsNullOrWhiteSpace(runtime.ConversationIdentity) || string.IsNullOrWhiteSpace(runtime.ProviderConversationIdentity))
+            return false;
+
+        var rejectedResponseHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(semantic.CapturedResponseText))).ToLowerInvariant();
+        var repairState = await LoadManagerFormatRepairStateAsync(run, cancellationToken).ConfigureAwait(false);
+        if (!ManagerPlanningPromptBuilder.CanSubmitOrReconcileFormatRepair(repairState.AttemptsUsed, repairState.RejectedResponseHash, rejectedResponseHash))
+            return false;
+
+        var baseline = _managerBaseline ?? throw new InvalidOperationException("Manager planning baseline is unavailable for structured-response repair.");
+        var repairPrompt = ManagerPlanningPromptBuilder.BuildFormatRepair(rejectedResponseHash, parsed.Findings, baseline);
+        var repairHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(repairPrompt))).ToLowerInvariant();
+        var request = new AgentRequest(
+            run.Id,
+            managerAgentId,
+            new ConversationId(Guid.Parse(runtime.ConversationIdentity)),
+            DispatchId.New(),
+            repairPrompt,
+            repairHash,
+            null,
+            null,
+            null,
+            runtime.ProviderConversationIdentity);
+        var result = await _agentProvider.SendAsync(request, cancellationToken).ConfigureAwait(false);
+
+        if (repairState.AttemptsUsed == 0)
+        {
+            await _store.SaveCheckpointAsync(
+                new DurableCheckpoint(
+                    ManagerFormatRepairCheckpointKey(run),
+                    run.Id.ToString(),
+                    "manager-format-repair-v1",
+                    JsonSerializer.Serialize(new DurableManagerFormatRepair(rejectedResponseHash, 1, repairHash, DateTimeOffset.UtcNow)),
+                    DateTimeOffset.UtcNow),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        CaptureProviderAttention(result.ErrorCode, runtime.RuntimeId, "Manager ChatGPT session");
+        if (!result.Accepted && !result.IsUncertain)
+            throw new InvalidOperationException($"Manager structured-response repair send stopped safely: {result.ErrorCode ?? result.ProviderEvidence ?? "unknown provider state"}.");
+
+        _autopilot = "PLANNING";
+        _latestManagerHandoff = result.IsUncertain
+            ? $"REPAIRING_MANAGER_FORMAT — the bounded JSON-only correction dispatch {result.DispatchId} is uncertain; PCC is reconciling it safely and will not duplicate the physical send."
+            : $"REPAIRING_MANAGER_FORMAT — Manager returned an unstructured response. PCC submitted one bounded JSON-only correction automatically ({result.DispatchId}) and is waiting for the corrected response.";
+        _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "REPAIRING_MANAGER_FORMAT", $"rejected={rejectedResponseHash};repair={repairHash};accepted={result.Accepted};uncertain={result.IsUncertain}", true));
+        await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+        if (_settings.AutoResume) EnsureAutopilotLoop();
+        return true;
+    }
 
     private async Task ReconcileManagerResponseAsync(CancellationToken cancellationToken)
     {
@@ -894,7 +985,12 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
 
         var parsed = new StructuredManagerPlanParser().Parse(semantic.CapturedResponseText);
         if (!parsed.IsValid || parsed.Plan is null)
-            throw new InvalidOperationException($"Manager response rejected: {string.Join("; ", parsed.Findings.Select(x => $"{x.Code}:{x.Message}"))}");
+        {
+            if (await TryRepairManagerResponseFormatAsync(run, managerAgentId, runtime, semantic, parsed, cancellationToken).ConfigureAwait(false))
+                return;
+            throw new InvalidOperationException($"Manager response rejected after bounded automatic format repair: {string.Join("; ", parsed.Findings.Select(x => $"{x.Code}:{x.Message}"))}");
+        }
+        await ResetManagerFormatRepairStateAsync(run, cancellationToken).ConfigureAwait(false);
         var planFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", parsed.Plan.Tasks.Select(x => x.Task.Fingerprint))))).ToLowerInvariant();
         var routingResult = await _pcc.ResolveProjectAsync(_projectControlId!, cancellationToken).ConfigureAwait(false);
         var baselineResult = await _baseline.BuildAsync(_projectControlId!, cancellationToken).ConfigureAwait(false);
@@ -933,7 +1029,22 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                 await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
                 return;
             }
-            throw new InvalidOperationException("A zero-task Manager response must request CLOSE with 99% evidence-backed completion, or identify a real blocker.");
+            if (string.Equals(parsed.Plan.ProjectDecision, "BLOCKED", StringComparison.OrdinalIgnoreCase) && parsed.Plan.KnownBlockers.Count > 0)
+            {
+                _run = run with { State = ProjectRunState.BlockedExternal, ManagerEstimate = parsed.Plan.ManagerEstimate, CompletionMode = ProjectCompletionMode.Blocked };
+                _currentPlan = parsed.Plan;
+                _currentWave = _currentWave is null ? null : _currentWave with { State = WaveState.Blocked };
+                await _store.SaveCheckpointAsync(new DurableCheckpoint($"manager-plan:{run.Id}", run.Id.ToString(), "structured-manager-plan-v1", semantic.CapturedResponseText, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+                await _orchestrationStore.SaveAsync(new OrchestrationRecoverySnapshot(_run, _currentWave, _runtimeTasks, _assignments, [], null, OrchestrationPhase.BlockedExternal, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+                _autopilot = "BLOCKED_EXTERNAL";
+                _runtimeErrorFingerprint = null;
+                _runtimeErrorCount = 0;
+                await PersistLoopGuardAsync(false, cancellationToken).ConfigureAwait(false);
+                _latestManagerHandoff = $"BLOCKED_EXTERNAL — Manager supplied a valid structured blocker response: {string.Join("; ", parsed.Plan.KnownBlockers)}";
+                await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            throw new InvalidOperationException("A zero-task Manager response must request CLOSE with 99% evidence-backed completion or ProjectDecision BLOCKED with concrete KnownBlockers.");
         }
 
         var taskStates = parsed.Plan.Tasks.ToDictionary(x => x.Task.Id, x => x.Task.State);
@@ -1541,4 +1652,5 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         public bool ContainsFingerprint(string fingerprint) => false;
     }
 }
+
 
