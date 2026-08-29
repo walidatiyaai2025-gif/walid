@@ -10,7 +10,11 @@ function Replace-Exact([string]$Path, [string]$Old, [string]$New) {
 $browser = 'src/PCCExecutive.Browser/ChatGptBrowserAdapter.cs'
 $text = Get-Content -Raw -LiteralPath $browser
 $text = $text.Replace('public const string CurrentAdapterVersion = "chatgpt-web-semantic-v3";', 'public const string CurrentAdapterVersion = "chatgpt-web-semantic-v4";')
-$pattern = '(?s)    private static async Task<IReadOnlyList<string>> AssistantTextsAsync\(IPage page\)\s*\{.*?\n    \}\n\n    private static async Task<IReadOnlyList<string>> UserMessageTextsAsync'
+$startMarker = '    private static async Task<IReadOnlyList<string>> AssistantTextsAsync(IPage page)'
+$endMarker = '    private static async Task<IReadOnlyList<string>> UserMessageTextsAsync(IPage page)'
+$start = $text.IndexOf($startMarker, [StringComparison]::Ordinal)
+$end = $text.IndexOf($endMarker, [StringComparison]::Ordinal)
+if ($start -lt 0 -or $end -le $start) { throw 'AssistantTextsAsync markers not found.' }
 $replacement = @'
     private static async Task<IReadOnlyList<string>> AssistantTextsAsync(IPage page)
     {
@@ -29,14 +33,10 @@ $replacement = @'
                     out.push(text);
                   };
 
-                  // Stable role markers used by several ChatGPT generations.
                   for (const el of document.querySelectorAll("[data-message-author-role='assistant'], [data-turn='assistant']"))
                     push(read(el));
                   if (out.length) return out;
 
-                  // Current ChatGPT changes turn wrappers frequently. Detect the semantic role from
-                  // accessible labels as well as rendered assistant markdown/prose instead of tying
-                  // completion to one data-testid shape.
                   const turns = Array.from(document.querySelectorAll(
                     "article[data-testid*='conversation-turn'], [data-testid*='conversation-turn'], article, [role='article']"));
                   for (const turn of turns) {
@@ -51,8 +51,6 @@ $replacement = @'
                   }
                   if (out.length) return out;
 
-                  // Accessibility fallback: locate the semantic "ChatGPT said" label and climb only
-                  // to its nearest turn-like container. This survives UI builds that remove data-turn.
                   const labels = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[aria-label]'));
                   for (const label of labels) {
                     const marker = `${read(label)} ${label.getAttribute('aria-label') || ''}`.toLowerCase();
@@ -63,7 +61,6 @@ $replacement = @'
                   }
                   if (out.length) return out;
 
-                  // Last safe DOM fallback: rendered markdown/prose outside a user-labelled turn.
                   for (const content of document.querySelectorAll('.markdown, [class*="markdown"], .prose, [class*="prose"]')) {
                     const turn = content.closest("article, [role='article'], [data-testid*='conversation-turn'], [data-turn]") || content.parentElement;
                     const marker = read(turn).toLowerCase();
@@ -81,11 +78,9 @@ $replacement = @'
         }
     }
 
-    private static async Task<IReadOnlyList<string>> UserMessageTextsAsync
 '@
-$updated = [regex]::Replace($text, $pattern, $replacement, 1)
-if ($updated -eq $text) { throw 'AssistantTextsAsync replacement did not apply.' }
-Set-Content -LiteralPath $browser -Value $updated -Encoding utf8NoBOM
+$text = $text.Substring(0, $start) + $replacement + $text.Substring($end)
+Set-Content -LiteralPath $browser -Value $text -Encoding utf8NoBOM
 
 $xaml = 'src/PCCExecutive.App/MainWindow.xaml'
 Replace-Exact $xaml @'
