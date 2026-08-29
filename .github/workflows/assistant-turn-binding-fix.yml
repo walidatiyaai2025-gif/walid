@@ -1,0 +1,38 @@
+name: PCC ChatGPT assistant turn binding fix
+
+on:
+  push:
+    branches:
+      - worker/pcc-autopilot-livelock-recovery
+    paths:
+      - .github/scripts/apply_chatgpt_turn_binding_fix.py
+      - .github/workflows/assistant-turn-binding-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Apply ChatGPT assistant turn binding fix
+        run: python .github/scripts/apply_chatgpt_turn_binding_fix.py
+      - name: Browser regression tests
+        run: dotnet test tests/PCCExecutive.Browser.Tests/PCCExecutive.Browser.Tests.csproj -c Release
+      - name: Full deterministic solution
+        run: dotnet test PCCExecutive.sln -c Release
+      - name: Commit proven fix and retire applicator
+        shell: pwsh
+        run: |
+          git rm .github/scripts/apply_chatgpt_turn_binding_fix.py .github/workflows/assistant-turn-binding-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/PCCExecutive.Browser/ChatGptBrowserAdapter.cs tests/PCCExecutive.Browser.Tests/ChatGptAdapterFixtures.cs tests/PCCExecutive.Browser.Tests/ChatGptCompletionRegressionTests.cs
+          git commit -m "fix(browser): bind and detect current ChatGPT assistant turns"
+          git push origin HEAD:worker/pcc-autopilot-livelock-recovery
