@@ -76,19 +76,23 @@ public sealed class GuidedExecutionEvaluator
     {
         if (!chrome.Satisfied) return BlockedBy(GuidedStepId.Manager, chrome, "Manager requires a proven Chrome runtime.");
         if (!project.Satisfied) return BlockedBy(GuidedStepId.Manager, project, "Manager requires a canonical project and valid run.");
+        // A live Manager browser/runtime only proves that PCC can talk to the logical Manager.
+        // Step 04 is complete only after the structured Manager plan itself has been accepted.
+        if (runtime.ManagerPlanningValid)
+            return Step(GuidedStepId.Manager, true, GuidedStepState.Completed, "MANAGER_PLAN_VALID", "A structured Manager plan has been accepted and validated.");
         if (runtime.ManagerRuntimeAvailable)
-            return Step(GuidedStepId.Manager, true, GuidedStepState.Completed, "MANAGER_READY", "Manager logical runtime is available.");
-        return Step(GuidedStepId.Manager, false, GuidedStepState.Current, "MANAGER_START_REQUIRED", "The Manager runtime can now be created or recovered safely.", GuidedStepId.Manager, "Start / Continue Manager");
+            return Step(GuidedStepId.Manager, false, GuidedStepState.Current, "MANAGER_PLAN_IN_PROGRESS", "PCC Executive is reading and validating the Manager response.", GuidedStepId.Manager, automaticallyRecoverable: true);
+        return Step(GuidedStepId.Manager, false, GuidedStepState.Current, "MANAGER_START_REQUIRED", "The Manager runtime can now be created or continued safely.", GuidedStepId.Manager, "Start / Continue Manager");
     }
 
     private static PrerequisiteEvaluation EvaluateOrchestration(GuidedRuntimeState runtime, PrerequisiteEvaluation manager)
     {
-        if (!manager.Satisfied) return BlockedBy(GuidedStepId.Orchestration, manager, "Orchestration requires the Manager runtime.");
+        if (!manager.Satisfied) return BlockedBy(GuidedStepId.Orchestration, manager, "Orchestration requires a validated Manager plan.");
         if (runtime.GlobalSafetyBlocked)
             return Step(GuidedStepId.Orchestration, false, GuidedStepState.Blocked, "GLOBAL_SAFETY_BLOCK", "A global runtime safety guard is active.", GuidedStepId.Chrome, "Review Runtime Health");
-        if (runtime.ManagerPlanningValid && runtime.DispatchReady)
+        if (runtime.DispatchReady)
             return Step(GuidedStepId.Orchestration, true, GuidedStepState.Completed, "ORCHESTRATION_READY", "Manager planning and dispatch prerequisites are valid.");
-        return Step(GuidedStepId.Orchestration, false, GuidedStepState.Current, "MANAGER_PLAN_REQUIRED", "A valid Manager plan is required before dispatch.", GuidedStepId.Manager, "Start / Continue Manager");
+        return Step(GuidedStepId.Orchestration, false, GuidedStepState.Current, "DISPATCH_NOT_READY", "The Manager plan is valid; PCC is preparing the next safe orchestration action.", GuidedStepId.Orchestration, automaticallyRecoverable: true);
     }
 
     private static PrerequisiteEvaluation BlockedBy(GuidedStepId step, PrerequisiteEvaluation prerequisite, string why) =>
@@ -107,7 +111,7 @@ public sealed class GuidedExecutionEvaluator
             return new(GuidedStepId.Orchestration, GuidedActionKind.None, "AUTOPILOT_ACTIVE", "05+ Orchestration — PCC Executive is running the project. No operator action is required.");
         if (pending.AutomaticallyRecoverable)
             return new(pending.RequiredStep ?? pending.Step, GuidedActionKind.Automatic, pending.ReasonCode,
-                $"{NumberedName(pending.RequiredStep ?? pending.Step)} — automatic recovery is in progress. No operator action is required.");
+                $"{NumberedName(pending.RequiredStep ?? pending.Step)} — automatic work is in progress. No operator action is required.");
 
         var kind = pending.State == GuidedStepState.AttentionRequired ? GuidedActionKind.HumanAttention : GuidedActionKind.InvokeControl;
         var target = pending.RequiredStep ?? pending.Step;
