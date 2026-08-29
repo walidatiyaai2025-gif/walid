@@ -1,0 +1,4 @@
+Exact production fix under validation:
+6153c0a70420798f481cb2ef238a4d4f56f42c7a
+
+Purpose: trigger exact-head Windows installer validation for ChatGPT assistant-turn detection and expected-conversation binding.
