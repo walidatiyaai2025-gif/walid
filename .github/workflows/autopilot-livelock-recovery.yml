@@ -1,0 +1,168 @@
+name: PCC autopilot livelock recovery
+
+on:
+  push:
+    branches:
+      - worker/pcc-autopilot-livelock-recovery
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Apply recovered-state normalization and regression contracts
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+
+          source_path = Path('src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs')
+          test_path = Path('tests/PCCExecutive.App.Tests/ProductionRecoveryWiringContractTests.cs')
+
+          source = source_path.read_text(encoding='utf-8')
+
+          old = '_autopilot = recovered.Phase.ToString().ToUpperInvariant();'
+          new = '_autopilot = MapRecoveredPhaseToAutopilot(recovered.Phase, recovered.CurrentWave);'
+          if old not in source:
+              raise SystemExit('startup raw phase assignment anchor not found')
+          source = source.replace(old, new, 1)
+
+          snapshot_anchor = '        Snapshot = BuildSnapshot(Array.Empty<BrowserRuntimeRecord>(), new HashSet<string>(StringComparer.Ordinal));'
+          if snapshot_anchor not in source:
+              raise SystemExit('snapshot constructor anchor not found')
+          source = source.replace(snapshot_anchor, '        NormalizeRecoveredAutopilotState();\n' + snapshot_anchor, 1)
+
+          loop_anchor = '''            try\n            {\n                if (_sendGate.Snapshot is { IsPaused: true, ResumeNotBefore: not null } gate'''
+          if loop_anchor not in source:
+              raise SystemExit('autopilot loop anchor not found')
+          source = source.replace(loop_anchor, '''            try\n            {\n                NormalizeRecoveredAutopilotState();\n                if (_sendGate.Snapshot is { IsPaused: true, ResumeNotBefore: not null } gate''', 1)
+
+          method_anchor = '    private async Task PersistLoopGuardAsync(bool autoStopped, CancellationToken cancellationToken)'
+          if method_anchor not in source:
+              raise SystemExit('method insertion anchor not found')
+          methods = r'''    private static string MapRecoveredPhaseToAutopilot(OrchestrationPhase phase, Wave? wave) => phase switch
+    {
+        OrchestrationPhase.Initializing => "READY",
+        OrchestrationPhase.ManagerPlanning => "PLANNING",
+        OrchestrationPhase.WaveValidation => wave?.State == WaveState.Ready ? "READY_TO_DISPATCH" : "PLANNING",
+        OrchestrationPhase.Dispatching => wave?.State == WaveState.Running ? "WAITING_WORKERS" : wave?.State == WaveState.Ready ? "READY_TO_DISPATCH" : "RECOVERING",
+        OrchestrationPhase.WaveRunning => "WAITING_WORKERS",
+        OrchestrationPhase.Reconciling => "WAITING_WORKERS",
+        OrchestrationPhase.ManagerReview => "MANAGER_REVIEW",
+        OrchestrationPhase.ClosureMode => "CLOSURE_VERIFY",
+        OrchestrationPhase.VerifiedComplete => "VERIFIED_COMPLETE",
+        OrchestrationPhase.BlockedExternal => "RECOVERING",
+        OrchestrationPhase.StalledAutoStopped => "STALLED",
+        OrchestrationPhase.StoppedByOperator => "PAUSED",
+        _ => "RECOVERING"
+    };
+
+    private void NormalizeRecoveredAutopilotState()
+    {
+        if (_run is null) return;
+
+        // Durable OrchestrationPhase names are not the runtime command vocabulary. Older
+        // builds restored raw enum names such as MANAGERPLANNING, which no branch in the
+        // autonomous loop recognized, producing an endless READY/PREPARING refresh cycle.
+        _autopilot = _autopilot switch
+        {
+            "INITIALIZING" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.Initializing, _currentWave),
+            "MANAGERPLANNING" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.ManagerPlanning, _currentWave),
+            "WAVEVALIDATION" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.WaveValidation, _currentWave),
+            "DISPATCHING" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.Dispatching, _currentWave),
+            "WAVERUNNING" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.WaveRunning, _currentWave),
+            "RECONCILING" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.Reconciling, _currentWave),
+            "MANAGERREVIEW" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.ManagerReview, _currentWave),
+            "CLOSUREMODE" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.ClosureMode, _currentWave),
+            "VERIFIEDCOMPLETE" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.VerifiedComplete, _currentWave),
+            "BLOCKEDEXTERNAL" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.BlockedExternal, _currentWave),
+            "STALLEDAUTOSTOPPED" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.StalledAutoStopped, _currentWave),
+            "STOPPEDBYOPERATOR" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.StoppedByOperator, _currentWave),
+            _ => _autopilot
+        };
+
+        if (_autopilot == "READY" && _currentPlan is not null && _currentWave is { State: WaveState.Ready })
+            _autopilot = "READY_TO_DISPATCH";
+        else if (_autopilot == "READY" && _currentPlan is not null && _currentWave is { State: WaveState.Running })
+            _autopilot = "WAITING_WORKERS";
+
+        var durablePlanWaveGap =
+            (_currentPlan is not null && _currentWave is null) ||
+            (_currentPlan is null && _currentWave is { State: WaveState.Ready });
+        if (durablePlanWaveGap && (_autopilot is "READY" or "RECOVERING" or "READY_TO_DISPATCH"))
+        {
+            _autopilot = "PLANNING";
+            _latestManagerHandoff = "RECOVERING_MANAGER_RESPONSE — durable Manager plan/wave state is incomplete; PCC is re-reading and revalidating the already-received Manager response without sending a duplicate prompt.";
+        }
+    }
+
+'''
+          source = source.replace(method_anchor, methods + method_anchor, 1)
+          source_path.write_text(source, encoding='utf-8')
+
+          tests = test_path.read_text(encoding='utf-8')
+          insert_anchor = '    [Fact]\n    public void Normal_disposal_invokes_safe_shutdown_coordinator()'
+          if insert_anchor not in tests:
+              raise SystemExit('test insertion anchor not found')
+          regression = r'''    [Fact]
+    public void Restart_maps_durable_orchestration_phase_to_actionable_autopilot_vocabulary()
+    {
+        var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
+
+        Assert.DoesNotContain("_autopilot = recovered.Phase.ToString().ToUpperInvariant();", source, StringComparison.Ordinal);
+        Assert.Contains("MapRecoveredPhaseToAutopilot(recovered.Phase, recovered.CurrentWave)", source, StringComparison.Ordinal);
+        var mapping = Slice(source, "private static string MapRecoveredPhaseToAutopilot", "private void NormalizeRecoveredAutopilotState");
+        Assert.Contains("OrchestrationPhase.ManagerPlanning => \"PLANNING\"", mapping, StringComparison.Ordinal);
+        Assert.Contains("OrchestrationPhase.WaveValidation => wave?.State == WaveState.Ready ? \"READY_TO_DISPATCH\"", mapping, StringComparison.Ordinal);
+        Assert.Contains("OrchestrationPhase.ManagerReview => \"MANAGER_REVIEW\"", mapping, StringComparison.Ordinal);
+        Assert.Contains("OrchestrationPhase.ClosureMode => \"CLOSURE_VERIFY\"", mapping, StringComparison.Ordinal);
+        Assert.Contains("OrchestrationPhase.StalledAutoStopped => \"STALLED\"", mapping, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Autopilot_normalizes_restored_state_before_routing_and_reuses_existing_manager_response_for_plan_wave_gap()
+    {
+        var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
+        var loop = Slice(source, "private async Task RunAutopilotLoopAsync", "private async Task RunSessionActionAsync");
+        var normalize = Slice(source, "private void NormalizeRecoveredAutopilotState", "private async Task PersistLoopGuardAsync");
+
+        AssertOrdered(loop,
+            "NormalizeRecoveredAutopilotState();",
+            "if (_currentPlan is null",
+            "ReconcileManagerResponseAsync(cancellationToken)");
+        Assert.Contains("\"MANAGERPLANNING\" => MapRecoveredPhaseToAutopilot", normalize, StringComparison.Ordinal);
+        Assert.Contains("_currentPlan is not null && _currentWave is null", normalize, StringComparison.Ordinal);
+        Assert.Contains("_currentPlan is null && _currentWave is { State: WaveState.Ready }", normalize, StringComparison.Ordinal);
+        Assert.Contains("re-reading and revalidating the already-received Manager response without sending a duplicate prompt", normalize, StringComparison.Ordinal);
+    }
+
+'''
+          tests = tests.replace(insert_anchor, regression + insert_anchor, 1)
+          test_path.write_text(tests, encoding='utf-8')
+          '@ | Set-Content -Path apply_livelock_fix.py -Encoding utf8
+          python apply_livelock_fix.py
+      - name: Run focused application recovery tests
+        shell: pwsh
+        run: dotnet test tests/PCCExecutive.App.Tests/PCCExecutive.App.Tests.csproj -c Release --no-restore:$false
+      - name: Run full deterministic solution
+        shell: pwsh
+        run: dotnet test PCCExecutive.sln -c Release
+      - name: Commit proven livelock fix and retire applicator
+        shell: pwsh
+        run: |
+          Remove-Item .github/workflows/autopilot-livelock-recovery.yml
+          Remove-Item apply_livelock_fix.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs tests/PCCExecutive.App.Tests/ProductionRecoveryWiringContractTests.cs .github/workflows/autopilot-livelock-recovery.yml
+          git commit -m "fix(runtime): recover actionable autopilot state after restart"
+          git push origin HEAD:worker/pcc-autopilot-livelock-recovery
