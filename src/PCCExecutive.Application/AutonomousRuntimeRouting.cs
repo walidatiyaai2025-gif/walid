@@ -97,7 +97,9 @@ public sealed class RuntimeRecoveryLeaseCoordinator
         ArgumentException.ThrowIfNullOrWhiteSpace(runtimeId);
         ArgumentException.ThrowIfNullOrWhiteSpace(recoveryFingerprint);
         lease = null;
-        if (_completedFingerprints.TryGetValue(runtimeId, out var completed) && StringComparer.Ordinal.Equals(completed, recoveryFingerprint))
+        if (_completedFingerprints.TryGetValue(runtimeId, out var completed) &&
+            StringComparer.Ordinal.Equals(completed, recoveryFingerprint) &&
+            !IsRepeatableReconciliation(recoveryFingerprint))
             return false;
         if (!_active.TryAdd(runtimeId, 0))
             return false;
@@ -106,6 +108,9 @@ public sealed class RuntimeRecoveryLeaseCoordinator
     }
 
     public void Forget(string runtimeId) => _completedFingerprints.TryRemove(runtimeId, out _);
+
+    private static bool IsRepeatableReconciliation(string recoveryFingerprint) =>
+        recoveryFingerprint.StartsWith("startup:", StringComparison.Ordinal);
 
     private sealed class Lease(RuntimeRecoveryLeaseCoordinator owner, string runtimeId, string fingerprint) : IDisposable
     {
