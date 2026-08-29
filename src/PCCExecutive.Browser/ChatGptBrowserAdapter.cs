@@ -86,7 +86,21 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
     public async Task<string?> GetCurrentConversationIdentityAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default)
     {
         var page = await _pages.GetPageAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
-        return page is not null && Normalize(page.Url, out var identity) ? identity : null;
+        if (page is null) return null;
+        if (Normalize(page.Url, out var identity)) return identity;
+
+        try
+        {
+            await page.WaitForURLAsync(
+                new Regex(@"/c/[^/?#]+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant),
+                new PageWaitForURLOptions { Timeout = 2_500 }).ConfigureAwait(false);
+        }
+        catch (PlaywrightException)
+        {
+            // The autopilot will poll again. A URL timeout is not a runtime failure and never authorizes a resend.
+        }
+
+        return Normalize(page.Url, out identity) ? identity : null;
     }
 
     public async Task<ChatGptSemanticSnapshot> InspectAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, CancellationToken cancellationToken = default)
@@ -243,3 +257,4 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
         var direct = Regex.Match(value ?? string.Empty, @"(?:^|/c/)([A-Za-z0-9_-]{6,})$", RegexOptions.CultureInvariant); if (!direct.Success) return false; id = direct.Groups[1].Value.Trim(); return id.Length > 0;
     }
 }
+

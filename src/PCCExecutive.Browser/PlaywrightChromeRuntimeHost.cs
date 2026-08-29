@@ -187,7 +187,22 @@ public sealed class PlaywrightChromeRuntimeHost : IBrowserRuntimeHost, IPlaywrig
             var browser = await playwright.Chromium.ConnectOverCDPAsync(endpoint).ConfigureAwait(false);
             var context = browser.Contexts.FirstOrDefault()
                 ?? throw new InvalidOperationException("Chrome CDP connection has no browser context.");
-            var page = context.Pages.FirstOrDefault() ?? await context.NewPageAsync().ConfigureAwait(false);
+            var launchPages = context.Pages.Where(x => !x.IsClosed).ToArray();
+            var launchPageIndex = ChatGptPageSelectionPolicy.SelectForLaunch(launchPages.Select(x => x.Url).ToArray());
+            IPage page;
+            if (launchPageIndex >= 0)
+            {
+                page = launchPages[launchPageIndex];
+            }
+            else
+            {
+                page = await context.NewPageAsync().ConfigureAwait(false);
+                await page.GotoAsync("https://chatgpt.com/", new PageGotoOptions
+                {
+                    WaitUntil = WaitUntilState.DOMContentLoaded,
+                    Timeout = 20_000
+                }).ConfigureAwait(false);
+            }
             var contextIdentity = Guid.NewGuid().ToString("N");
 
             _connections[runtimeId] = new Connection(process, browser, page, contextIdentity, profilePath);
@@ -250,7 +265,12 @@ public sealed class PlaywrightChromeRuntimeHost : IBrowserRuntimeHost, IPlaywrig
         var browser = await playwright.Chromium.ConnectOverCDPAsync(endpoint).ConfigureAwait(false);
         var context = browser.Contexts.FirstOrDefault();
         if (context is null) return false;
-        var page = context.Pages.FirstOrDefault() ?? await context.NewPageAsync().ConfigureAwait(false);
+        var recoveryPages = context.Pages.Where(x => !x.IsClosed).ToArray();
+        var recoveryPageIndex = ChatGptPageSelectionPolicy.SelectForRecovery(
+            recoveryPages.Select(x => x.Url).ToArray(),
+            runtime.ProviderConversationIdentity);
+        if (recoveryPageIndex < 0) return false;
+        var page = recoveryPages[recoveryPageIndex];
         _connections[runtime.RuntimeId] = new Connection(process, browser, page, runtime.ContextIdentity ?? Guid.NewGuid().ToString("N"), runtime.ProfilePath);
         return true;
     }
@@ -318,7 +338,27 @@ public sealed class PlaywrightChromeRuntimeHost : IBrowserRuntimeHost, IPlaywrig
     public Task<IPage?> GetPageAsync(string runtimeId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(_connections.TryGetValue(runtimeId, out var connection) ? connection.Page : null);
+        if (!_connections.TryGetValue(runtimeId, out var connection))
+            return Task.FromResult<IPage?>(null);
+
+        var pages = connection.Browser.Contexts
+            .SelectMany(x => x.Pages)
+            .Where(x => !x.IsClosed)
+            .ToArray();
+        if (pages.Length == 0)
+            return Task.FromResult<IPage?>(null);
+
+        var currentIndex = Array.FindIndex(pages, x => ReferenceEquals(x, connection.Page));
+        var selectedIndex = ChatGptPageSelectionPolicy.SelectForLiveRefresh(
+            pages.Select(x => x.Url).ToArray(),
+            currentIndex);
+        if (selectedIndex >= 0 && !ReferenceEquals(connection.Page, pages[selectedIndex]))
+        {
+            connection = connection with { Page = pages[selectedIndex] };
+            _connections[runtimeId] = connection;
+        }
+
+        return Task.FromResult<IPage?>(connection.Page.IsClosed ? null : connection.Page);
     }
 
     public string ResolvePersistentProfilePath(BrowserSessionRequest request)
@@ -553,3 +593,4 @@ public sealed class PlaywrightChromeRuntimeHost : IBrowserRuntimeHost, IPlaywrig
         return string.IsNullOrWhiteSpace(sanitized) ? "unknown" : sanitized;
     }
 }
+
