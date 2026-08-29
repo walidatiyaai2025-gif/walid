@@ -157,13 +157,15 @@
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock x:Name="ActivityPulseText" Text="●" Foreground="#34D399" FontSize="14" FontWeight="Bold" VerticalAlignment="Center" ToolTip="UI heartbeat — this animation continues while the PCC Executive window is responsive."/>
                             <TextBlock x:Name="RuntimeActivityStateText" Grid.Column="1" Text="INITIALIZING" Foreground="#7DD3FC" FontSize="10" FontWeight="Bold" VerticalAlignment="Center" Margin="8,0,12,0"/>
                             <ProgressBar x:Name="RuntimeActivityProgress" Grid.Column="2" Width="92" Height="4" IsIndeterminate="True" VerticalAlignment="Center" Margin="0,0,12,0"/>
                             <TextBlock x:Name="RuntimeActivityDetailText" Grid.Column="3" Text="Loading runtime activity..." Foreground="#D6E3F0" FontSize="10" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-                            <TextBlock x:Name="RuntimeActivityAgeText" Grid.Column="4" Text="Runtime event: now" Foreground="{StaticResource Brush.Muted}" FontSize="10" VerticalAlignment="Center" Margin="12,0,0,0"/>
-                            <TextBlock x:Name="RuntimeAutoResumeText" Grid.Column="5" Text="Auto-resume: —" Foreground="{StaticResource Brush.Muted}" FontSize="10" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                            <TextBlock x:Name="RuntimeActivityElapsedText" Grid.Column="4" Text="Step: 0s" Foreground="#FDE68A" FontSize="10" FontWeight="SemiBold" VerticalAlignment="Center" Margin="12,0,0,0" ToolTip="Seconds spent in the current background operation."/>
+                            <TextBlock x:Name="RuntimeActivityAgeText" Grid.Column="5" Text="Runtime event: now" Foreground="{StaticResource Brush.Muted}" FontSize="10" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                            <TextBlock x:Name="RuntimeAutoResumeText" Grid.Column="6" Text="Auto-resume: —" Foreground="{StaticResource Brush.Muted}" FontSize="10" VerticalAlignment="Center" Margin="12,0,0,0"/>
                         </Grid>
                     </Border>
 
@@ -181,3 +183,4 @@
         </Grid>
     </Border>
 </Window>
+

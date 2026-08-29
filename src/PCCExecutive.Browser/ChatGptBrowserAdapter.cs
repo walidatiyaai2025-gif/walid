@@ -79,7 +79,7 @@ public sealed class ChatGptAdapterDriftGuard
 
 public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter, IConversationIdentityEvidenceResolver
 {
-    public const string CurrentAdapterVersion = "chatgpt-web-semantic-v3";
+    public const string CurrentAdapterVersion = "chatgpt-web-semantic-v4";
     private const string ComposerSelector = "textarea, [contenteditable='true'][role='textbox'], [contenteditable='true'][data-lexical-editor='true'], [data-testid='composer-text-input']";
     private const string AssistantSelector = "[data-message-author-role='assistant'], [data-turn='assistant']";
     private const string UserSelector = "[data-message-author-role='user'], [data-turn='user']";
@@ -313,25 +313,50 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
                 """
                 () => {
                   const read = (el) => ((el && (el.innerText || el.textContent)) || '').trim();
-                  const explicit = Array.from(document.querySelectorAll("[data-message-author-role='assistant'], [data-turn='assistant']"))
-                    .map(read).filter(Boolean);
-                  if (explicit.length) return explicit;
+                  const out = [];
+                  const seen = new Set();
+                  const push = (value) => {
+                    const text = (value || '').replace(/^\s*(ChatGPT|Assistant)\s+said\s*:?\s*/i, '').trim();
+                    if (!text || seen.has(text)) return;
+                    seen.add(text);
+                    out.push(text);
+                  };
 
-                  const turns = Array.from(document.querySelectorAll("article[data-testid^='conversation-turn-'], [data-testid^='conversation-turn-']"));
-                  return turns.filter(turn => {
-                    const role = (turn.getAttribute('data-turn') || '').toLowerCase();
-                    if (role === 'assistant') return true;
-                    if (role === 'user') return false;
+                  for (const el of document.querySelectorAll("[data-message-author-role='assistant'], [data-turn='assistant']"))
+                    push(read(el));
+                  if (out.length) return out;
 
+                  const turns = Array.from(document.querySelectorAll(
+                    "article[data-testid*='conversation-turn'], [data-testid*='conversation-turn'], article, [role='article']"));
+                  for (const turn of turns) {
+                    const role = ((turn.getAttribute('data-turn') || turn.getAttribute('data-message-author-role') || '') + '').toLowerCase();
                     const labels = Array.from(turn.querySelectorAll('h1,h2,h3,h4,h5,h6,[aria-label]'))
                       .map(el => `${read(el)} ${el.getAttribute('aria-label') || ''}`)
                       .join(' ').toLowerCase();
-                    if (labels.includes('chatgpt said') || labels.includes('assistant said')) return true;
-                    if (labels.includes('you said') || labels.includes('user said')) return false;
+                    const assistantLabel = role === 'assistant' || labels.includes('chatgpt said') || labels.includes('assistant said');
+                    const userLabel = role === 'user' || labels.includes('you said') || labels.includes('user said');
+                    const renderedAssistant = !!turn.querySelector('.markdown, [class*="markdown"], .prose, [class*="prose"], [data-message-content="assistant"]');
+                    if (!userLabel && (assistantLabel || renderedAssistant)) push(read(turn));
+                  }
+                  if (out.length) return out;
 
-                    // Current ChatGPT assistant turns carry rendered markdown while user bubbles do not.
-                    return !!turn.querySelector('.markdown, [class*="markdown"], [data-message-content="assistant"]');
-                  }).map(read).filter(Boolean);
+                  const labels = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[aria-label]'));
+                  for (const label of labels) {
+                    const marker = `${read(label)} ${label.getAttribute('aria-label') || ''}`.toLowerCase();
+                    if (!marker.includes('chatgpt said') && !marker.includes('assistant said')) continue;
+                    let container = label.closest("article, [role='article'], [data-testid*='conversation-turn'], [data-turn]");
+                    if (!container) container = label.parentElement?.parentElement || label.parentElement;
+                    push(read(container));
+                  }
+                  if (out.length) return out;
+
+                  for (const content of document.querySelectorAll('.markdown, [class*="markdown"], .prose, [class*="prose"]')) {
+                    const turn = content.closest("article, [role='article'], [data-testid*='conversation-turn'], [data-turn]") || content.parentElement;
+                    const marker = read(turn).toLowerCase();
+                    if (marker.startsWith('you said') || marker.startsWith('user said')) continue;
+                    push(read(turn));
+                  }
+                  return out;
                 }
                 """).ConfigureAwait(false);
             return texts ?? Array.Empty<string>();
@@ -341,7 +366,6 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
             return Array.Empty<string>();
         }
     }
-
     private static async Task<IReadOnlyList<string>> UserMessageTextsAsync(IPage page)
     {
         try
@@ -393,6 +417,7 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
         var direct = Regex.Match(value ?? string.Empty, @"(?:^|/c/)([A-Za-z0-9_-]{6,})$", RegexOptions.CultureInvariant); if (!direct.Success) return false; id = direct.Groups[1].Value.Trim(); return id.Length > 0;
     }
 }
+
 
 
 

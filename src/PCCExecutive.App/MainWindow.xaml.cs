@@ -16,6 +16,8 @@ public partial class MainWindow : Window
     private bool _allowClose;
     private readonly DispatcherTimer _activityTimer;
     private DateTimeOffset _lastRuntimeSnapshotAt = DateTimeOffset.UtcNow;
+    private DateTimeOffset _activityStateSince = DateTimeOffset.UtcNow;
+    private string _activityKey = string.Empty;
     private int _pulseFrame;
 
     public MainWindow(MainViewModel viewModel)
@@ -182,6 +184,15 @@ public partial class MainWindow : Window
         RuntimeActivityProgress.IsIndeterminate = moving;
         RuntimeActivityProgress.Visibility = moving ? Visibility.Visible : Visibility.Collapsed;
 
+        var activityKey = $"{state}|{stage}|{detail}";
+        if (!string.Equals(_activityKey, activityKey, StringComparison.Ordinal))
+        {
+            _activityKey = activityKey;
+            _activityStateSince = DateTimeOffset.UtcNow;
+        }
+        var elapsed = DateTimeOffset.UtcNow - _activityStateSince;
+        RuntimeActivityElapsedText.Text = $"Step: {FormatElapsed(elapsed)}";
+
         var age = DateTimeOffset.UtcNow - _lastRuntimeSnapshotAt;
         RuntimeActivityAgeText.Text = $"Last runtime update: {FormatAge(age)} ago";
         RuntimeActivityAgeText.Foreground = age > TimeSpan.FromSeconds(30) && moving ? MediaBrushes.Gold : MediaBrushes.SlateGray;
@@ -197,6 +208,14 @@ public partial class MainWindow : Window
         if (age.TotalSeconds < 60) return $"{Math.Floor(age.TotalSeconds)}s";
         if (age.TotalMinutes < 60) return $"{Math.Floor(age.TotalMinutes)}m {age.Seconds}s";
         return $"{Math.Floor(age.TotalHours)}h {age.Minutes}m";
+    }
+
+    private static string FormatElapsed(TimeSpan elapsed)
+    {
+        if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+        var totalSeconds = (long)Math.Floor(elapsed.TotalSeconds);
+        if (totalSeconds < 60) return $"{totalSeconds}s";
+        return $"{totalSeconds / 60}m {totalSeconds % 60:D2}s";
     }
 
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
@@ -221,3 +240,6 @@ public partial class MainWindow : Window
 
     private void ToggleMaximize() => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
 }
+
+
+
