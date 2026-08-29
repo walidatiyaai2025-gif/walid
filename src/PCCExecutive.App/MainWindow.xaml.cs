@@ -1,8 +1,9 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
-using System.Windows.Media;
 using System.Windows.Threading;
+using MediaBrush = System.Windows.Media.Brush;
+using MediaBrushes = System.Windows.Media.Brushes;
 using PCCExecutive.App.Presentation;
 using PCCExecutive.App.ViewModels;
 
@@ -120,7 +121,7 @@ public partial class MainWindow : Window
 
         string state;
         string detail;
-        Brush stateBrush;
+        MediaBrush stateBrush;
         var moving = false;
 
         if (globalSendPaused)
@@ -129,7 +130,7 @@ public partial class MainWindow : Window
             detail = snapshot.DispatchSettings.AutoResume
                 ? "GLOBAL SEND PAUSED — no new ChatGPT sends are being made. Auto-resume is ON and is waiting for fresh safe ChatGPT semantic health."
                 : "GLOBAL SEND PAUSED — no new ChatGPT sends are being made. Auto-resume is OFF; operator Resume is required after health is safe.";
-            stateBrush = Brushes.LightCoral;
+            stateBrush = MediaBrushes.LightCoral;
         }
         else if (stalled)
         {
@@ -137,7 +138,7 @@ public partial class MainWindow : Window
             detail = string.IsNullOrWhiteSpace(handoff)
                 ? "Autopilot is stopped; no new work is being sent. Review ChatGPT Health / Attention for the blocking reason."
                 : handoff;
-            stateBrush = Brushes.LightCoral;
+            stateBrush = MediaBrushes.LightCoral;
         }
         else if (recovering)
         {
@@ -145,7 +146,7 @@ public partial class MainWindow : Window
             detail = string.IsNullOrWhiteSpace(handoff)
                 ? $"Runtime recovery is active. Health: {snapshot.GlobalHealth}."
                 : handoff;
-            stateBrush = Brushes.Gold;
+            stateBrush = MediaBrushes.Gold;
             moving = true;
         }
         else if (working)
@@ -154,14 +155,14 @@ public partial class MainWindow : Window
             detail = string.IsNullOrWhiteSpace(handoff)
                 ? $"PCC Executive is advancing stage {stage}."
                 : handoff;
-            stateBrush = Brushes.LightGreen;
+            stateBrush = MediaBrushes.LightGreen;
             moving = true;
         }
         else if (done)
         {
             state = "DONE";
             detail = string.IsNullOrWhiteSpace(handoff) ? "Verified completion reached." : handoff;
-            stateBrush = Brushes.LightGreen;
+            stateBrush = MediaBrushes.LightGreen;
         }
         else
         {
@@ -169,7 +170,7 @@ public partial class MainWindow : Window
             detail = string.IsNullOrWhiteSpace(handoff)
                 ? "Runtime is responsive, but no background action is currently advancing."
                 : handoff;
-            stateBrush = Brushes.DeepSkyBlue;
+            stateBrush = MediaBrushes.DeepSkyBlue;
         }
 
         LiveStateText.Text = state;
@@ -183,7 +184,7 @@ public partial class MainWindow : Window
 
         var age = DateTimeOffset.UtcNow - _lastRuntimeSnapshotAt;
         RuntimeActivityAgeText.Text = $"Last runtime update: {FormatAge(age)} ago";
-        RuntimeActivityAgeText.Foreground = age > TimeSpan.FromSeconds(30) && moving ? Brushes.Gold : Brushes.SlateGray;
+        RuntimeActivityAgeText.Foreground = age > TimeSpan.FromSeconds(30) && moving ? MediaBrushes.Gold : MediaBrushes.SlateGray;
         RuntimeAutoResumeText.Text = $"Auto-resume: {(snapshot.DispatchSettings.AutoResume ? "ON" : "OFF")} • Health: {snapshot.GlobalHealth}";
     }
 
