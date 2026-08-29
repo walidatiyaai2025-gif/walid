@@ -72,7 +72,7 @@ public sealed class StructuredManagerPlanParser
         WirePlan? wire;
         try
         {
-            wire = JsonSerializer.Deserialize<WirePlan>(content, _json);
+            wire = JsonSerializer.Deserialize<WirePlan>(ManagerPlanJsonEnvelope.ExtractSinglePlanObject(content), _json);
         }
         catch (JsonException ex)
         {
@@ -1233,3 +1233,4 @@ public static class AttentionPolicy
 
     public static bool RequiresHumanAttention(string category) => HumanGateCategories.Contains(category);
 }
+
