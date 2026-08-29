@@ -70,7 +70,7 @@ public sealed class ChatGptAdapterDriftGuard
 
 public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter
 {
-    public const string CurrentAdapterVersion = "chatgpt-web-semantic-v2";
+    public const string CurrentAdapterVersion = "chatgpt-web-semantic-v3";
     private const string ComposerSelector = "textarea, [contenteditable='true'][role='textbox'], [contenteditable='true'][data-lexical-editor='true'], [data-testid='composer-text-input']";
     private const string AssistantSelector = "[data-message-author-role='assistant']";
     private const string StopSelector = "button[aria-label*='Stop' i], button:has-text('Stop generating'), [data-testid='stop-button']";
@@ -101,7 +101,11 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
             var stopVisible = await HasVisibleAsync(page, StopSelector).ConfigureAwait(false);
             var continueVisible = await HasVisibleAsync(page, ContinueSelector).ConfigureAwait(false);
             var retryVisible = await HasVisibleAsync(page, RetrySelector).ConfigureAwait(false);
-            var responseActionsVisible = assistantCount > 0 && await HasVisibleAsync(page, ResponseActionSelector).ConfigureAwait(false);
+            // Response actions in the current ChatGPT UI can exist in the DOM but stay hidden until
+            // hover. They are useful evidence when present, but must not be the only completion gate.
+            var responseActionsPresent = assistantCount > 0 && await HasAnyAsync(page, ResponseActionSelector).ConfigureAwait(false);
+            var response = assistantCount > 0 ? await LastAssistantAsync(page, assistantCount).ConfigureAwait(false) : null;
+            var assistantTextPresent = !string.IsNullOrWhiteSpace(response);
 
             var input = composer is null
                 ? D(InputState.Unknown, .2, "composer:not-found")
@@ -110,11 +114,10 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
                     : D(InputState.Disabled, .92, "composer:disabled");
 
             var auth = DetectAuth(page.Url, body, composer is not null, await HasVisibleAsync(page, LoginSelector).ConfigureAwait(false));
-            var generation = DetectGeneration(composer is not null, assistantCount, stopVisible, responseActionsVisible, continueVisible, retryVisible);
+            var generation = DetectGeneration(composer is not null, assistantCount, stopVisible, responseActionsPresent, continueVisible, retryVisible, assistantTextPresent);
             var conversation = DetectConversation(page.Url, expectation.ProviderConversationIdentity);
             var health = DetectHealth(page.Url, body, composer is not null, auth.State);
-            var completeness = DetectCompleteness(body, assistantCount, generation.State, continueVisible, retryVisible, responseActionsVisible, health);
-            var response = assistantCount > 0 ? await LastAssistantAsync(page, assistantCount).ConfigureAwait(false) : null;
+            var completeness = DetectCompleteness(body, assistantCount, generation.State, continueVisible, retryVisible, assistantTextPresent, health);
             return new(input, generation, auth, conversation, health, completeness, assistantCount, response, DateTimeOffset.UtcNow, AdapterVersion);
         }
         catch (PlaywrightException ex) { return Unknown($"playwright-inspection-error:{ex.GetType().Name}"); }
@@ -176,22 +179,28 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
         return composerVisible ? D(AuthState.Authenticated, .80, "composer:authenticated-surface-present") : D(AuthState.Unknown, .3, "auth:unproven");
     }
 
-    private static SemanticDetection<GenerationState> DetectGeneration(bool composerVisible, int assistantCount, bool stopVisible, bool responseActionsVisible, bool continueVisible, bool retryVisible)
+    private static SemanticDetection<GenerationState> DetectGeneration(bool composerVisible, int assistantCount, bool stopVisible, bool responseActionsPresent, bool continueVisible, bool retryVisible, bool assistantTextPresent)
     {
         if (stopVisible) return D(GenerationState.Generating, .95, "stop-generation-control:visible");
         if (assistantCount == 0 && composerVisible) return D(GenerationState.Idle, .82, "composer:visible", "assistant-message:none", "stop-generation-control:absent");
-        if (assistantCount > 0 && responseActionsVisible && composerVisible && !continueVisible && !retryVisible) return D(GenerationState.Complete, .88, "assistant-message:present", "response-actions:visible", "stop-generation-control:absent");
+        if (assistantCount > 0 && responseActionsPresent && assistantTextPresent && composerVisible && !continueVisible && !retryVisible)
+            return D(GenerationState.Complete, .90, "assistant-message:present", "assistant-text:present", "response-actions:present", "stop-generation-control:absent");
+        // Current ChatGPT can keep response action controls hidden until hover. A non-empty final
+        // assistant turn plus a ready composer and the absence of Stop/Continue/Retry is therefore
+        // sufficient multi-signal evidence that generation has finished.
+        if (assistantCount > 0 && assistantTextPresent && composerVisible && !continueVisible && !retryVisible)
+            return D(GenerationState.Complete, .78, "assistant-message:present", "assistant-text:present", "composer:visible", "stop-generation-control:absent", "continue-retry-controls:absent");
         if (assistantCount > 0 && (continueVisible || retryVisible)) return D(GenerationState.Complete, .72, "assistant-message:present", "retry-or-continue-control:visible");
         return D(GenerationState.Unknown, .45, "generation:not-proven-by-multiple-signals");
     }
 
-    private static ResponseCompleteness DetectCompleteness(string body, int assistantCount, GenerationState generation, bool continueVisible, bool retryVisible, bool responseActionsVisible, SemanticDetection<PageHealth> health)
+    private static ResponseCompleteness DetectCompleteness(string body, int assistantCount, GenerationState generation, bool continueVisible, bool retryVisible, bool assistantTextPresent, SemanticDetection<PageHealth> health)
     {
         if (assistantCount == 0) return ResponseCompleteness.None;
         if (continueVisible || retryVisible) return ResponseCompleteness.Partial;
         if (Contains(body, "there was an error generating", "network error", "response interrupted", "continue generating")) return ResponseCompleteness.Partial;
         if (health.Evidence.Any(x => x.Contains("context-limit", StringComparison.OrdinalIgnoreCase))) return ResponseCompleteness.Partial;
-        if (generation == GenerationState.Complete && responseActionsVisible) return ResponseCompleteness.Complete;
+        if (generation == GenerationState.Complete && assistantTextPresent && health.State == PageHealth.Healthy) return ResponseCompleteness.Complete;
         return ResponseCompleteness.Unknown;
     }
 
@@ -222,6 +231,7 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
         return null;
     }
     private static async Task<bool> HasVisibleAsync(IPage page, string selector) => await VisibleAsync(page, selector).ConfigureAwait(false) is not null;
+    private static async Task<bool> HasAnyAsync(IPage page, string selector) => await page.Locator(selector).CountAsync().ConfigureAwait(false) > 0;
     private static async Task<string> BodyAsync(IPage page) { try { var text = await page.Locator("body").InnerTextAsync().ConfigureAwait(false); return text.Length <= 50_000 ? text : text[..50_000]; } catch (PlaywrightException) { return string.Empty; } }
     private static async Task<string?> LastAssistantAsync(IPage page, int count) { try { var text = await page.Locator(AssistantSelector).Nth(count - 1).InnerTextAsync().ConfigureAwait(false); return text.Length <= 100_000 ? text : text[..100_000]; } catch (PlaywrightException) { return null; } }
     private static async Task<string?> ComposerValueAsync(ILocator composer) { try { var tag = await composer.EvaluateAsync<string>("el => el.tagName.toLowerCase()").ConfigureAwait(false); return tag is "textarea" or "input" ? await composer.InputValueAsync().ConfigureAwait(false) : await composer.InnerTextAsync().ConfigureAwait(false); } catch (PlaywrightException) { return null; } }
