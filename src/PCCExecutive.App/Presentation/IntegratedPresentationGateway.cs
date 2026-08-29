@@ -386,16 +386,25 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
             _runtimeErrorFingerprint = fingerprint;
             _runtimeErrorCount = 1;
         }
+
+        // Never let the autonomous loop fail silently. Surface the exact current failure on the
+        // canonical snapshot immediately so the always-visible LIVE STATUS strip tells the owner
+        // what PCC is retrying and why.
+        _latestManagerHandoff = $"AUTOPILOT RETRY {_runtimeErrorCount}/3 — {error.Message}";
+        _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "AUTOPILOT RETRY", error.Message, true));
+
         if (_runtimeErrorCount >= 3 && _run is not null)
         {
             _run = _run with { State = ProjectRunState.StalledAutoStopped };
             _autopilot = "STALLED";
-            _latestManagerHandoff = "STALLED_AUTO_STOPPED — the same runtime error repeated three times across durable loop state.";
+            _latestManagerHandoff = $"STALLED_AUTO_STOPPED — repeated runtime error: {error.Message}";
             await _orchestrationStore.SaveAsync(new OrchestrationRecoverySnapshot(_run, _currentWave, _runtimeTasks, _assignments, [], null, OrchestrationPhase.StalledAutoStopped, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
             await PersistLoopGuardAsync(true, cancellationToken).ConfigureAwait(false);
+            await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
             return;
         }
         await PersistLoopGuardAsync(false, cancellationToken).ConfigureAwait(false);
+        await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task PersistAgentBindingAsync(LogicalAgentId agentId, WorkerSlotId? slot, TaskId? taskId, ConversationId conversationId, CancellationToken cancellationToken)
@@ -619,12 +628,16 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         }
         if (semantic.Generation.State == GenerationState.Generating)
         {
-            _latestManagerHandoff = "Manager generation is still active; no plan has been accepted.";
+            _latestManagerHandoff = "READING_MANAGER_RESPONSE — ChatGPT is still generating; PCC is polling automatically and no plan has been accepted yet.";
             await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
             return;
         }
         if (semantic.ResponseCompleteness != ResponseCompleteness.Complete || string.IsNullOrWhiteSpace(semantic.CapturedResponseText))
-            throw new InvalidOperationException($"Manager response is not proven complete ({semantic.ResponseCompleteness}); dispatch remains blocked.");
+        {
+            _latestManagerHandoff = $"READING_MANAGER_RESPONSE — response observed but completion is not yet proven. completeness={semantic.ResponseCompleteness}; generation={semantic.Generation.State}; assistantMessages={semantic.AssistantMessageCount}. Retrying automatically.";
+            await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
 
         var parsed = new StructuredManagerPlanParser().Parse(semantic.CapturedResponseText);
         if (!parsed.IsValid || parsed.Plan is null)
@@ -677,6 +690,9 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         await _orchestrationStore.CreateWaveAsync(snapshot, cancellationToken: cancellationToken).ConfigureAwait(false);
         await _store.SaveCheckpointAsync(new DurableCheckpoint($"manager-plan:{run.Id}", run.Id.ToString(), "structured-manager-plan-v1", semantic.CapturedResponseText, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
         _autopilot = "READY_TO_DISPATCH";
+        _runtimeErrorFingerprint = null;
+        _runtimeErrorCount = 0;
+        await PersistLoopGuardAsync(false, cancellationToken).ConfigureAwait(false);
         _latestManagerHandoff = $"Validated Wave {_currentWave.Id}: {parsed.Plan.Tasks.Count} task(s), {batch.Assignments.Count} ready, {batch.Deferred.Count} dependency/scope deferred.";
         await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
     }
