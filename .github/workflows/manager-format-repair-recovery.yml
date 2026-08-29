@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   apply-test-commit:
-    if: ${{ !contains(github.event.head_commit.message, 'fix(manager): recover unstructured manager responses') }}
+    if: "${{ !contains(github.event.head_commit.message, 'fix(manager): recover unstructured manager responses') }}"
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
