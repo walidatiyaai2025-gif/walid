@@ -57,6 +57,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     private string? _runtimeErrorFingerprint;
     private int _runtimeErrorCount;
     private IReadOnlyList<ConversationHistorySummary> _conversationHistory = [];
+    private DateTimeOffset _nextExternalEvidenceRetryAt = DateTimeOffset.MinValue;
 
     private PccExecutiveRuntimeHost(
         SqliteStateStore store,
@@ -149,8 +150,22 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                     _runtimeErrorCount = loop.RuntimeErrorCount;
                     if (loop.AutoStopped)
                     {
-                        _run = _run is null ? null : _run with { State = ProjectRunState.StalledAutoStopped };
-                        _autopilot = "STALLED";
+                        var recoverablePrePlanRuntimeStall = _currentPlan is null && loop.RuntimeErrorCount >= 3 && _settings.AutoResume;
+                        if (recoverablePrePlanRuntimeStall)
+                        {
+                            _run = _run is null ? null : _run with { State = ProjectRunState.ManagerPlanning };
+                            _runtimeErrorFingerprint = null;
+                            _runtimeErrorCount = 0;
+                            _autopilot = "RECOVERING";
+                            _latestManagerHandoff = "RECOVERING_EVIDENCE — retrying the previous pre-plan infrastructure failure automatically.";
+                            if (_run is not null) store.SaveProjectRunAsync(_run).GetAwaiter().GetResult();
+                            store.SaveCheckpointAsync(new DurableCheckpoint($"loop-guard:{run.Id}", run.Id.ToString(), "loop-guard-v2", JsonSerializer.Serialize(new DurableLoopGuard(loop.PlanFingerprints, loop.VerifiedCompletion, null, 0, false)), DateTimeOffset.UtcNow)).GetAwaiter().GetResult();
+                        }
+                        else
+                        {
+                            _run = _run is null ? null : _run with { State = ProjectRunState.StalledAutoStopped };
+                            _autopilot = "STALLED";
+                        }
                     }
                 }
             }
@@ -535,6 +550,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
             _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "BROWSER BLOCKED", ex.Message, false));
         }
         await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+        if (_settings.AutoResume) EnsureAutopilotLoop();
     }
 
     private async Task StartManagerAsync(CancellationToken cancellationToken)
@@ -563,7 +579,29 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
 
         var baseline = await _baseline.BuildAsync(_projectControlId ?? throw new InvalidOperationException("Selected PCC project identity is unavailable."), cancellationToken).ConfigureAwait(false);
         if (!baseline.IsSuccess || baseline.Value is null)
-            throw new InvalidOperationException($"Manager start requires fresh PCC/GitHub evidence: {baseline.ErrorCode ?? baseline.Status.ToString()}.");
+        {
+            var evidenceCode = baseline.ErrorCode ?? baseline.Status.ToString();
+            if (baseline.Status is ExternalReadStatus.RateLimited or ExternalReadStatus.TemporaryFailure or ExternalReadStatus.Offline)
+            {
+                _autopilot = "RECOVERING";
+                _nextExternalEvidenceRetryAt = DateTimeOffset.UtcNow.AddSeconds(30);
+                _latestManagerHandoff = $"RECOVERING_EVIDENCE — fresh PCC/GitHub evidence is temporarily unavailable ({evidenceCode}). Automatic retry is scheduled.";
+                _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "RECOVERING_EVIDENCE", evidenceCode, true));
+                await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            throw new InvalidOperationException($"Manager start requires fresh PCC/GitHub evidence: {evidenceCode}.");
+        }
+        _nextExternalEvidenceRetryAt = DateTimeOffset.MinValue;
+        if (run.State == ProjectRunState.StalledAutoStopped)
+        {
+            run = run with { State = ProjectRunState.ManagerPlanning };
+            _run = run;
+            _runtimeErrorFingerprint = null;
+            _runtimeErrorCount = 0;
+            await _store.SaveProjectRunAsync(run, cancellationToken).ConfigureAwait(false);
+            await PersistLoopGuardAsync(false, cancellationToken).ConfigureAwait(false);
+        }
         var prompt = BuildManagerPrompt(run, baseline.Value);
         _managerBaseline = baseline.Value;
         await _store.SaveCheckpointAsync(new DurableCheckpoint($"manager-baseline:{run.Id}", run.Id.ToString(), "manager-baseline-v1", JsonSerializer.Serialize(baseline.Value), DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
@@ -974,7 +1012,11 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                 await _autopilotOperation.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
-                    if (_currentWave?.State == WaveState.Running)
+                    if (_currentPlan is null &&
+                        _autopilot is "READY" or "RECOVERING" &&
+                        DateTimeOffset.UtcNow >= _nextExternalEvidenceRetryAt)
+                        await StartManagerAsync(cancellationToken).ConfigureAwait(false);
+                    else if (_currentWave?.State == WaveState.Running)
                         await ReconcileWorkerResponsesAsync(cancellationToken).ConfigureAwait(false);
                     else if (_autopilot is "PLANNING" or "MANAGER_REVIEW")
                         await ReconcileManagerResponseAsync(cancellationToken).ConfigureAwait(false);

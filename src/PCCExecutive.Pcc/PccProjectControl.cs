@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using PCCExecutive.Application;
 
 namespace PCCExecutive.Pcc;
@@ -36,6 +37,8 @@ public sealed class GitHubPccDocumentSource : IPccDocumentSource
     private readonly string _repository;
     private readonly string _branch;
     private readonly IPccDocumentCache? _cache;
+    private PccDocumentCapture? _lastSuccessfulCapture;
+    private static readonly TimeSpan FreshCaptureWindow = TimeSpan.FromMinutes(2);
 
     public GitHubPccDocumentSource(
         HttpClient httpClient,
@@ -58,11 +61,23 @@ public sealed class GitHubPccDocumentSource : IPccDocumentSource
 
     public async Task<PccDocumentCapture> CaptureAsync(CancellationToken cancellationToken = default)
     {
+        var remembered = _lastSuccessfulCapture;
+        if (remembered is not null && DateTimeOffset.UtcNow - remembered.CapturedAt <= FreshCaptureWindow)
+            return remembered;
+
         try
         {
             using var branchResponse = await _httpClient.GetAsync(Api($"branches/{Uri.EscapeDataString(_branch)}"), cancellationToken);
             if (!branchResponse.IsSuccessStatusCode)
-                return await FailureOrCacheAsync(Classify(branchResponse), $"PCC_BRANCH_{(int)branchResponse.StatusCode}", cancellationToken);
+            {
+                var status = Classify(branchResponse);
+                if (status is ExternalReadStatus.RateLimited or ExternalReadStatus.Unauthorized or ExternalReadStatus.TemporaryFailure)
+                {
+                    var publicFallback = await TryCaptureFromPublicGitAsync(cancellationToken).ConfigureAwait(false);
+                    if (publicFallback is not null) return publicFallback;
+                }
+                return await FailureOrCacheAsync(status, $"PCC_BRANCH_{(int)branchResponse.StatusCode}", cancellationToken);
+            }
 
             using var branchJson = JsonDocument.Parse(await branchResponse.Content.ReadAsStringAsync(cancellationToken));
             var sourceSha = branchJson.RootElement.GetProperty("commit").GetProperty("sha").GetString();
@@ -86,6 +101,7 @@ public sealed class GitHubPccDocumentSource : IPccDocumentSource
             }
 
             var capture = new PccDocumentCapture(ExternalReadStatus.Success, sourceSha, DateTimeOffset.UtcNow, false, documents);
+            _lastSuccessfulCapture = capture;
             if (_cache is not null) await _cache.PutAsync(capture, cancellationToken);
             return capture;
         }
@@ -105,14 +121,56 @@ public sealed class GitHubPccDocumentSource : IPccDocumentSource
 
     private async Task<PccDocumentCapture> FailureOrCacheAsync(ExternalReadStatus status, string errorCode, CancellationToken cancellationToken)
     {
+        if (_lastSuccessfulCapture is { } remembered)
+            return remembered with { Status = ExternalReadStatus.StaleCache, IsStale = true, ErrorCode = errorCode };
+
         if (_cache is not null)
         {
             var cached = await _cache.GetAsync(cancellationToken);
             if (cached is not null)
+            {
+                _lastSuccessfulCapture = cached;
                 return cached with { Status = ExternalReadStatus.StaleCache, IsStale = true, ErrorCode = errorCode };
+            }
         }
 
         return new(status, null, DateTimeOffset.UtcNow, false, new Dictionary<string, string>(), errorCode);
+    }
+
+    private async Task<PccDocumentCapture?> TryCaptureFromPublicGitAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var feedResponse = await _httpClient.GetAsync(
+                $"https://github.com/{_repository}/commits/{Uri.EscapeDataString(_branch)}.atom", cancellationToken).ConfigureAwait(false);
+            if (!feedResponse.IsSuccessStatusCode) return null;
+
+            var feed = await feedResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var sourceSha = ExtractCommitSha(feed);
+            if (sourceSha is null) return null;
+
+            var documents = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var path in RequiredPaths)
+            {
+                using var response = await _httpClient.GetAsync(
+                    $"https://raw.githubusercontent.com/{_repository}/{sourceSha}/{path}", cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode) return null;
+                documents[path] = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            var capture = new PccDocumentCapture(ExternalReadStatus.Success, sourceSha, DateTimeOffset.UtcNow, false, documents);
+            _lastSuccessfulCapture = capture;
+            if (_cache is not null) await _cache.PutAsync(capture, cancellationToken).ConfigureAwait(false);
+            return capture;
+        }
+        catch (HttpRequestException) { return null; }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested) { return null; }
+    }
+
+    private static string? ExtractCommitSha(string payload)
+    {
+        var match = Regex.Match(payload, @"(?:/commit/|Commit/)([0-9a-fA-F]{40})", RegexOptions.CultureInvariant);
+        return match.Success ? match.Groups[1].Value.ToLowerInvariant() : null;
     }
 
     private string Api(string path) => $"https://api.github.com/repos/{_repository}/{path}";
