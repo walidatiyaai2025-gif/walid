@@ -3,6 +3,15 @@ using Microsoft.Playwright;
 
 namespace PCCExecutive.Browser;
 
+public interface IConversationIdentityEvidenceResolver
+{
+    Task<string?> ResolveConversationIdentityAsync(
+        BrowserRuntimeRecord runtime,
+        string? exactUserPrompt,
+        IReadOnlyList<string>? requiredUserMessageFragments,
+        CancellationToken cancellationToken = default);
+}
+
 public sealed class WrongChatGuard
 {
     public WrongChatDecision Evaluate(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expected, ChatGptSemanticSnapshot snapshot)
@@ -68,11 +77,12 @@ public sealed class ChatGptAdapterDriftGuard
     }
 }
 
-public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter
+public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IPhysicalSubmitAuthorizationAdapter, IConversationIdentityEvidenceResolver
 {
     public const string CurrentAdapterVersion = "chatgpt-web-semantic-v3";
     private const string ComposerSelector = "textarea, [contenteditable='true'][role='textbox'], [contenteditable='true'][data-lexical-editor='true'], [data-testid='composer-text-input']";
     private const string AssistantSelector = "[data-message-author-role='assistant']";
+    private const string UserSelector = "[data-message-author-role='user']";
     private const string StopSelector = "button[aria-label*='Stop' i], button:has-text('Stop generating'), [data-testid='stop-button']";
     private const string LoginSelector = "a[href*='/auth/login'], button:has-text('Log in'), button:has-text('Sign in')";
     private const string ContinueSelector = "button:has-text('Continue generating'), button:has-text('Continue')";
@@ -101,6 +111,45 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
         }
 
         return Normalize(page.Url, out identity) ? identity : null;
+    }
+
+    public async Task<string?> ResolveConversationIdentityAsync(
+        BrowserRuntimeRecord runtime,
+        string? exactUserPrompt,
+        IReadOnlyList<string>? requiredUserMessageFragments,
+        CancellationToken cancellationToken = default)
+    {
+        var direct = await GetCurrentConversationIdentityAsync(runtime, cancellationToken).ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(direct)) return direct;
+
+        IReadOnlyList<IPage> pages;
+        if (_pages is IPlaywrightPageCatalog catalog)
+            pages = await catalog.GetPagesAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
+        else
+        {
+            var current = await _pages.GetPageAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
+            pages = current is null ? Array.Empty<IPage>() : new[] { current };
+        }
+
+        var candidates = new List<ChatGptConversationEvidenceCandidate>();
+        foreach (var page in pages.Where(x => !x.IsClosed))
+        {
+            if (!Normalize(page.Url, out var providerIdentity)) continue;
+            try
+            {
+                var messages = await page.Locator(UserSelector).AllInnerTextsAsync().ConfigureAwait(false);
+                candidates.Add(new ChatGptConversationEvidenceCandidate(providerIdentity, messages.ToArray()));
+            }
+            catch (PlaywrightException)
+            {
+                // A transient DOM race is non-authoritative. Keep reconciliation pending instead of guessing.
+            }
+        }
+
+        return ChatGptConversationEvidenceMatcher.ResolveUniqueIdentity(
+            candidates,
+            exactUserPrompt,
+            requiredUserMessageFragments);
     }
 
     public async Task<ChatGptSemanticSnapshot> InspectAsync(BrowserRuntimeRecord runtime, BrowserDispatchExpectation expectation, CancellationToken cancellationToken = default)
@@ -257,4 +306,8 @@ public sealed class PlaywrightChatGptBrowserAdapter : IChatGptBrowserAdapter, IP
         var direct = Regex.Match(value ?? string.Empty, @"(?:^|/c/)([A-Za-z0-9_-]{6,})$", RegexOptions.CultureInvariant); if (!direct.Success) return false; id = direct.Groups[1].Value.Trim(); return id.Length > 0;
     }
 }
+
+
+
+
 

@@ -726,7 +726,18 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
             if (!proof.IsProven)
                 throw new InvalidOperationException($"Manager conversation reconciliation refused because PCC ownership is not proven: {proof.Reason}.");
 
-            var providerIdentity = await _browserAdapter.GetCurrentConversationIdentityAsync(runtime, cancellationToken).ConfigureAwait(false);
+            var managerIdentityFragments = new List<string>
+            {
+                $"PROJECT_RUN: {run.Id}",
+                $"REPOSITORY: {_projectRepository}",
+                "Return one JSON object only with ManagerEstimate"
+            };
+            if (_managerBaseline is not null && !string.IsNullOrWhiteSpace(_managerBaseline.PccSourceSha))
+                managerIdentityFragments.Add($"PCC_SOURCE_SHA: {_managerBaseline.PccSourceSha}");
+
+            var providerIdentity = _browserAdapter is IConversationIdentityEvidenceResolver resolver
+                ? await resolver.ResolveConversationIdentityAsync(runtime, null, managerIdentityFragments, cancellationToken).ConfigureAwait(false)
+                : await _browserAdapter.GetCurrentConversationIdentityAsync(runtime, cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(providerIdentity) || string.Equals(providerIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
             {
                 _autopilot = "RECONCILING_CONVERSATION";
@@ -1418,3 +1429,4 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         public bool ContainsFingerprint(string fingerprint) => false;
     }
 }
+

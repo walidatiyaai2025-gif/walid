@@ -10,6 +10,11 @@ public interface IPlaywrightPageProvider
     Task<IPage?> GetPageAsync(string runtimeId, CancellationToken cancellationToken = default);
 }
 
+public interface IPlaywrightPageCatalog
+{
+    Task<IReadOnlyList<IPage>> GetPagesAsync(string runtimeId, CancellationToken cancellationToken = default);
+}
+
 public interface IBrowserWindowVisibilityController
 {
     Task<bool> HideAsync(int processId, CancellationToken cancellationToken = default);
@@ -90,7 +95,7 @@ public sealed class WindowsBrowserWindowVisibilityController : IBrowserWindowVis
     [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetForegroundWindow(IntPtr hWnd);
 }
 
-public sealed class PlaywrightChromeRuntimeHost : IBrowserRuntimeHost, IPlaywrightPageProvider
+public sealed class PlaywrightChromeRuntimeHost : IBrowserRuntimeHost, IPlaywrightPageProvider, IPlaywrightPageCatalog
 {
     public const string GptDesktopProfileSource = "__GPTDESKTOP__";
     private const string ProfileEnvironmentVariable = "PCC_EXECUTIVE_CHROME_PROFILE_SOURCE";
@@ -361,6 +366,19 @@ public sealed class PlaywrightChromeRuntimeHost : IBrowserRuntimeHost, IPlaywrig
         return Task.FromResult<IPage?>(connection.Page.IsClosed ? null : connection.Page);
     }
 
+    public Task<IReadOnlyList<IPage>> GetPagesAsync(string runtimeId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!_connections.TryGetValue(runtimeId, out var connection))
+            return Task.FromResult<IReadOnlyList<IPage>>(Array.Empty<IPage>());
+
+        IReadOnlyList<IPage> pages = connection.Browser.Contexts
+            .SelectMany(x => x.Pages)
+            .Where(x => !x.IsClosed)
+            .ToArray();
+        return Task.FromResult(pages);
+    }
+
     public string ResolvePersistentProfilePath(BrowserSessionRequest request)
     {
         var slotName = string.IsNullOrWhiteSpace(request.WorkerSlotId)
@@ -593,4 +611,7 @@ public sealed class PlaywrightChromeRuntimeHost : IBrowserRuntimeHost, IPlaywrig
         return string.IsNullOrWhiteSpace(sanitized) ? "unknown" : sanitized;
     }
 }
+
+
+
 
