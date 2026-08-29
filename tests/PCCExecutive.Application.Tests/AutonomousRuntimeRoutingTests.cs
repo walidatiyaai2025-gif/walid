@@ -52,6 +52,25 @@ public sealed class AutonomousRuntimeRoutingTests
     }
 
     [Fact]
+    public void Startup_reconciliation_can_repeat_after_completed_pass_but_never_concurrently()
+    {
+        var leases = new RuntimeRecoveryLeaseCoordinator();
+        const string run = "run-31";
+        const string startupFingerprint = "startup:run-31";
+
+        Assert.True(leases.TryAcquire(run, startupFingerprint, out var first));
+        Assert.False(leases.TryAcquire(run, startupFingerprint, out _));
+        first!.Dispose();
+
+        Assert.True(leases.TryAcquire(run, startupFingerprint, out var second));
+        Assert.False(leases.TryAcquire(run, startupFingerprint, out _));
+        second!.Dispose();
+
+        Assert.True(leases.TryAcquire(run, startupFingerprint, out var third));
+        third!.Dispose();
+    }
+
+    [Fact]
     public void Fully_ready_runtime_routes_safe_automatic_resume()
     {
         var decision = _router.Route(State(BrowserRecoveryState.Ready), new("manager", BrowserRecoveryState.Ready, SafeToResume: true));
