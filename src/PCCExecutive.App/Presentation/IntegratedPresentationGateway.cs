@@ -687,16 +687,21 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         if (result.Accepted)
         {
             var updatedRuntime = await _runtimeRegistry.GetAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
-            if (updatedRuntime?.ProviderConversationIdentity is { Length: > 0 } providerIdentity)
+            if (updatedRuntime?.ProviderConversationIdentity is { Length: > 0 } providerIdentity && !string.Equals(providerIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
                 await _store.SaveBrowserConversationAsync(new ConversationRecord { ConversationId = logicalConversation, LogicalAgentId = managerAgentId.ToString(), ProjectRunId = run.Id.ToString(), Sequence = 1, UrlOrProviderIdentity = providerIdentity, CreatedAt = DateTimeOffset.UtcNow, State = ConversationLifecycleState.Active }, cancellationToken).ConfigureAwait(false);
         }
         await _store.SaveCheckpointAsync(new DurableCheckpoint($"manager-dispatch:{result.DispatchId}", run.Id.ToString(), "manager-dispatch-v1", JsonSerializer.Serialize(new { request.DispatchId, request.ContentHash, result.Accepted, result.IsUncertain, result.ErrorCode, result.ProviderEvidence }), DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
-        _latestManagerHandoff = result.IsUncertain
-            ? $"SUBMITTED_UNKNOWN — Manager dispatch {result.DispatchId} requires reconciliation before retry."
-            : result.Accepted
-                ? $"Manager request {result.DispatchId} submitted. Waiting for a complete structured response."
-                : $"Manager send stopped safely: {result.ErrorCode ?? result.ProviderEvidence ?? "unknown provider state"}.";
-        _autopilot = result.Accepted ? "PLANNING" : result.IsUncertain ? "WAITING_FOR_EVIDENCE" : "READY";
+        var postSendRuntime = await _runtimeRegistry.GetAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
+        var providerConversationPending = result.Accepted &&
+            (string.IsNullOrWhiteSpace(postSendRuntime?.ProviderConversationIdentity) || string.Equals(postSendRuntime.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase));
+        _latestManagerHandoff = providerConversationPending
+            ? $"RECONCILING_CONVERSATION — Manager request {result.DispatchId} is accepted. Waiting for ChatGPT to expose the stable conversation identity; no resend will occur."
+            : result.IsUncertain
+                ? $"SUBMITTED_UNKNOWN — Manager dispatch {result.DispatchId} requires reconciliation before retry."
+                : result.Accepted
+                    ? $"Manager request {result.DispatchId} submitted. Waiting for a complete structured response."
+                    : $"Manager send stopped safely: {result.ErrorCode ?? result.ProviderEvidence ?? "unknown provider state"}.";
+        _autopilot = providerConversationPending ? "RECONCILING_CONVERSATION" : result.Accepted ? "PLANNING" : result.IsUncertain ? "WAITING_FOR_EVIDENCE" : "READY";
         CaptureProviderAttention(result.ErrorCode, runtime.RuntimeId, "Manager ChatGPT session");
         if (result.Accepted && _settings.AutoResume) EnsureAutopilotLoop();
         await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
@@ -712,10 +717,35 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         var runtime = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false))
             .FirstOrDefault(x => !x.IsArchived && x.State is not BrowserSessionState.Killed && StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, managerAgentId.ToString()))
             ?? throw new InvalidOperationException("Manager Browser runtime is unavailable.");
-        if (string.IsNullOrWhiteSpace(runtime.TaskId) || string.IsNullOrWhiteSpace(runtime.ConversationIdentity) || string.IsNullOrWhiteSpace(runtime.ProviderConversationIdentity) || string.Equals(runtime.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Manager conversation identity is not yet proven. Wait for submission reconciliation before reading a response.");
+        if (string.IsNullOrWhiteSpace(runtime.TaskId) || string.IsNullOrWhiteSpace(runtime.ConversationIdentity))
+            throw new InvalidOperationException("Manager dispatch binding is incomplete before response reconciliation.");
 
-        var expected = new BrowserDispatchExpectation(run.Id.ToString(), managerAgentId.ToString(), runtime.TaskId, runtime.ConversationIdentity, runtime.ProviderConversationIdentity);
+        if (string.IsNullOrWhiteSpace(runtime.ProviderConversationIdentity) || string.Equals(runtime.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
+        {
+            var proof = await _ownership.ProveAsync(runtime, cancellationToken).ConfigureAwait(false);
+            if (!proof.IsProven)
+                throw new InvalidOperationException($"Manager conversation reconciliation refused because PCC ownership is not proven: {proof.Reason}.");
+
+            var providerIdentity = await _browserAdapter.GetCurrentConversationIdentityAsync(runtime, cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(providerIdentity) || string.Equals(providerIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
+            {
+                _autopilot = "RECONCILING_CONVERSATION";
+                _latestManagerHandoff = "RECONCILING_CONVERSATION — Manager submission is already accepted, but ChatGPT has not exposed a stable conversation identity yet. PCC is polling automatically; no resend and no Loop Guard error.";
+                _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "RECONCILING_CONVERSATION", "Provider conversation identity is pending after accepted Manager submission.", true));
+                await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            runtime = runtime with { ProviderConversationIdentity = providerIdentity, LastActivityAt = DateTimeOffset.UtcNow };
+            await _runtimeRegistry.UpsertAsync(runtime, cancellationToken).ConfigureAwait(false);
+            await _store.SaveBrowserConversationAsync(new ConversationRecord { ConversationId = runtime.ConversationIdentity!, LogicalAgentId = managerAgentId.ToString(), ProjectRunId = run.Id.ToString(), Sequence = 1, UrlOrProviderIdentity = providerIdentity, CreatedAt = DateTimeOffset.UtcNow, State = ConversationLifecycleState.Active }, cancellationToken).ConfigureAwait(false);
+            _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "CONVERSATION_READY", $"Manager provider conversation identity proven: {providerIdentity}", true));
+        }
+
+        if (_autopilot == "RECONCILING_CONVERSATION")
+            _autopilot = "PLANNING";
+        var providerConversationIdentity = runtime.ProviderConversationIdentity!;
+        var expected = new BrowserDispatchExpectation(run.Id.ToString(), managerAgentId.ToString(), runtime.TaskId, runtime.ConversationIdentity, providerConversationIdentity);
         var semantic = await _browserAdapter.InspectAsync(runtime, expected, cancellationToken).ConfigureAwait(false);
         var resilience = new ChatGptResilienceClassifier().Classify(semantic, DateTimeOffset.UtcNow - runtime.LastActivityAt);
         if (semantic.Auth.State is AuthState.LoginRequired or AuthState.Challenge)
@@ -1085,7 +1115,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                         await StartManagerAsync(cancellationToken).ConfigureAwait(false);
                     else if (_currentWave?.State == WaveState.Running)
                         await ReconcileWorkerResponsesAsync(cancellationToken).ConfigureAwait(false);
-                    else if (_autopilot is "PLANNING" or "MANAGER_REVIEW")
+                    else if (_autopilot is "PLANNING" or "MANAGER_REVIEW" or "RECONCILING_CONVERSATION")
                         await ReconcileManagerResponseAsync(cancellationToken).ConfigureAwait(false);
                     else if (_autopilot == "CLOSURE_VERIFY")
                         await RunIndependentFinalVerificationAsync(cancellationToken).ConfigureAwait(false);

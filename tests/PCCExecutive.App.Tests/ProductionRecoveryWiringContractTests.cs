@@ -122,6 +122,21 @@ public sealed class ProductionRecoveryWiringContractTests
     }
 
     [Fact]
+    public void Manager_provider_conversation_identity_pending_is_reconciled_without_runtime_stall()
+    {
+        var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
+        var start = Slice(source, "private async Task StartManagerAsync", "private string BuildManagerPrompt");
+        var reconcile = Slice(source, "private async Task ReconcileManagerResponseAsync", "private async Task StartDispatchAsync");
+        var loop = Slice(source, "private async Task RunAutopilotLoopAsync", "private async Task RunSessionActionAsync");
+
+        Assert.Contains("RECONCILING_CONVERSATION", start, StringComparison.Ordinal);
+        Assert.Contains("_browserAdapter.GetCurrentConversationIdentityAsync(runtime", reconcile, StringComparison.Ordinal);
+        Assert.Contains("no resend and no Loop Guard error", reconcile, StringComparison.Ordinal);
+        Assert.DoesNotContain("Manager conversation identity is not yet proven", reconcile, StringComparison.Ordinal);
+        Assert.Contains("_autopilot is "PLANNING" or "MANAGER_REVIEW" or "RECONCILING_CONVERSATION"", loop, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Normal_disposal_invokes_safe_shutdown_coordinator()
     {
         var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
