@@ -145,8 +145,6 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
         var browserProvider = new BrowserChatProvider(Store, Adapter, Store, new WrongChatGuard(), SendGate, Ownership);
         AgentProvider = new BrowserAgentProviderAdapter(Store, browserProvider, Ownership);
         var pausePort = new BrowserNewSendPausePort(SendGate);
-        var diagnosticStore = new InMemoryRuntimeDiagnosticStore();
-        var diagnostics = new RuntimeDiagnosticCollector(diagnosticStore, diagnosticStore);
         var run = runId is null ? null : await Store.LoadProjectRunAsync(runId.Value).ConfigureAwait(false);
 
         var constructor = typeof(PccExecutiveRuntimeHost)
@@ -155,7 +153,7 @@ internal sealed class ProductionRuntimeAcceptanceHarness : IAsyncDisposable
         Host = (PccExecutiveRuntimeHost)constructor.Invoke(new object?[]
         {
             Store, projectLock, Pcc, Baseline, Sessions, Store, Ownership, pausePort,
-            AgentProvider, Adapter, SendGate, diagnostics, new HttpClient(), new HttpClient(), run
+            AgentProvider, Adapter, SendGate, new HttpClient(), new HttpClient(), run
         });
 
         if (run is not null)
