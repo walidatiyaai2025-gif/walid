@@ -18,6 +18,24 @@ public sealed class ManagerSendRecoveryPolicyTests
     }
 
     [Theory]
+    [InlineData("BROWSER_ADAPTER_UNCERTAIN")]
+    [InlineData("browser-adapter-uncertain")]
+    public void Browser_adapter_uncertainty_requests_safe_semantic_reprobe(string errorCode)
+    {
+        Assert.Equal(
+            ManagerSendRecoveryAction.BrowserAdapterReprobe,
+            ManagerSendRecoveryPolicy.Classify(errorCode));
+    }
+
+    [Fact]
+    public void Browser_adapter_uncertainty_can_be_detected_from_provider_evidence()
+    {
+        Assert.Equal(
+            ManagerSendRecoveryAction.BrowserAdapterReprobe,
+            ManagerSendRecoveryPolicy.Classify(null, "guard:BROWSER_ADAPTER_UNCERTAIN"));
+    }
+
+    [Theory]
     [InlineData("WRONG_CONVERSATION_BINDING")]
     [InlineData("GLOBAL_SEND_PAUSED")]
     [InlineData("BROWSER_RUNTIME_NOT_BOUND")]
