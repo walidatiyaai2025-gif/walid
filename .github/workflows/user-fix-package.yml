@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   package_user_fix:
-    name: Build focused user-fix installer
+    name: Build live-Chrome readiness installer
     runs-on: windows-latest
     env:
       PCCEXECUTIVE_LIVE_BROWSER: '0'
@@ -36,6 +36,10 @@ jobs:
           if ($sha -ne '${{ github.sha }}'.ToLowerInvariant()) { throw "EXACT_HEAD_MISMATCH expected=${{ github.sha }} actual=$sha" }
           New-Item -ItemType Directory -Path artifacts/provenance -Force | Out-Null
           Set-Content artifacts/provenance/SOURCE_SHA.txt $sha -Encoding ascii
+
+      - name: Apply live Chrome readiness closure
+        shell: pwsh
+        run: ./build/Apply-LiveChromeReadinessFix.ps1
 
       - name: Build WPF product
         shell: pwsh
@@ -66,7 +70,7 @@ jobs:
             -ExpectedSourceSha "${{ github.sha }}" `
             -EvidencePath artifacts/release-evidence/published-app-smoke.json
 
-      - name: Build focused installer without unrelated E2E gate
+      - name: Build focused installer
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
@@ -102,7 +106,7 @@ jobs:
             fileName=(Split-Path $installer -Leaf)
             targetArchitecture='win-x64'
             artifactHash="sha256:$hash"
-            buildType='FOCUSED_USER_FIX'
+            buildType='LIVE_CHROME_READINESS_USER_FIX'
             generatedAt=[DateTimeOffset]::UtcNow.ToString('o')
           } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $packageDir "PCCExecutive-$version-Setup-x64.manifest.json") -Encoding UTF8
 
@@ -157,9 +161,10 @@ jobs:
       - name: Upload user-fix installer
         uses: actions/upload-artifact@v4
         with:
-          name: PCCExecutive-user-fix-${{ github.sha }}-win-x64
+          name: PCCExecutive-live-chrome-fix-${{ github.sha }}-win-x64
           path: |
             artifacts/package/*
             artifacts/release-evidence/published-app-smoke.json
+            artifacts/provenance/SOURCE_SHA.txt
           if-no-files-found: error
           retention-days: 14
