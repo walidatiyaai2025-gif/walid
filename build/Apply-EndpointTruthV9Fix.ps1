@@ -37,27 +37,17 @@ $sourceIdentityPath = Join-Path $repoRoot 'src/PCCExecutive.App/ViewModels/Build
 # Playwright graph without proving that the Browser/CDP channel could execute a command.
 # The user's post-install diagnostic showed ConnectChrome completing repeatedly while
 # EndpointHealth stayed Unknown. Every recovery now requires an actual Playwright roundtrip.
-$oldExistingConnection = @'
-        if (_connections.TryGetValue(runtime.RuntimeId, out var existing) && !existing.Process.HasExited)
-        {
-            try
-            {
-                var existingPages = existing.Browser.Contexts.SelectMany(x => x.Pages).Where(x => !x.IsClosed).ToArray();
-                var existingPageIndex = ChatGptPageSelectionPolicy.SelectForRecovery(
-                    existingPages.Select(x => x.Url).ToArray(), runtime.ProviderConversationIdentity);
-                if (existingPageIndex >= 0)
-                {
-                    _connections[runtime.RuntimeId] = existing with { Page = existingPages[existingPageIndex] };
-                    return true;
-                }
-            }
-            catch (PlaywrightException)
-            {
-                // A live Chrome PID does not prove that the Playwright/CDP page graph is usable.
-            }
-            _connections.TryRemove(runtime.RuntimeId, out _);
-        }
-'@
+$hostText = Read-Normalized $hostPath
+$recoverAnchor = '    public async Task<bool> RecoverAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default)'
+$recoverIndex = $hostText.IndexOf($recoverAnchor, [StringComparison]::Ordinal)
+if ($recoverIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: RecoverAsync anchor missing.' }
+$existingPattern = '(?ms)^        if \(_connections\.TryGetValue\(runtime\.RuntimeId, out var existing\) && !existing\.Process\.HasExited\)\s*\{.*?^            _connections\.TryRemove\(runtime\.RuntimeId, out _\);\s*^        \}'
+$existingMatches = [regex]::Matches($hostText.Substring($recoverIndex), $existingPattern)
+if ($existingMatches.Count -ne 1) {
+    throw "PATCH_CONTRACT_MISMATCH: cached PCC connection block expected exactly one match after RecoverAsync, found $($existingMatches.Count)."
+}
+$existingMatch = $existingMatches[0]
+$existingIndex = $recoverIndex + $existingMatch.Index
 $newExistingConnection = @'
         if (_connections.TryGetValue(runtime.RuntimeId, out var existing))
         {
@@ -69,7 +59,9 @@ $newExistingConnection = @'
             _connections.TryRemove(runtime.RuntimeId, out _);
         }
 '@
-Replace-ExactlyOnce $hostPath $oldExistingConnection $newExistingConnection 'Require a live Playwright roundtrip for cached PCC connections'
+$hostText = $hostText.Remove($existingIndex, $existingMatch.Length).Insert($existingIndex, $newExistingConnection)
+Set-Content -Path $hostPath -Value $hostText -Encoding utf8 -NoNewline
+Write-Host 'PATCHED: Require a live Playwright roundtrip for cached PCC connections structurally'
 
 $oldRecoveryBind = @'
         _connections[runtime.RuntimeId] = new Connection(process, browser, page, runtime.ContextIdentity ?? Guid.NewGuid().ToString("N"), runtime.ProfilePath);
