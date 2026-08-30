@@ -114,12 +114,8 @@ Replace-RequiredLiteral -RelativePath 'src/PCCExecutive.App/Presentation/Runtime
 
 Replace-RequiredLiteral -RelativePath 'src/PCCExecutive.App/Presentation/RuntimeInspectorPresentation.cs' -Old 'var nextStep = !current.Sessions.Any(s => s.IsPccOwned) ? GuidedStepId.Chrome : !current.HasActiveRun ? GuidedStepId.Project : !current.HasManagerRuntime ? GuidedStepId.Manager : GuidedStepId.Orchestration;' -New 'var nextStep = !current.ChromeConnectionProven ? GuidedStepId.Chrome : !current.HasActiveRun ? GuidedStepId.Project : !current.HasManagerRuntime ? GuidedStepId.Manager : GuidedStepId.Orchestration;' -Description 'Runtime Inspector stays on Chrome until connection proof exists'
 
-$rateLimitOld = @'
-        var providerConversationPending = result.Accepted &&
-            (string.IsNullOrWhiteSpace(postSendRuntime?.ProviderConversationIdentity) || string.Equals(postSendRuntime.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase));
-        _latestManagerHandoff = providerConversationPending
-'@
-$rateLimitNew = @'
+$rateLimitPattern = '        var providerConversationPending = result\.Accepted &&\s*\(string\.IsNullOrWhiteSpace\(postSendRuntime\?\.ProviderConversationIdentity\) \|\| string\.Equals\(postSendRuntime\.ProviderConversationIdentity, "NEW", StringComparison\.OrdinalIgnoreCase\)\);\s*        _latestManagerHandoff = providerConversationPending'
+$rateLimitReplacement = @'
         var providerConversationPending = result.Accepted &&
             (string.IsNullOrWhiteSpace(postSendRuntime?.ProviderConversationIdentity) || string.Equals(postSendRuntime.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase));
         var managerSendRecovery = ManagerSendRecoveryPolicy.Classify(result.ErrorCode, result.ProviderEvidence);
@@ -135,6 +131,6 @@ $rateLimitNew = @'
         }
         _latestManagerHandoff = providerConversationPending
 '@
-Replace-RequiredLiteral -RelativePath 'src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs' -Old $rateLimitOld -New $rateLimitNew -Description 'Manager PAGE_RATELIMITED enters durable cooldown and auto-resume instead of stalling'
+Replace-RequiredRegex -RelativePath 'src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs' -Pattern $rateLimitPattern -Replacement $rateLimitReplacement -Description 'Manager PAGE_RATELIMITED enters durable cooldown and auto-resume instead of stalling'
 
 Write-Host 'LIVE_CHROME_READINESS_FIX_APPLIED'
