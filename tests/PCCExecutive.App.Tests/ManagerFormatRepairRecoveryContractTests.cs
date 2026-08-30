@@ -35,6 +35,9 @@ public sealed class ManagerFormatRepairRecoveryContractTests
         Assert.True(terminalReject > repair);
         Assert.Contains("CanSubmitOrReconcileFormatRepair", source, StringComparison.Ordinal);
         Assert.Contains("REPAIRING_MANAGER_FORMAT", source, StringComparison.Ordinal);
+        Assert.Contains("ManagerSendRecoveryAction.BrowserAdapterReprobe", source, StringComparison.Ordinal);
+        Assert.Contains("RECOVERING_BROWSER_EVIDENCE", source, StringComparison.Ordinal);
+        Assert.Contains("the bounded repair attempt is not consumed", source, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
