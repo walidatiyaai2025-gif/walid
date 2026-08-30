@@ -114,4 +114,27 @@ Replace-RequiredLiteral -RelativePath 'src/PCCExecutive.App/Presentation/Runtime
 
 Replace-RequiredLiteral -RelativePath 'src/PCCExecutive.App/Presentation/RuntimeInspectorPresentation.cs' -Old 'var nextStep = !current.Sessions.Any(s => s.IsPccOwned) ? GuidedStepId.Chrome : !current.HasActiveRun ? GuidedStepId.Project : !current.HasManagerRuntime ? GuidedStepId.Manager : GuidedStepId.Orchestration;' -New 'var nextStep = !current.ChromeConnectionProven ? GuidedStepId.Chrome : !current.HasActiveRun ? GuidedStepId.Project : !current.HasManagerRuntime ? GuidedStepId.Manager : GuidedStepId.Orchestration;' -Description 'Runtime Inspector stays on Chrome until connection proof exists'
 
+$rateLimitOld = @'
+        var providerConversationPending = result.Accepted &&
+            (string.IsNullOrWhiteSpace(postSendRuntime?.ProviderConversationIdentity) || string.Equals(postSendRuntime.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase));
+        _latestManagerHandoff = providerConversationPending
+'@
+$rateLimitNew = @'
+        var providerConversationPending = result.Accepted &&
+            (string.IsNullOrWhiteSpace(postSendRuntime?.ProviderConversationIdentity) || string.Equals(postSendRuntime.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase));
+        var managerSendRecovery = ManagerSendRecoveryPolicy.Classify(result.ErrorCode, result.ProviderEvidence);
+        if (!result.Accepted && !result.IsUncertain && managerSendRecovery == ManagerSendRecoveryAction.GlobalRateLimitCooldown)
+        {
+            var rateLimit = new ResilienceDecision(ChatGptResilienceState.RateLimited, FaultScope.Global, true, false, "RATE_LIMITED");
+            await PersistGlobalHealthPauseAsync(rateLimit, runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
+            _latestManagerHandoff = "RATE LIMIT DETECTED — Manager send was not submitted. PCC paused new sends, will re-probe ChatGPT after cooldown, and will resume automatically without duplicating this dispatch.";
+            _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "RATE_LIMITED", result.ErrorCode ?? result.ProviderEvidence ?? "RATE_LIMITED", true));
+            if (_settings.AutoResume) EnsureAutopilotLoop();
+            await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        _latestManagerHandoff = providerConversationPending
+'@
+Replace-RequiredLiteral -RelativePath 'src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs' -Old $rateLimitOld -New $rateLimitNew -Description 'Manager PAGE_RATELIMITED enters durable cooldown and auto-resume instead of stalling'
+
 Write-Host 'LIVE_CHROME_READINESS_FIX_APPLIED'
