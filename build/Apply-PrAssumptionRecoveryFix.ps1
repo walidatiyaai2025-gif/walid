@@ -25,9 +25,16 @@ function Replace-RequiredLiteral {
 
 $gateway = 'src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs'
 
+$oldEarlyReset = @'
+        await ResetManagerFormatRepairStateAsync(run, cancellationToken).ConfigureAwait(false);
+        var planFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", parsed.Plan.Tasks.Select(x => x.Task.Fingerprint))))).ToLowerInvariant();
+'@
+$newEarlyReset = @'
+        var planFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", parsed.Plan.Tasks.Select(x => x.Task.Fingerprint))))).ToLowerInvariant();
+'@
 Replace-RequiredLiteral -RelativePath $gateway `
-    -Old '        await ResetManagerFormatRepairStateAsync(run, cancellationToken).ConfigureAwait(false);' `
-    -New '' `
+    -Old $oldEarlyReset `
+    -New $newEarlyReset `
     -Description 'Keep bounded Manager repair state until live wave validation succeeds'
 
 $oldValidation = @'
