@@ -41,6 +41,10 @@ jobs:
         shell: pwsh
         run: ./build/Apply-LiveChromeReadinessFix.ps1
 
+      - name: Apply repeated rate-limit recovery closure
+        shell: pwsh
+        run: ./build/Apply-RateLimitRecoveryV2Fix.ps1
+
       - name: Build WPF product
         shell: pwsh
         run: dotnet build src/PCCExecutive.App/PCCExecutive.App.csproj --configuration Release
@@ -106,7 +110,7 @@ jobs:
             fileName=(Split-Path $installer -Leaf)
             targetArchitecture='win-x64'
             artifactHash="sha256:$hash"
-            buildType='LIVE_CHROME_READINESS_USER_FIX'
+            buildType='RATE_LIMIT_RECOVERY_V2_USER_FIX'
             generatedAt=[DateTimeOffset]::UtcNow.ToString('o')
           } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $packageDir "PCCExecutive-$version-Setup-x64.manifest.json") -Encoding UTF8
 
@@ -161,7 +165,7 @@ jobs:
       - name: Upload user-fix installer
         uses: actions/upload-artifact@v4
         with:
-          name: PCCExecutive-live-chrome-fix-${{ github.sha }}-win-x64
+          name: PCCExecutive-rate-limit-recovery-v2-${{ github.sha }}-win-x64
           path: |
             artifacts/package/*
             artifacts/release-evidence/published-app-smoke.json
