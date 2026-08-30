@@ -63,19 +63,26 @@ $hostText = $hostText.Remove($existingIndex, $existingMatch.Length).Insert($exis
 Set-Content -Path $hostPath -Value $hostText -Encoding utf8 -NoNewline
 Write-Host 'PATCHED: Require a live Playwright roundtrip for cached PCC connections structurally'
 
-$oldRecoveryBind = @'
-        _connections[runtime.RuntimeId] = new Connection(process, browser, page, runtime.ContextIdentity ?? Guid.NewGuid().ToString("N"), runtime.ProfilePath);
-        return true;
-'@
+# V8E proves the recovery connection-bind anchor exists, but surrounding whitespace/tail
+# may evolve. Replace only that unique bind line and leave the existing return statement intact.
+$hostText = Read-Normalized $hostPath
+$recoverIndex = $hostText.IndexOf($recoverAnchor, [StringComparison]::Ordinal)
+if ($recoverIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: RecoverAsync anchor missing after cached-connection patch.' }
+$recoveryBindAnchor = '        _connections[runtime.RuntimeId] = new Connection(process, browser, page, runtime.ContextIdentity ?? Guid.NewGuid().ToString("N"), runtime.ProfilePath);'
+$recoveryBindIndex = $hostText.IndexOf($recoveryBindAnchor, $recoverIndex, [StringComparison]::Ordinal)
+if ($recoveryBindIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: recovery connection bind anchor missing after V8E.' }
+$nextMethodIndex = $hostText.IndexOf('    public async Task SetVisibilityAsync(', $recoveryBindIndex, [StringComparison]::Ordinal)
+if ($nextMethodIndex -lt 0 -or $recoveryBindIndex -gt $nextMethodIndex) { throw 'PATCH_CONTRACT_MISMATCH: recovery bind is outside RecoverAsync.' }
 $newRecoveryBind = @'
         var recoveredConnection = new Connection(process, browser, page, runtime.ContextIdentity ?? Guid.NewGuid().ToString("N"), runtime.ProfilePath);
         if (!await ProbeConnectionAsync(recoveredConnection, runtime.ProviderConversationIdentity, cancellationToken).ConfigureAwait(false))
             return false;
 
         _connections[runtime.RuntimeId] = recoveredConnection;
-        return true;
 '@
-Replace-ExactlyOnce $hostPath $oldRecoveryBind $newRecoveryBind 'Verify the newly reconnected CDP endpoint before marking recovery successful'
+$hostText = $hostText.Remove($recoveryBindIndex, $recoveryBindAnchor.Length).Insert($recoveryBindIndex, $newRecoveryBind)
+Set-Content -Path $hostPath -Value $hostText -Encoding utf8 -NoNewline
+Write-Host 'PATCHED: Verify newly reconnected CDP endpoint before recovery success structurally'
 
 $hostText = Read-Normalized $hostPath
 $probeAnchor = '    private static async Task CloseOtherChatGptPagesAsync(IBrowserContext context, IPage selected)'
