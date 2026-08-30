@@ -64,10 +64,16 @@
                                     <DataTemplate>
                                         <Button Command="{Binding DataContext.NavigateCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                                                 CommandParameter="{Binding}" HorizontalContentAlignment="Stretch" Margin="0,2" Padding="12,9">
-                                            <Grid>
-                                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                                <TextBlock Text="{Binding Glyph}" Foreground="{StaticResource Brush.Purple}" FontSize="15" HorizontalAlignment="Center"/>
-                                                <TextBlock Grid.Column="1" Text="{Binding Label}" VerticalAlignment="Center"/>
+                                            <Grid ToolTip="{Binding Reason}">
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Glyph}" Foreground="{Binding StatusBrush}" FontSize="15" HorizontalAlignment="Center"/>
+                                                <StackPanel Grid.Column="1">
+                                                    <TextBlock Text="{Binding Label}" VerticalAlignment="Center"/>
+                                                    <TextBlock Text="{Binding StatusText}" Foreground="{Binding StatusBrush}" FontSize="9" FontWeight="Bold"
+                                                               Visibility="{Binding IsGuidedStep, Converter={StaticResource BoolToVisibility}}"/>
+                                                </StackPanel>
+                                                <TextBlock Grid.Column="2" Text="{Binding StatusGlyph}" Foreground="{Binding StatusBrush}" FontSize="14" VerticalAlignment="Center" Margin="6,0,0,0"
+                                                           Visibility="{Binding IsGuidedStep, Converter={StaticResource BoolToVisibility}}"/>
                                             </Grid>
                                         </Button>
                                     </DataTemplate>
@@ -88,33 +94,93 @@
                 <Grid Grid.Column="1">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <Border Margin="18,14,18,0" Padding="14,10" CornerRadius="8" Background="#111A2A" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1">
                         <Grid>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                <Border Style="{StaticResource PurpleChip}" Margin="0,0,10,0"><TextBlock Text="STATE" FontSize="10" Foreground="#D8C7FF"/></Border>
-                                <TextBlock Text="{Binding Snapshot.OperatorMessage}" FontWeight="SemiBold"/>
-                            </StackPanel>
-                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                            <Grid Margin="0,0,16,0">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Border Style="{StaticResource PurpleChip}" Margin="0,0,10,0" VerticalAlignment="Center">
+                                    <TextBlock Text="NEXT ACTION" FontSize="10" Foreground="#D8C7FF" FontWeight="SemiBold"/>
+                                </Border>
+                                <TextBlock Grid.Column="1" Text="{Binding NextAction.Instruction}" FontWeight="SemiBold"
+                                           TextWrapping="Wrap" VerticalAlignment="Center"/>
+                            </Grid>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                                 <Button Content="Pause AI" Margin="0,0,8,0" Command="{Binding PauseAiCommand}" ToolTip="Checkpoints state and stops new dispatches; no session is destroyed."/>
                                 <Button Content="Resume" Command="{Binding ResumeAiCommand}"/>
                             </StackPanel>
                         </Grid>
                     </Border>
 
-                    <Border Grid.Row="1" Margin="18" Background="Transparent">
+                    <!-- Always-visible semantic runtime state. This deliberately does not trust the
+                         raw AutopilotState label when stronger evidence says sends are paused/stalled. -->
+                    <Border Grid.Row="1" Margin="18,8,18,0" Padding="12,9" CornerRadius="8" Background="#0A1726" BorderBrush="#28405E" BorderThickness="1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Background="#152B42" CornerRadius="5" Padding="8,4" Margin="0,0,10,0" VerticalAlignment="Center">
+                                <TextBlock Text="LIVE STATUS" Foreground="#7DD3FC" FontSize="10" FontWeight="Bold"/>
+                            </Border>
+                            <TextBlock x:Name="LiveStateText" Grid.Column="1" Text="INITIALIZING" Foreground="#FBBF24" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <StackPanel Grid.Column="2">
+                                <TextBlock x:Name="LiveDetailText" Text="Reading canonical runtime state..." TextWrapping="Wrap" FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding Snapshot.CurrentWave, StringFormat='Stage: {0}'}" Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,2,0,0"/>
+                            </StackPanel>
+                            <Border Grid.Column="3" Style="{StaticResource Chip}" Margin="10,0,0,0" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Snapshot.LoopGuardState, StringFormat='Loop: {0}'}" Foreground="{StaticResource Brush.Muted}" FontSize="10"/>
+                            </Border>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Row="2" Margin="18,18,18,8" Background="Transparent">
                         <ContentControl Content="{Binding CurrentScreen}"/>
                     </Border>
 
-                    <Border Grid.RowSpan="2" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="18" Padding="12,8" Background="#34121C" BorderBrush="#7F1D32" BorderThickness="1" CornerRadius="8"
+                    <!-- Persistent activity/status bar. The animated UI heartbeat proves the shell is
+                         alive; the indeterminate progress bar runs only while runtime work/recovery is
+                         actually active. Paused/stalled states stay visually static and explicit. -->
+                    <Border Grid.Row="3" Margin="18,0,18,14" Padding="10,7" CornerRadius="7" Background="#07131F" BorderBrush="#223B55" BorderThickness="1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="ActivityPulseText" Text="●" Foreground="#34D399" FontSize="14" FontWeight="Bold" VerticalAlignment="Center" ToolTip="UI heartbeat — this animation continues while the PCC Executive window is responsive."/>
+                            <TextBlock x:Name="RuntimeActivityStateText" Grid.Column="1" Text="INITIALIZING" Foreground="#7DD3FC" FontSize="10" FontWeight="Bold" VerticalAlignment="Center" Margin="8,0,12,0"/>
+                            <ProgressBar x:Name="RuntimeActivityProgress" Grid.Column="2" Width="92" Height="4" IsIndeterminate="True" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <TextBlock x:Name="RuntimeActivityDetailText" Grid.Column="3" Text="Loading runtime activity..." Foreground="#D6E3F0" FontSize="10" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="RuntimeActivityElapsedText" Grid.Column="4" Text="Step: 0s" Foreground="#FDE68A" FontSize="10" FontWeight="SemiBold" VerticalAlignment="Center" Margin="12,0,0,0" ToolTip="Seconds spent in the current background operation."/>
+                            <TextBlock x:Name="RuntimeActivityAgeText" Grid.Column="5" Text="Runtime event: now" Foreground="{StaticResource Brush.Muted}" FontSize="10" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                            <TextBlock x:Name="RuntimeAutoResumeText" Grid.Column="6" Text="Auto-resume: —" Foreground="{StaticResource Brush.Muted}" FontSize="10" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.RowSpan="4" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="18,18,18,58" Padding="12,8" Background="#34121C" BorderBrush="#7F1D32" BorderThickness="1" CornerRadius="8"
                             Visibility="{Binding HasUiError, Converter={StaticResource BoolToVisibility}}">
-                        <TextBlock Text="{Binding LastUiError}" Foreground="#FFD6DE" MaxWidth="520"/>
+                        <StackPanel MaxWidth="560">
+                            <TextBlock Text="{Binding BlockedActionTitle}" Foreground="#FFD6DE" FontWeight="Bold"/>
+                            <TextBlock Text="{Binding LastUiError}" Foreground="#FFD6DE" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                            <Button Content="Go to Required Step" Command="{Binding GoToRequiredStepCommand}" Margin="0,8,0,0" HorizontalAlignment="Left"
+                                    Visibility="{Binding HasBlockedNavigation, Converter={StaticResource BoolToVisibility}}"/>
+                        </StackPanel>
                     </Border>
                 </Grid>
             </Grid>
         </Grid>
     </Border>
 </Window>
+

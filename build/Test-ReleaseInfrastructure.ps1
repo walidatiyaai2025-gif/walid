@@ -16,6 +16,7 @@ $requiredFiles = @(
     'build/Package.ps1',
     'build/Publish-Windows.ps1',
     'build/Test-ReleasePayload.ps1',
+    'build/Test-GuidedRuntimeAcceptanceMatrix.ps1',
     'installer/PCCExecutive.iss',
     'updater/update-manifest.schema.json',
     'src/PCCExecutive.Updater/PCCExecutive.Updater.csproj',
@@ -24,6 +25,7 @@ $requiredFiles = @(
     'updater/Invoke-Upgrade.ps1',
     'tests/installer/Test-Package.ps1',
     'tests/installer/Smoke-FreshInstall.ps1',
+    'tests/installer/Smoke-Repair.ps1',
     'tests/installer/Smoke-Upgrade.ps1',
     'tests/installer/Smoke-FailedUpgrade.ps1',
     'tests/installer/Smoke-Uninstall.ps1'
@@ -90,5 +92,11 @@ foreach ($file in $textFiles) {
         }
     }
 }
+
+$guidedRuntimeMatrix = & (Join-Path $repoRoot 'build\Test-GuidedRuntimeAcceptanceMatrix.ps1')
+if ($guidedRuntimeMatrix.Result -ne 'VALID' -or $guidedRuntimeMatrix.Cases -ne 55) {
+    throw "Guided Runtime acceptance matrix is not release-valid."
+}
+Write-Host "GUIDED_RUNTIME_MATRIX_VALID cases=$($guidedRuntimeMatrix.Cases)"
 
 Write-Host "RELEASE_INFRASTRUCTURE_VALID version=$version"

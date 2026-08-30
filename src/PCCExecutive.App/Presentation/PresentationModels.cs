@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using PCCExecutive.Application;
 
 namespace PCCExecutive.App.Presentation;
 
@@ -19,6 +20,7 @@ public enum ScreenId
     Settings,
     UpdateCenter,
     AttentionCenter,
+    RuntimeInspector,
     ConversationHistory
 }
 
@@ -45,7 +47,58 @@ public enum ProviderMode { BrowserWeb, OpenAiApi, Hybrid }
 public enum DispatchMode { Manual, Assisted, AutomaticStaged }
 public enum CompletionMode { Unknown, Running, ClosureMode, Verified, Blocked }
 
-public sealed record NavigationItem(ScreenId Id, string Label, string Glyph);
+public sealed class NavigationItem : System.ComponentModel.INotifyPropertyChanged
+{
+    private GuidedStepState _state = GuidedStepState.Pending;
+    private string _statusText = string.Empty;
+    private string _statusGlyph = string.Empty;
+    private string _statusBrush = "#8B5CF6";
+    private string? _reason;
+
+    public NavigationItem(ScreenId id, string label, string glyph)
+    {
+        Id = id;
+        Label = label;
+        Glyph = glyph;
+    }
+
+    public ScreenId Id { get; }
+    public string Label { get; }
+    public string Glyph { get; }
+    public GuidedStepState State { get => _state; private set => Set(ref _state, value); }
+    public string StatusText { get => _statusText; private set => Set(ref _statusText, value); }
+    public string StatusGlyph { get => _statusGlyph; private set => Set(ref _statusGlyph, value); }
+    public string StatusBrush { get => _statusBrush; private set => Set(ref _statusBrush, value); }
+    public string? Reason { get => _reason; private set => Set(ref _reason, value); }
+    public bool IsGuidedStep { get; private set; }
+
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+
+    public void Apply(PrerequisiteEvaluation evaluation)
+    {
+        IsGuidedStep = true;
+        State = evaluation.State;
+        Reason = evaluation.Reason;
+        (StatusText, StatusGlyph, StatusBrush) = evaluation.State switch
+        {
+            GuidedStepState.Completed => ("COMPLETED", "✓", "#34D399"),
+            GuidedStepState.Current => ("CURRENT", "▶", "#A78BFA"),
+            GuidedStepState.Blocked => ("BLOCKED", "⊘", "#FB7185"),
+            GuidedStepState.Failed => ("FAILED", "×", "#FB7185"),
+            GuidedStepState.Recovering => ("RECOVERING", "↻", "#FBBF24"),
+            GuidedStepState.AttentionRequired => ("ATTENTION REQUIRED", "!", "#FBBF24"),
+            _ => ("PENDING", "○", "#64748B"),
+        };
+        PropertyChanged?.Invoke(this, new(nameof(IsGuidedStep)));
+    }
+
+    private void Set<T>(ref T field, T value, [System.Runtime.CompilerServices.CallerMemberName] string? name = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value)) return;
+        field = value;
+        PropertyChanged?.Invoke(this, new(name));
+    }
+}
 
 public sealed record ProjectSummary(
     string Id,
@@ -189,21 +242,34 @@ public sealed record RuntimeSnapshot(
     public string BlockerCountText => GatewayBound ? BlockerCount.ToString() : "—";
     public string VerifiedCompletionText => VerifiedCompletion is null ? "—" : $"{VerifiedCompletion}%";
     public string ManagerEstimateText => ManagerEstimate is null ? "—" : $"{ManagerEstimate}%";
-    public string HealthText => GlobalHealth switch
-    {
-        HealthState.RateLimited => "RATE LIMITED",
-        HealthState.TemporaryError => "TEMPORARY ERROR",
-        HealthState.PartialResponse => "PARTIAL RESPONSE",
-        HealthState.LoginRequired => "LOGIN REQUIRED",
-        HealthState.AdapterUncertain => "ADAPTER UNCERTAIN",
-        _ => GlobalHealth.ToString().ToUpperInvariant()
-    };
+
+    // Browser runtime lifecycle and ChatGPT semantic health are different facts. The runtime host
+    // intentionally keeps GlobalHealth=Unknown until semantic ChatGPT evidence exists, but Screen 01
+    // must still report the connection fact once a live Manager runtime has positive PCC ownership.
+    // This avoids the old false "UNKNOWN" after a successful Connect without fabricating HEALTHY.
+    public bool ChromeConnectionProven => GatewayBound && Sessions.Any(x =>
+        x.IsPccOwned &&
+        string.Equals(x.Role, "Manager", StringComparison.OrdinalIgnoreCase) &&
+        x.State is "READY" or "HIDDEN" or "VISIBLE" or "ACTIVE");
+
+    public string HealthText => GlobalHealth == HealthState.Unknown && ChromeConnectionProven
+        ? "CHROME CONNECTED"
+        : GlobalHealth switch
+        {
+            HealthState.RateLimited => "RATE LIMITED",
+            HealthState.TemporaryError => "TEMPORARY ERROR",
+            HealthState.PartialResponse => "PARTIAL RESPONSE",
+            HealthState.LoginRequired => "LOGIN REQUIRED",
+            HealthState.AdapterUncertain => "ADAPTER UNCERTAIN",
+            _ => GlobalHealth.ToString().ToUpperInvariant()
+        };
 
     public string HealthAccent => GlobalHealth switch
     {
         HealthState.Healthy => "#6EE7B7",
         HealthState.Slow or HealthState.Throttled or HealthState.RateLimited or HealthState.Cooldown => "#FBBF24",
         HealthState.Recovering => "#8B5CF6",
+        HealthState.Unknown when ChromeConnectionProven => "#6EE7B7",
         HealthState.Unknown => "#8FA3B8",
         _ => "#FB7185"
     };
@@ -215,27 +281,42 @@ public sealed record RuntimeSnapshot(
             or HealthState.Cooldown or HealthState.TemporaryError or HealthState.PartialResponse or HealthState.Offline
             or HealthState.Stuck or HealthState.Recovering;
 
+    public bool HasManagerRuntime => Sessions.Any(x =>
+        x.IsPccOwned && string.Equals(x.Role, "Manager", StringComparison.OrdinalIgnoreCase));
+
+    public bool ManagerNeedsStart => HasManagerRuntime &&
+        (LatestManagerHandoff.Contains("start Manager", StringComparison.OrdinalIgnoreCase) ||
+         LatestManagerHandoff.Contains("Select a project, connect Chrome", StringComparison.OrdinalIgnoreCase));
+
     public string OperatorMessage => !GatewayBound
-        ? "Runtime contracts are not bound yet. Operational controls stay disabled."
+        ? "STARTUP — Runtime contracts are not bound yet. PCC keeps controls disabled until it can prove safe state."
         : AttentionCount > 0
-            ? $"{AttentionCount} action{(AttentionCount == 1 ? string.Empty : "s")} require operator attention."
-            : GlobalHealth switch
-            {
-                HealthState.Slow => "SLOW RESPONSE DETECTED · MONITORING ACTIVE · NO ACTION REQUIRED",
-                HealthState.Throttled => "THROTTLING DETECTED · NEW SENDS PACED · NO ACTION REQUIRED",
-                HealthState.RateLimited => "RATE LIMIT DETECTED · NEW SENDS PAUSED · AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
-                HealthState.Cooldown => "COOLDOWN ACTIVE · AUTO RESUME ENABLED · NO ACTION REQUIRED",
-                HealthState.TemporaryError => "TEMPORARY ERROR · AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
-                HealthState.PartialResponse => "PARTIAL RESPONSE · RECONCILIATION ACTIVE · NO ACTION REQUIRED",
-                HealthState.Offline => "OFFLINE · RECOVERY WATCH ACTIVE · NO ACTION REQUIRED",
-                HealthState.Stuck => "STUCK SESSION DETECTED · RECOVERY ACTIVE · NO ACTION REQUIRED",
-                HealthState.Recovering => "AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
-                HealthState.Healthy => "AUTOPILOT · HEALTHY · NO ACTION REQUIRED",
-                HealthState.LoginRequired => "LOGIN REQUIRED · OPEN ATTENTION CENTER",
-                HealthState.Challenge => "ACCOUNT CHALLENGE · OPEN ATTENTION CENTER",
-                HealthState.AdapterUncertain => "NEW SENDS PAUSED · ADAPTER STATE UNCERTAIN · SAFE-FAIL ACTIVE",
-                _ => "Runtime state is being evaluated."
-            };
+            ? $"ACTION REQUIRED — {AttentionCount} item{(AttentionCount == 1 ? string.Empty : "s")} need you. Open 15 Attention and follow the single action shown there."
+            : !HasActiveRun
+                ? "STEP 1 OF 4 — 01 Chrome: confirm the signed-in profile. STEP 2 OF 4 — 02 Projects: choose the project and press Open Project."
+                : GlobalHealth is HealthState.LoginRequired or HealthState.Challenge
+                    ? "ACTION REQUIRED — Open 15 Attention. PCC will take you to the exact ChatGPT login/challenge that needs you."
+                    : !HasManagerRuntime
+                        ? "STEP 3 OF 4 — 01 Chrome: press Connect / Recover Chrome. PCC will create or recover the Manager runtime automatically."
+                        : string.Equals(AutopilotState, "PAUSED", StringComparison.OrdinalIgnoreCase)
+                            ? "STEP 4 OF 4 — AI is PAUSED. Press Resume at the top, then open 04 Manager and press Start / Continue Manager."
+                            : ManagerNeedsStart
+                                ? "STEP 4 OF 4 — 04 Manager: press Start / Continue Manager. After that PCC plans, dispatches Workers, reconciles, and continues automatically."
+                                : GlobalHealth switch
+                                {
+                                    HealthState.Slow => "AUTOPILOT ACTIVE — SLOW RESPONSE DETECTED · MONITORING ACTIVE · NO ACTION REQUIRED",
+                                    HealthState.Throttled => "AUTOPILOT ACTIVE — THROTTLING DETECTED · NEW SENDS PACED · NO ACTION REQUIRED",
+                                    HealthState.RateLimited => "AUTOPILOT ACTIVE — RATE LIMIT DETECTED · NEW SENDS PAUSED · AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
+                                    HealthState.Cooldown => "AUTOPILOT ACTIVE — COOLDOWN ACTIVE · AUTO RESUME ENABLED · NO ACTION REQUIRED",
+                                    HealthState.TemporaryError => "AUTOPILOT ACTIVE — TEMPORARY ERROR · AUTO RECOVERY ACTIVE · NO ACTION REQUIRED",
+                                    HealthState.PartialResponse => "AUTOPILOT ACTIVE — PARTIAL RESPONSE · RECONCILIATION ACTIVE · NO ACTION REQUIRED",
+                                    HealthState.Offline => "AUTOPILOT ACTIVE — OFFLINE · RECOVERY WATCH ACTIVE · NO ACTION REQUIRED",
+                                    HealthState.Stuck => "AUTOPILOT ACTIVE — STUCK SESSION DETECTED · RECOVERY ACTIVE · NO ACTION REQUIRED",
+                                    HealthState.Recovering => "AUTOPILOT ACTIVE — AUTO RECOVERY IN PROGRESS · NO ACTION REQUIRED",
+                                    HealthState.Healthy => "AUTOPILOT ACTIVE — HEALTHY · PCC IS RUNNING THE PROJECT · NO ACTION REQUIRED",
+                                    HealthState.AdapterUncertain => "SAFE-FAIL ACTIVE — NEW SENDS PAUSED WHILE PCC PROVES THE CHAT STATE. NO RETRY REQUIRED FROM YOU.",
+                                    _ => "AUTOPILOT PREPARING — PCC is evaluating runtime state. If you need to act, this bar will show one numbered instruction."
+                                };
 
     public static RuntimeSnapshot Unbound { get; } = new(
         GatewayBound: false,

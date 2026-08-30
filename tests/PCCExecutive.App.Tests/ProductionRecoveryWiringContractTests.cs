@@ -20,6 +20,33 @@ public sealed class ProductionRecoveryWiringContractTests
     }
 
     [Fact]
+    public void Startup_composes_browser_recovery_coordinator_and_safe_automatic_resume()
+    {
+        var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
+        var method = Slice(source, "private async Task RecoverStartupBrowserStateAsync", "private static PccExecutiveSettings ParseSettings");
+
+        Assert.Contains("new BrowserStartupRecoveryCoordinator(_runtimeRegistry, _sessions)", method, StringComparison.Ordinal);
+        Assert.Contains("_nextActionRouter.Route", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("DetectOrphansAsync", method, StringComparison.Ordinal);
+        AssertOrdered(method,
+            "ReconcileAsync(runId, cancellationToken)",
+            "identityReconciler.Reconcile(session, runtime)",
+            "if (result.StartupMayContinue && identityConverged)",
+            "ResumeNewSendsAsync(\"STARTUP_BROWSER_RECONCILIATION:SAFE_AUTO_RESUME\"");
+        Assert.Contains("STARTUP_BROWSER_RECONCILIATION:{reason}", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Browser_recovery_telemetry_is_routed_to_runtime_diagnostic_contract()
+    {
+        var source = ReadSource("src/PCCExecutive.App/Presentation/BrowserRecoveryDiagnosticSink.cs");
+        Assert.Contains("IBrowserRecoveryTelemetrySink", source, StringComparison.Ordinal);
+        Assert.Contains("RuntimeDiagnosticKind.Recovery", source, StringComparison.Ordinal);
+        Assert.Contains("recoveryEvent.CorrelationId", source, StringComparison.Ordinal);
+        Assert.Contains("diagnostics.RecordAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Startup_does_not_overwrite_recovered_logical_agent_bindings_with_ready_nulls()
     {
         var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
@@ -76,6 +103,37 @@ public sealed class ProductionRecoveryWiringContractTests
             "if (loop.AutoStopped)",
             "AutonomousConversationRolloverRuntime.Attach(gateway)",
             "gateway.EnsureAutopilotLoop()");
+    }
+
+    [Fact]
+    public void Manager_start_recovers_and_proves_pcc_chrome_before_live_evidence_or_planning()
+    {
+        var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
+        var readiness = Slice(source, "private async Task<bool> EnsureManagerChromeReadyAsync", "private async Task StartManagerAsync");
+        var start = Slice(source, "private async Task StartManagerAsync", "private string BuildManagerPrompt");
+
+        Assert.Contains("RECOVERING_CHROME", readiness, StringComparison.Ordinal);
+        Assert.Contains("ConnectManagerChromeAsync(cancellationToken)", readiness, StringComparison.Ordinal);
+        Assert.Contains("_ownership.ProveAsync(runtime", readiness, StringComparison.Ordinal);
+        Assert.Contains("CHROME_READY", readiness, StringComparison.Ordinal);
+        AssertOrdered(start,
+            "EnsureManagerChromeReadyAsync(cancellationToken)",
+            "_baseline.BuildAsync");
+    }
+
+    [Fact]
+    public void Manager_provider_conversation_identity_pending_is_reconciled_without_runtime_stall()
+    {
+        var source = ReadSource("src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs");
+        var start = Slice(source, "private async Task StartManagerAsync", "private string BuildManagerPrompt");
+        var reconcile = Slice(source, "private async Task ReconcileManagerResponseAsync", "private async Task StartDispatchAsync");
+        var loop = Slice(source, "private async Task RunAutopilotLoopAsync", "private async Task RunSessionActionAsync");
+
+        Assert.Contains("RECONCILING_CONVERSATION", start, StringComparison.Ordinal);
+        Assert.Contains("_browserAdapter.GetCurrentConversationIdentityAsync(runtime", reconcile, StringComparison.Ordinal);
+        Assert.Contains("no resend and no Loop Guard error", reconcile, StringComparison.Ordinal);
+        Assert.DoesNotContain("Manager conversation identity is not yet proven", reconcile, StringComparison.Ordinal);
+        Assert.Contains("_autopilot is \"PLANNING\" or \"MANAGER_REVIEW\" or \"RECONCILING_CONVERSATION\"", loop, StringComparison.Ordinal);
     }
 
     [Fact]

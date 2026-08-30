@@ -1,0 +1,190 @@
+name: PCC Executive Manager Browser Liveness V6
+
+on:
+  push:
+    branches:
+      - 'worker/pcc-user-open-profile-fix'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pcc-user-fix-v6-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package_user_fix_v6:
+    name: Build manager-browser liveness V6 installer
+    runs-on: windows-latest
+    env:
+      PCCEXECUTIVE_LIVE_BROWSER: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Exact-head check
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($sha -ne '${{ github.sha }}'.ToLowerInvariant()) { throw "EXACT_HEAD_MISMATCH expected=${{ github.sha }} actual=$sha" }
+          New-Item -ItemType Directory -Path artifacts/provenance -Force | Out-Null
+          Set-Content artifacts/provenance/SOURCE_SHA.txt $sha -Encoding ascii
+
+      - name: Apply live Chrome readiness closure
+        shell: pwsh
+        run: ./build/Apply-LiveChromeReadinessFix.ps1
+
+      - name: Apply repeated rate-limit recovery closure
+        shell: pwsh
+        run: ./build/Apply-RateLimitRecoveryV2Fix.ps1
+
+      - name: Apply PR assumption recovery closure
+        shell: pwsh
+        run: ./build/Apply-PrAssumptionRecoveryFix.ps1
+
+      - name: Apply Browser adapter uncertainty recovery closure
+        shell: pwsh
+        run: ./build/Apply-BrowserAdapterUncertainRepairFix.ps1
+
+      - name: Apply Manager response Browser recovery V5
+        shell: pwsh
+        run: ./build/Apply-ManagerResponseBrowserRecoveryFix.ps1
+
+      - name: Apply Manager Browser liveness V6
+        shell: pwsh
+        run: ./build/Apply-ManagerBrowserLivenessV6bFix.ps1
+
+      - name: Build WPF product
+        shell: pwsh
+        run: dotnet build src/PCCExecutive.App/PCCExecutive.App.csproj --configuration Release
+
+      - name: Focused App tests
+        shell: pwsh
+        run: dotnet test tests/PCCExecutive.App.Tests/PCCExecutive.App.Tests.csproj --configuration Release --no-restore
+
+      - name: Focused Browser tests
+        shell: pwsh
+        run: |
+          dotnet test tests/PCCExecutive.Browser.Tests/PCCExecutive.Browser.Tests.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'Browser deterministic tests failed.' }
+          dotnet test tests/PCCExecutive.Browser.Acceptance/PCCExecutive.Browser.Acceptance.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'Browser acceptance tests failed.' }
+
+      - name: Install Inno Setup 6+
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Publish and smoke exact-head WPF app
+        shell: pwsh
+        run: |
+          ./build/Publish-Windows.ps1 -Configuration Release -Runtime win-x64 -OutputRoot artifacts/publish/win-x64
+          ./tests/installer/Smoke-PublishedApp.ps1 `
+            -PublishRoot artifacts/publish/win-x64 `
+            -ExpectedSourceSha "${{ github.sha }}" `
+            -EvidencePath artifacts/release-evidence/published-app-smoke.json
+
+      - name: Build focused installer
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $baseVersion = ($version -split '-', 2)[0]
+          $fileVersion = "$baseVersion.0"
+          $sourceSha = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $publishDir = (Resolve-Path artifacts/publish/win-x64).Path
+          $packageDir = Join-Path (Get-Location) 'artifacts/package'
+          New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          )
+          $inno = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if (-not $inno) { throw 'INNO_SETUP_NOT_FOUND' }
+          & $inno `
+            "/DMyAppVersion=$version" `
+            "/DMyFileVersion=$fileVersion" `
+            "/DSourceDir=$publishDir" `
+            "/DOutputDir=$packageDir" `
+            "/DSourceSha=$sourceSha" `
+            installer/PCCExecutive.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
+          $installer = Join-Path $packageDir "PCCExecutive-$version-Setup-x64.exe"
+          if (-not (Test-Path $installer)) { throw 'Installer was not produced.' }
+          if ((Get-Item $installer).Length -lt 1MB) { throw 'Installer is unrealistically small.' }
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          [ordered]@{
+            version=$version
+            sourceSha=$sourceSha
+            fileName=(Split-Path $installer -Leaf)
+            targetArchitecture='win-x64'
+            artifactHash="sha256:$hash"
+            buildType='MANAGER_BROWSER_LIVENESS_V6_USER_FIX'
+            generatedAt=[DateTimeOffset]::UtcNow.ToString('o')
+          } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $packageDir "PCCExecutive-$version-Setup-x64.manifest.json") -Encoding UTF8
+
+      - name: Verify installer package
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          ./tests/installer/Test-Package.ps1 `
+            -InstallerPath "artifacts/package/PCCExecutive-$version-Setup-x64.exe" `
+            -ManifestPath "artifacts/package/PCCExecutive-$version-Setup-x64.manifest.json" `
+            -ExpectedSourceSha "${{ github.sha }}"
+
+      - name: Same-version repair smoke
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $installer = (Resolve-Path "artifacts/package/PCCExecutive-$version-Setup-x64.exe").Path
+          $installRoot = Join-Path $env:RUNNER_TEMP 'PCCExecutive-V6-Repair-Smoke'
+          Remove-Item $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+          $args = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=`"$installRoot`"")
+
+          $first = Start-Process -FilePath $installer -ArgumentList $args -PassThru
+          if (-not $first.WaitForExit(90000)) { Stop-Process -Id $first.Id -Force -ErrorAction SilentlyContinue; throw 'Initial repair-smoke install timed out.' }
+          if ($first.ExitCode -ne 0) { throw "Initial repair-smoke install failed: exit=$($first.ExitCode)" }
+
+          $seedDir = Join-Path $env:LOCALAPPDATA 'PCC Executive\Data'
+          New-Item -ItemType Directory -Path $seedDir -Force | Out-Null
+          $seedPath = Join-Path $seedDir 'same-version-repair-smoke.txt'
+          $seed = "preserve-$([Guid]::NewGuid().ToString('N'))"
+          Set-Content $seedPath $seed -Encoding UTF8
+
+          $appPath = Join-Path $installRoot 'PCCExecutive.exe'
+          $app = Start-Process -FilePath $appPath -PassThru
+          Start-Sleep -Seconds 3
+          $app.Refresh()
+          if ($app.HasExited) { throw "Installed app exited before repair smoke: exit=$($app.ExitCode)" }
+
+          $repair = Start-Process -FilePath $installer -ArgumentList $args -PassThru
+          if (-not $repair.WaitForExit(90000)) { Stop-Process -Id $repair.Id -Force -ErrorAction SilentlyContinue; Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue; throw 'Same-version repair timed out.' }
+          if ($repair.ExitCode -ne 0) { Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue; throw "Same-version repair failed: exit=$($repair.ExitCode)" }
+
+          Start-Sleep -Milliseconds 500
+          $app.Refresh()
+          if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue; throw 'Same-version repair did not close the running PCC Executive process before replacement.' }
+          if (-not (Test-Path $seedPath)) { throw 'Same-version repair deleted durable user data.' }
+          if ((Get-Content $seedPath -Raw).Trim() -ne $seed) { throw 'Same-version repair changed durable user data.' }
+
+          $provenance = Get-Content (Join-Path $installRoot 'publish-manifest.json') -Raw | ConvertFrom-Json
+          if ([string]$provenance.SourceSha -ne '${{ github.sha }}') { throw "Repair provenance mismatch: $($provenance.SourceSha)" }
+          Write-Host "SAME_VERSION_REPAIR_PASS source=${{ github.sha }}"
+
+      - name: Upload V6 installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: PCCExecutive-manager-browser-liveness-v6-${{ github.sha }}-win-x64
+          path: |
+            artifacts/package/*
+            artifacts/release-evidence/published-app-smoke.json
+            artifacts/provenance/SOURCE_SHA.txt
+          if-no-files-found: error
+          retention-days: 14

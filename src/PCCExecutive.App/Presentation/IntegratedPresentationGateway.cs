@@ -25,6 +25,8 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     private readonly GlobalBrowserSendGate _sendGate;
     private readonly CrashConsistentOrchestrationStore _orchestrationStore;
     private readonly ICanonicalDispatchReservationService _dispatchReservations;
+    private readonly RuntimeRecoveryLeaseCoordinator _recoveryLeases = new();
+    private readonly AutonomousNextActionRouter _nextActionRouter = new(new GuidedExecutionEvaluator());
     private AutonomousConversationRolloverRuntime? _rolloverRuntime;
     private readonly HttpClient _pccHttp;
     private readonly HttpClient _githubHttp;
@@ -55,6 +57,8 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     private string? _runtimeErrorFingerprint;
     private int _runtimeErrorCount;
     private IReadOnlyList<ConversationHistorySummary> _conversationHistory = [];
+    private DateTimeOffset _nextExternalEvidenceRetryAt = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextChromeRecoveryRetryAt = DateTimeOffset.MinValue;
 
     private PccExecutiveRuntimeHost(
         SqliteStateStore store,
@@ -102,7 +106,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                 _currentWave = recovered.CurrentWave;
                 _assignments = recovered.Assignments;
                 _runtimeTasks = recovered.Tasks;
-                _autopilot = recovered.Phase.ToString().ToUpperInvariant();
+                _autopilot = MapRecoveredPhaseToAutopilot(recovered.Phase, recovered.CurrentWave);
             }
             var planCheckpoint = store.LoadCheckpointAsync($"manager-plan:{run.Id}").GetAwaiter().GetResult();
             if (planCheckpoint is not null)
@@ -147,12 +151,36 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                     _runtimeErrorCount = loop.RuntimeErrorCount;
                     if (loop.AutoStopped)
                     {
-                        _run = _run is null ? null : _run with { State = ProjectRunState.StalledAutoStopped };
-                        _autopilot = "STALLED";
+                        var recoverablePrePlanRuntimeStall = _currentPlan is null && loop.RuntimeErrorCount >= 3 && _settings.AutoResume;
+                        if (recoverablePrePlanRuntimeStall)
+                        {
+                            _run = _run is null ? null : _run with { State = ProjectRunState.ManagerPlanning };
+                            _runtimeErrorFingerprint = null;
+                            _runtimeErrorCount = 0;
+                            var hasReceivedManagerResponseFailure =
+                                loop.RuntimeErrorFingerprint?.Contains("Manager response rejected:", StringComparison.OrdinalIgnoreCase) == true ||
+                                loop.RuntimeErrorFingerprint?.Contains("Manager wave rejected:", StringComparison.OrdinalIgnoreCase) == true ||
+                                loop.RuntimeErrorFingerprint?.Contains("MANAGER_PLAN_", StringComparison.OrdinalIgnoreCase) == true;
+                            var prePlanRecovery = hasReceivedManagerResponseFailure
+                                ? PrePlanAutoRecoveryMode.ExistingManagerResponse
+                                : PrePlanAutoRecoveryPolicy.Classify(loop.RuntimeErrorFingerprint);
+                            _autopilot = prePlanRecovery == PrePlanAutoRecoveryMode.ExistingManagerResponse ? "PLANNING" : "RECOVERING";
+                            _latestManagerHandoff = prePlanRecovery == PrePlanAutoRecoveryMode.ExistingManagerResponse
+                                ? "RECOVERING_MANAGER_RESPONSE — reparsing the already-received Manager response with the current schema; no resend will occur."
+                                : "RECOVERING_EVIDENCE — retrying the previous pre-plan infrastructure failure automatically.";
+                            if (_run is not null) store.SaveProjectRunAsync(_run).GetAwaiter().GetResult();
+                            store.SaveCheckpointAsync(new DurableCheckpoint($"loop-guard:{run.Id}", run.Id.ToString(), "loop-guard-v2", JsonSerializer.Serialize(new DurableLoopGuard(loop.PlanFingerprints, loop.VerifiedCompletion, null, 0, false)), DateTimeOffset.UtcNow)).GetAwaiter().GetResult();
+                        }
+                        else
+                        {
+                            _run = _run is null ? null : _run with { State = ProjectRunState.StalledAutoStopped };
+                            _autopilot = "STALLED";
+                        }
                     }
                 }
             }
         }
+        NormalizeRecoveredAutopilotState();
         Snapshot = BuildSnapshot(Array.Empty<BrowserRuntimeRecord>(), new HashSet<string>(StringComparer.Ordinal));
     }
 
@@ -194,7 +222,9 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
             IOwnershipProofService ownership = new OwnershipProofService(profileRoot, markerStore, processInspector);
             var runtimeHost = new PlaywrightChromeRuntimeHost(profileRoot);
             IBrowserRuntimeRegistry registry = store;
-            var controller = new BrowserSessionController(registry, runtimeHost, ownership, markerStore, processInspector);
+            var diagnosticStore = new InMemoryRuntimeDiagnosticStore();
+            IRuntimeDiagnosticCollector diagnostics = new RuntimeDiagnosticCollector(diagnosticStore, diagnosticStore);
+            var controller = new BrowserSessionController(registry, runtimeHost, ownership, markerStore, processInspector, new BrowserRecoveryDiagnosticSink(diagnostics));
 
             var adapter = new PlaywrightChatGptBrowserAdapter(runtimeHost);
             var sendGate = new GlobalBrowserSendGate();
@@ -366,6 +396,103 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         return true;
     }
 
+    private static string MapRecoveredPhaseToAutopilot(OrchestrationPhase phase, Wave? wave) => phase switch
+    {
+        OrchestrationPhase.Initializing => "READY",
+        OrchestrationPhase.ManagerPlanning => "PLANNING",
+        OrchestrationPhase.WaveValidation => wave?.State == WaveState.Ready ? "READY_TO_DISPATCH" : "PLANNING",
+        OrchestrationPhase.Dispatching => wave?.State == WaveState.Running ? "WAITING_WORKERS" : wave?.State == WaveState.Ready ? "READY_TO_DISPATCH" : "RECOVERING",
+        OrchestrationPhase.WaveRunning => "WAITING_WORKERS",
+        OrchestrationPhase.Reconciling => "WAITING_WORKERS",
+        OrchestrationPhase.ManagerReview => "MANAGER_REVIEW",
+        OrchestrationPhase.ClosureMode => "CLOSURE_VERIFY",
+        OrchestrationPhase.VerifiedComplete => "VERIFIED_COMPLETE",
+        OrchestrationPhase.BlockedExternal => "RECOVERING",
+        OrchestrationPhase.StalledAutoStopped => "STALLED",
+        OrchestrationPhase.StoppedByOperator => "PAUSED",
+        _ => "RECOVERING"
+    };
+
+    private void NormalizeRecoveredAutopilotState()
+    {
+        if (_run is null) return;
+
+        _autopilot = _autopilot switch
+        {
+            "INITIALIZING" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.Initializing, _currentWave),
+            "MANAGERPLANNING" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.ManagerPlanning, _currentWave),
+            "WAVEVALIDATION" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.WaveValidation, _currentWave),
+            "DISPATCHING" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.Dispatching, _currentWave),
+            "WAVERUNNING" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.WaveRunning, _currentWave),
+            "RECONCILING" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.Reconciling, _currentWave),
+            "MANAGERREVIEW" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.ManagerReview, _currentWave),
+            "CLOSUREMODE" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.ClosureMode, _currentWave),
+            "VERIFIEDCOMPLETE" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.VerifiedComplete, _currentWave),
+            "BLOCKEDEXTERNAL" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.BlockedExternal, _currentWave),
+            "STALLEDAUTOSTOPPED" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.StalledAutoStopped, _currentWave),
+            "STOPPEDBYOPERATOR" => MapRecoveredPhaseToAutopilot(OrchestrationPhase.StoppedByOperator, _currentWave),
+            _ => _autopilot
+        };
+
+        if (_autopilot == "READY")
+        {
+            _autopilot = _run.State switch
+            {
+                ProjectRunState.Initializing => "READY",
+                ProjectRunState.ManagerPlanning => "PLANNING",
+                ProjectRunState.WaveReady when _currentPlan is not null && _currentWave is { State: WaveState.Ready } => "READY_TO_DISPATCH",
+                ProjectRunState.Dispatching when _currentWave is { State: WaveState.Running or WaveState.Dispatching } => "WAITING_WORKERS",
+                ProjectRunState.WaveRunning => "WAITING_WORKERS",
+                ProjectRunState.Reconciling => "WAITING_WORKERS",
+                ProjectRunState.ManagerReview => "MANAGER_REVIEW",
+                ProjectRunState.ClosureMode => "CLOSURE_VERIFY",
+                ProjectRunState.VerifiedComplete => "VERIFIED_COMPLETE",
+                ProjectRunState.BlockedExternal => "RECOVERING",
+                ProjectRunState.StalledAutoStopped => RecoverStalledManagerResponseState(),
+                ProjectRunState.StoppedByOperator => "PAUSED",
+                _ => _autopilot
+            };
+        }
+
+        var durablePlanWaveGap =
+            (_currentPlan is not null && _currentWave is null) ||
+            (_currentPlan is null && _currentWave is { State: WaveState.Ready });
+        if (durablePlanWaveGap && (_autopilot is "READY" or "RECOVERING" or "READY_TO_DISPATCH"))
+        {
+            _autopilot = "PLANNING";
+            _latestManagerHandoff = "RECOVERING_MANAGER_RESPONSE — durable Manager plan/wave state is incomplete; PCC is re-reading and revalidating the already-received Manager response without sending a duplicate prompt.";
+        }
+    }
+
+    private string RecoverStalledManagerResponseState()
+    {
+        if (!_settings.AutoResume) return "STALLED";
+        if (_currentPlan is not null && _currentWave is { State: WaveState.Ready }) return "READY_TO_DISPATCH";
+        if (_currentPlan is not null && _currentWave is { State: WaveState.Running or WaveState.Dispatching }) return "WAITING_WORKERS";
+
+        var managerResponseFailure =
+            _runtimeErrorFingerprint?.Contains("Manager response rejected:", StringComparison.OrdinalIgnoreCase) == true ||
+            _runtimeErrorFingerprint?.Contains("Manager wave rejected:", StringComparison.OrdinalIgnoreCase) == true ||
+            _runtimeErrorFingerprint?.Contains("MANAGER_PLAN_", StringComparison.OrdinalIgnoreCase) == true;
+
+        // Builds before this fix persisted the same unaccepted response three times and
+        // then marked the run STALLED. No accepted plan checkpoint exists in that case.
+        var legacyUnacceptedResponseSelfStall =
+            _currentPlan is null &&
+            _recentPlanFingerprints.Count >= 3 &&
+            _recentPlanFingerprints.Distinct(StringComparer.Ordinal).Count() == 1;
+
+        if (!managerResponseFailure && !legacyUnacceptedResponseSelfStall) return "STALLED";
+
+        if (legacyUnacceptedResponseSelfStall)
+            _recentPlanFingerprints.Clear();
+        _run = _run is null ? null : _run with { State = ProjectRunState.ManagerPlanning };
+        _runtimeErrorFingerprint = null;
+        _runtimeErrorCount = 0;
+        _latestManagerHandoff = "RECOVERING_MANAGER_RESPONSE — retrying the already-received Manager response after recovery; no duplicate Manager prompt will be sent.";
+        return "PLANNING";
+    }
+
     private async Task PersistLoopGuardAsync(bool autoStopped, CancellationToken cancellationToken)
     {
         if (_run is null) return;
@@ -382,16 +509,25 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
             _runtimeErrorFingerprint = fingerprint;
             _runtimeErrorCount = 1;
         }
+
+        // Never let the autonomous loop fail silently. Surface the exact current failure on the
+        // canonical snapshot immediately so the always-visible LIVE STATUS strip tells the owner
+        // what PCC is retrying and why.
+        _latestManagerHandoff = $"AUTOPILOT RETRY {_runtimeErrorCount}/3 — {error.Message}";
+        _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "AUTOPILOT RETRY", error.Message, true));
+
         if (_runtimeErrorCount >= 3 && _run is not null)
         {
             _run = _run with { State = ProjectRunState.StalledAutoStopped };
             _autopilot = "STALLED";
-            _latestManagerHandoff = "STALLED_AUTO_STOPPED — the same runtime error repeated three times across durable loop state.";
+            _latestManagerHandoff = $"STALLED_AUTO_STOPPED — repeated runtime error: {error.Message}";
             await _orchestrationStore.SaveAsync(new OrchestrationRecoverySnapshot(_run, _currentWave, _runtimeTasks, _assignments, [], null, OrchestrationPhase.StalledAutoStopped, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
             await PersistLoopGuardAsync(true, cancellationToken).ConfigureAwait(false);
+            await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
             return;
         }
         await PersistLoopGuardAsync(false, cancellationToken).ConfigureAwait(false);
+        await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task PersistAgentBindingAsync(LogicalAgentId agentId, WorkerSlotId? slot, TaskId? taskId, ConversationId conversationId, CancellationToken cancellationToken)
@@ -408,26 +544,64 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     private async Task RecoverStartupBrowserStateAsync(CancellationToken cancellationToken = default)
     {
         if (_run is null) return;
-        var orphans = await _sessions.DetectOrphansAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
-        foreach (var orphan in orphans.Where(x => StringComparer.Ordinal.Equals(x.ProjectRunId, _run.Id.ToString())))
+        var runId = _run.Id.ToString();
+        var fingerprint = $"startup:{runId}";
+        if (!_recoveryLeases.TryAcquire(runId, fingerprint, out var lease)) return;
+        using (lease)
         {
-            var recovered = await _sessions.RecoverOrphanAsync(orphan.RuntimeId, cancellationToken).ConfigureAwait(false);
-            _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, recovered.Succeeded ? "RECOVERED" : "RECOVERY_REQUIRED", $"{orphan.RuntimeId}: {recovered.Reason}", recovered.Succeeded));
-            if (!recovered.Succeeded) _autopilot = "RECOVERY_REQUIRED";
-        }
-        var runtimes = await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false);
-        var reconciler = new BrowserSessionReconciliationService();
-        foreach (var agentId in new[] { _managerAgentId!.Value }.Concat(_workerAgentIds))
-        {
-            var session = await _store.LoadLogicalAgentAsync(agentId, cancellationToken).ConfigureAwait(false);
-            if (session is null) continue;
-            var runtime = runtimes.FirstOrDefault(x => !x.IsArchived && StringComparer.Ordinal.Equals(x.ProjectRunId, _run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, agentId.ToString()));
-            var result = reconciler.Reconcile(session, runtime);
-            if (result.Outcome is BrowserReconciliationKind.IDENTITY_MISMATCH or BrowserReconciliationKind.UNKNOWN || (result.Outcome == BrowserReconciliationKind.MISSING_RUNTIME && session.CurrentConversationId is not null))
+            _autopilot = "RECOVERING";
+            var result = await new BrowserStartupRecoveryCoordinator(_runtimeRegistry, _sessions)
+                .ReconcileAsync(runId, cancellationToken).ConfigureAwait(false);
+            foreach (var reconciliation in result.Reconciliations)
             {
-                await _newSendPause.PauseNewSendsAsync($"STARTUP_BROWSER_RECONCILIATION:{result.Reason}", cancellationToken).ConfigureAwait(false);
+                var browserState = reconciliation.Succeeded ? BrowserRecoveryState.Ready
+                    : reconciliation.Reason.Contains("LOGIN", StringComparison.OrdinalIgnoreCase) ? BrowserRecoveryState.LoginRequired
+                    : reconciliation.Reason.Contains("OWNERSHIP", StringComparison.OrdinalIgnoreCase) ? BrowserRecoveryState.OwnershipUncertain
+                    : BrowserRecoveryState.RecoveryFailed;
+                var routing = _nextActionRouter.Route(
+                    new GuidedRuntimeState(true, true, browserState, _projectControlId is not null, true, true,
+                        _managerAgentId is not null, _currentPlan is not null, _currentWave?.State == WaveState.Ready),
+                    new RuntimeRecoveryObservation(reconciliation.RuntimeId, browserState, reconciliation.Reason, "01 Chrome",
+                        RecoveryPolicyExhausted: !reconciliation.Succeeded, SafeToResume: reconciliation.Succeeded));
+                if (routing.Attention is not null)
+                    CaptureProviderAttention(routing.Attention.ReasonCode == "ACCOUNT_CHALLENGE" ? "CHALLENGE" : routing.Attention.ReasonCode,
+                        reconciliation.RuntimeId, routing.Attention.ExactLocation);
+                _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow,
+                    reconciliation.Succeeded ? "RECOVERED" : "RECOVERY_REQUIRED",
+                    $"{reconciliation.RuntimeId}: {reconciliation.Reason}", reconciliation.Succeeded));
+            }
+
+            var identityConverged = true;
+            var runtimes = await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false);
+            var identityReconciler = new BrowserSessionReconciliationService();
+            foreach (var agentId in new[] { _managerAgentId!.Value }.Concat(_workerAgentIds))
+            {
+                var session = await _store.LoadLogicalAgentAsync(agentId, cancellationToken).ConfigureAwait(false);
+                if (session is null) continue;
+                var runtime = runtimes
+                    .Where(x => !x.IsArchived && StringComparer.Ordinal.Equals(x.ProjectRunId, runId) && StringComparer.Ordinal.Equals(x.LogicalAgentId, agentId.ToString()))
+                    .OrderByDescending(x => x.LastActivityAt)
+                    .FirstOrDefault();
+                var identity = identityReconciler.Reconcile(session, runtime);
+                var unsafeIdentity = identity.Outcome is BrowserReconciliationKind.IDENTITY_MISMATCH or BrowserReconciliationKind.UNKNOWN ||
+                    (identity.Outcome == BrowserReconciliationKind.MISSING_RUNTIME && session.CurrentConversationId is not null);
+                if (!unsafeIdentity) continue;
+                identityConverged = false;
+                _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "RECOVERY_REQUIRED", identity.Reason, false));
+            }
+
+            if (result.StartupMayContinue && identityConverged)
+            {
+                await _newSendPause.ResumeNewSendsAsync("STARTUP_BROWSER_RECONCILIATION:SAFE_AUTO_RESUME", cancellationToken).ConfigureAwait(false);
+                _autopilot = _settings.AutoResume ? "READY" : "PAUSED";
+                foreach (var id in _attention.Where(x => result.Reconciliations.Any(r => r.Succeeded && StringComparer.Ordinal.Equals(r.RuntimeId, x.Value.RuntimeId))).Select(x => x.Key).ToArray())
+                    _attention.Remove(id);
+            }
+            else
+            {
+                var reason = identityConverged ? "RECOVERY_POLICY_UNRESOLVED" : "LOGICAL_IDENTITY_UNRESOLVED";
+                await _newSendPause.PauseNewSendsAsync($"STARTUP_BROWSER_RECONCILIATION:{reason}", cancellationToken).ConfigureAwait(false);
                 _autopilot = "RECOVERY_REQUIRED";
-                _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "RECOVERY_REQUIRED", result.Reason, false));
             }
         }
     }
@@ -476,14 +650,79 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
             var existing = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false))
                 .FirstOrDefault(x => StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, managerAgentId.ToString()) && !x.IsArchived && x.State is not BrowserSessionState.Killed);
             if (existing is null)
+            {
                 await _sessions.CreateAsync(new BrowserSessionRequest(run.Id.ToString(), managerAgentId.ToString(), DefaultVisibility: BrowserVisibility.Hidden), cancellationToken).ConfigureAwait(false);
-            _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "READY", "PCC-owned Manager Chrome runtime initialized; personal Chrome remains excluded.", true));
+            }
+            else
+            {
+                var proof = await _ownership.ProveAsync(existing, cancellationToken).ConfigureAwait(false);
+                if (!proof.IsProven || existing.State is BrowserSessionState.Creating or BrowserSessionState.Degraded or BrowserSessionState.Recovering or BrowserSessionState.FailedRequiresAttention)
+                {
+                    var recovered = await _sessions.RecoverOrphanAsync(existing.RuntimeId, cancellationToken).ConfigureAwait(false);
+                    if (!recovered.Succeeded)
+                        throw new InvalidOperationException($"Manager Chrome recovery failed: {recovered.Reason}.");
+                }
+            }
+            _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "READY", "PCC-owned Manager Chrome runtime initialized/recovered; personal Chrome remains excluded.", true));
         }
         catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException or TimeoutException)
         {
             _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "BROWSER BLOCKED", ex.Message, false));
         }
         await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+        if (_settings.AutoResume) EnsureAutopilotLoop();
+    }
+
+    private async Task<bool> EnsureManagerChromeReadyAsync(CancellationToken cancellationToken)
+    {
+        if (DateTimeOffset.UtcNow < _nextChromeRecoveryRetryAt)
+            return false;
+
+        var run = RequireActiveRun();
+        var managerAgentId = _managerAgentId ?? throw new InvalidOperationException("Manager logical identity is not initialized.");
+        var runtime = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false))
+            .FirstOrDefault(x => !x.IsArchived && x.State is not BrowserSessionState.Killed && StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, managerAgentId.ToString()));
+
+        var ownership = runtime is null ? null : await _ownership.ProveAsync(runtime, cancellationToken).ConfigureAwait(false);
+        if (runtime is null || ownership is null || !ownership.IsProven || runtime.State is BrowserSessionState.Creating or BrowserSessionState.Degraded or BrowserSessionState.Recovering or BrowserSessionState.FailedRequiresAttention)
+        {
+            _autopilot = "RECOVERING";
+            _latestManagerHandoff = runtime is null
+                ? "RECOVERING_CHROME — no active PCC-owned Manager Chrome session exists. Connecting automatically before Manager planning."
+                : $"RECOVERING_CHROME — Manager Chrome readiness is not proven ({ownership?.Reason ?? runtime.State.ToString()}). Recovering before Manager planning.";
+            _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "RECOVERING_CHROME", _latestManagerHandoff, true));
+            await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            await ConnectManagerChromeAsync(cancellationToken).ConfigureAwait(false);
+
+            runtime = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false))
+                .FirstOrDefault(x => !x.IsArchived && x.State is not BrowserSessionState.Killed && StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, managerAgentId.ToString()));
+        }
+
+        if (runtime is null)
+        {
+            _nextChromeRecoveryRetryAt = DateTimeOffset.UtcNow.AddSeconds(5);
+            _autopilot = "RECOVERING";
+            _latestManagerHandoff = "RECOVERING_CHROME — PCC-owned Manager Chrome session is still unavailable. Automatic retry in 5 seconds.";
+            await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
+        ownership = await _ownership.ProveAsync(runtime, cancellationToken).ConfigureAwait(false);
+        if (!ownership.IsProven)
+        {
+            _nextChromeRecoveryRetryAt = DateTimeOffset.UtcNow.AddSeconds(5);
+            _autopilot = "RECOVERING";
+            _latestManagerHandoff = $"RECOVERING_CHROME — ownership/readiness is still unproven ({ownership.Reason}). Automatic retry in 5 seconds.";
+            _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "RECOVERING_CHROME", ownership.Reason, false));
+            await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
+        _nextChromeRecoveryRetryAt = DateTimeOffset.MinValue;
+        _latestManagerHandoff = "CHROME_READY — PCC-owned Manager Chrome session and ownership are proven. Continuing to Manager evidence/planning.";
+        _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "CHROME_READY", runtime.RuntimeId, true));
+        await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
     private async Task StartManagerAsync(CancellationToken cancellationToken)
@@ -491,6 +730,8 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         var run = RequireActiveRun();
         var managerAgentId = _managerAgentId ?? throw new InvalidOperationException("Manager logical identity is not initialized.");
         if (_autopilot == "PAUSED") throw new InvalidOperationException("Resume AI before starting Manager.");
+        if (!await EnsureManagerChromeReadyAsync(cancellationToken).ConfigureAwait(false))
+            return;
         var runtime = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false))
             .FirstOrDefault(x => !x.IsArchived && x.State is not BrowserSessionState.Killed && StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, managerAgentId.ToString()))
             ?? throw new InvalidOperationException("Connect the PCC-owned Manager Chrome session first.");
@@ -512,9 +753,32 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
 
         var baseline = await _baseline.BuildAsync(_projectControlId ?? throw new InvalidOperationException("Selected PCC project identity is unavailable."), cancellationToken).ConfigureAwait(false);
         if (!baseline.IsSuccess || baseline.Value is null)
-            throw new InvalidOperationException($"Manager start requires fresh PCC/GitHub evidence: {baseline.ErrorCode ?? baseline.Status.ToString()}.");
+        {
+            var evidenceCode = baseline.ErrorCode ?? baseline.Status.ToString();
+            if (baseline.Status is ExternalReadStatus.RateLimited or ExternalReadStatus.TemporaryFailure or ExternalReadStatus.Offline)
+            {
+                _autopilot = "RECOVERING";
+                _nextExternalEvidenceRetryAt = DateTimeOffset.UtcNow.AddSeconds(30);
+                _latestManagerHandoff = $"RECOVERING_EVIDENCE — fresh PCC/GitHub evidence is temporarily unavailable ({evidenceCode}). Automatic retry is scheduled.";
+                _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "RECOVERING_EVIDENCE", evidenceCode, true));
+                await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            throw new InvalidOperationException($"Manager start requires fresh PCC/GitHub evidence: {evidenceCode}.");
+        }
+        _nextExternalEvidenceRetryAt = DateTimeOffset.MinValue;
+        if (run.State == ProjectRunState.StalledAutoStopped)
+        {
+            run = run with { State = ProjectRunState.ManagerPlanning };
+            _run = run;
+            _runtimeErrorFingerprint = null;
+            _runtimeErrorCount = 0;
+            await _store.SaveProjectRunAsync(run, cancellationToken).ConfigureAwait(false);
+            await PersistLoopGuardAsync(false, cancellationToken).ConfigureAwait(false);
+        }
         var prompt = BuildManagerPrompt(run, baseline.Value);
         _managerBaseline = baseline.Value;
+        await ResetManagerFormatRepairStateAsync(run, cancellationToken).ConfigureAwait(false);
         await _store.SaveCheckpointAsync(new DurableCheckpoint($"manager-baseline:{run.Id}", run.Id.ToString(), "manager-baseline-v1", JsonSerializer.Serialize(baseline.Value), DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt))).ToLowerInvariant();
         await PersistAgentBindingAsync(managerAgentId, null, null, managerConversation, cancellationToken).ConfigureAwait(false);
@@ -531,23 +795,132 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         if (result.Accepted)
         {
             var updatedRuntime = await _runtimeRegistry.GetAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
-            if (updatedRuntime?.ProviderConversationIdentity is { Length: > 0 } providerIdentity)
+            if (updatedRuntime?.ProviderConversationIdentity is { Length: > 0 } providerIdentity && !string.Equals(providerIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
                 await _store.SaveBrowserConversationAsync(new ConversationRecord { ConversationId = logicalConversation, LogicalAgentId = managerAgentId.ToString(), ProjectRunId = run.Id.ToString(), Sequence = 1, UrlOrProviderIdentity = providerIdentity, CreatedAt = DateTimeOffset.UtcNow, State = ConversationLifecycleState.Active }, cancellationToken).ConfigureAwait(false);
         }
         await _store.SaveCheckpointAsync(new DurableCheckpoint($"manager-dispatch:{result.DispatchId}", run.Id.ToString(), "manager-dispatch-v1", JsonSerializer.Serialize(new { request.DispatchId, request.ContentHash, result.Accepted, result.IsUncertain, result.ErrorCode, result.ProviderEvidence }), DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
-        _latestManagerHandoff = result.IsUncertain
-            ? $"SUBMITTED_UNKNOWN — Manager dispatch {result.DispatchId} requires reconciliation before retry."
-            : result.Accepted
-                ? $"Manager request {result.DispatchId} submitted. Waiting for a complete structured response."
-                : $"Manager send stopped safely: {result.ErrorCode ?? result.ProviderEvidence ?? "unknown provider state"}.";
-        _autopilot = result.Accepted ? "PLANNING" : result.IsUncertain ? "WAITING_FOR_EVIDENCE" : "READY";
+        var postSendRuntime = await _runtimeRegistry.GetAsync(runtime.RuntimeId, cancellationToken).ConfigureAwait(false);
+        var providerConversationPending = result.Accepted &&
+            (string.IsNullOrWhiteSpace(postSendRuntime?.ProviderConversationIdentity) || string.Equals(postSendRuntime.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase));
+        _latestManagerHandoff = providerConversationPending
+            ? $"RECONCILING_CONVERSATION — Manager request {result.DispatchId} is accepted. Waiting for ChatGPT to expose the stable conversation identity; no resend will occur."
+            : result.IsUncertain
+                ? $"SUBMITTED_UNKNOWN — Manager dispatch {result.DispatchId} requires reconciliation before retry."
+                : result.Accepted
+                    ? $"Manager request {result.DispatchId} submitted. Waiting for a complete structured response."
+                    : $"Manager send stopped safely: {result.ErrorCode ?? result.ProviderEvidence ?? "unknown provider state"}.";
+        _autopilot = providerConversationPending ? "RECONCILING_CONVERSATION" : result.Accepted ? "PLANNING" : result.IsUncertain ? "WAITING_FOR_EVIDENCE" : "READY";
         CaptureProviderAttention(result.ErrorCode, runtime.RuntimeId, "Manager ChatGPT session");
-        if (result.Accepted) EnsureAutopilotLoop();
+        if (result.Accepted && _settings.AutoResume) EnsureAutopilotLoop();
         await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private string BuildManagerPrompt(ProjectRun run, ProjectBaselineSnapshot baseline) =>
-        $"PROJECT_ID: {_projectControlId}\nDISPLAY_NAME: {_projectDisplay}\nREPOSITORY: {_projectRepository}\nPROJECT_RUN: {run.Id}\nPCC_SOURCE_SHA: {baseline.PccSourceSha}\nDEFAULT_BRANCH: {baseline.DefaultBranch}\nDEFAULT_HEAD: {baseline.DefaultHeadSha}\nVERIFIED_COMPLETION: {run.VerifiedCompletion.Percent}\nMANAGER_ESTIMATE: {run.ManagerEstimate.Percent}\nACTIVE_WORKERS: 0/5\nAUTOPILOT: {_autopilot}\n\nReturn one JSON object only with ManagerEstimate, ExpectedHead, ExpectedRoutingIdentity, ProjectDecision, KnownBlockers, and Tasks (0..5). Each task requires TaskId GUID, Objective, Repository, Paths, Components, ExclusiveResources, Dependencies, AcceptanceCriteria, EvidenceExpected, Priority, SuggestedWorkerSlot (1..5), Reason, KnownBlockers, RequiredPreviousTasks, RecommendedExecutionMode, TargetScope, TargetVariant, ExpectedHead, RelatedPullRequest, ExpectedPullRequestState, TargetBranch, FeatureExpansion.";
+        ManagerPlanningPromptBuilder.Build(_projectControlId ?? baseline.ProjectControlId, _projectDisplay, _projectRepository, run, baseline, _autopilot);
+
+    private sealed record DurableManagerFormatRepair(string? RejectedResponseHash, int AttemptsUsed, string? RepairContentHash, DateTimeOffset? SubmittedAt);
+
+    private static string ManagerFormatRepairCheckpointKey(ProjectRun run) => $"manager-format-repair:{run.Id}";
+
+    private async Task<DurableManagerFormatRepair> LoadManagerFormatRepairStateAsync(ProjectRun run, CancellationToken cancellationToken)
+    {
+        var checkpoint = await _store.LoadCheckpointAsync(ManagerFormatRepairCheckpointKey(run), cancellationToken).ConfigureAwait(false);
+        if (checkpoint is null || string.IsNullOrWhiteSpace(checkpoint.Payload))
+            return new DurableManagerFormatRepair(null, 0, null, null);
+        try
+        {
+            return JsonSerializer.Deserialize<DurableManagerFormatRepair>(checkpoint.Payload)
+                ?? new DurableManagerFormatRepair(null, 0, null, null);
+        }
+        catch (JsonException)
+        {
+            return new DurableManagerFormatRepair(null, 0, null, null);
+        }
+    }
+
+    private Task ResetManagerFormatRepairStateAsync(ProjectRun run, CancellationToken cancellationToken) =>
+        _store.SaveCheckpointAsync(
+            new DurableCheckpoint(
+                ManagerFormatRepairCheckpointKey(run),
+                run.Id.ToString(),
+                "manager-format-repair-v1",
+                JsonSerializer.Serialize(new DurableManagerFormatRepair(null, 0, null, null)),
+                DateTimeOffset.UtcNow),
+            cancellationToken);
+
+    private async Task<bool> TryRepairManagerResponseFormatAsync(
+        ProjectRun run,
+        LogicalAgentId managerAgentId,
+        BrowserRuntimeRecord runtime,
+        ChatGptSemanticSnapshot semantic,
+        ManagerPlanParseResult parsed,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(semantic.CapturedResponseText))
+            return false;
+        if (string.IsNullOrWhiteSpace(runtime.ConversationIdentity) || string.IsNullOrWhiteSpace(runtime.ProviderConversationIdentity))
+            return false;
+
+        var rejectedResponseHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(semantic.CapturedResponseText))).ToLowerInvariant();
+        var repairState = await LoadManagerFormatRepairStateAsync(run, cancellationToken).ConfigureAwait(false);
+        if (!ManagerPlanningPromptBuilder.CanSubmitOrReconcileFormatRepair(repairState.AttemptsUsed, repairState.RejectedResponseHash, rejectedResponseHash))
+            return false;
+
+        var baseline = _managerBaseline ?? throw new InvalidOperationException("Manager planning baseline is unavailable for structured-response repair.");
+        var repairPrompt = ManagerPlanningPromptBuilder.BuildFormatRepair(rejectedResponseHash, parsed.Findings, baseline);
+        var repairHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(repairPrompt))).ToLowerInvariant();
+        var repairConversation = new ConversationId(Guid.Parse(runtime.ConversationIdentity));
+        var repairTaskKey = $"{runtime.TaskId ?? $"manager-plan:{run.Id}"}:format-repair:{rejectedResponseHash}";
+        var repairTaskId = CanonicalDispatchIdentity.StableTask(run.Id, repairTaskKey);
+        var repairWaveId = CanonicalDispatchIdentity.StableWave(run.Id, repairTaskKey);
+        var repairCorrelation = new DurableDispatchCorrelation(
+            run.Id,
+            managerAgentId,
+            null,
+            repairTaskId,
+            repairWaveId,
+            repairConversation,
+            runtime.ProviderConversationIdentity,
+            repairHash);
+        var repairDispatch = await _dispatchReservations.ReserveOrRecoverAsync(repairCorrelation, cancellationToken).ConfigureAwait(false);
+        var request = new AgentRequest(
+            run.Id,
+            managerAgentId,
+            repairConversation,
+            repairDispatch.Id,
+            repairPrompt,
+            repairHash,
+            null,
+            null,
+            null,
+            runtime.ProviderConversationIdentity);
+        var result = await _agentProvider.SendAsync(request, cancellationToken).ConfigureAwait(false);
+
+        if (repairState.AttemptsUsed == 0)
+        {
+            await _store.SaveCheckpointAsync(
+                new DurableCheckpoint(
+                    ManagerFormatRepairCheckpointKey(run),
+                    run.Id.ToString(),
+                    "manager-format-repair-v1",
+                    JsonSerializer.Serialize(new DurableManagerFormatRepair(rejectedResponseHash, 1, repairHash, DateTimeOffset.UtcNow)),
+                    DateTimeOffset.UtcNow),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        CaptureProviderAttention(result.ErrorCode, runtime.RuntimeId, "Manager ChatGPT session");
+        if (!result.Accepted && !result.IsUncertain)
+            throw new InvalidOperationException($"Manager structured-response repair send stopped safely: {result.ErrorCode ?? result.ProviderEvidence ?? "unknown provider state"}.");
+
+        _autopilot = "PLANNING";
+        _latestManagerHandoff = result.IsUncertain
+            ? $"REPAIRING_MANAGER_FORMAT — the bounded JSON-only correction dispatch {result.DispatchId} is uncertain; PCC is reconciling it safely and will not duplicate the physical send."
+            : $"REPAIRING_MANAGER_FORMAT — Manager returned an unstructured response. PCC submitted one bounded JSON-only correction automatically ({result.DispatchId}) and is waiting for the corrected response.";
+        _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "REPAIRING_MANAGER_FORMAT", $"rejected={rejectedResponseHash};repair={repairHash};accepted={result.Accepted};uncertain={result.IsUncertain}", true));
+        await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+        if (_settings.AutoResume) EnsureAutopilotLoop();
+        return true;
+    }
 
     private async Task ReconcileManagerResponseAsync(CancellationToken cancellationToken)
     {
@@ -556,10 +929,46 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         var runtime = (await _runtimeRegistry.ListAsync(cancellationToken).ConfigureAwait(false))
             .FirstOrDefault(x => !x.IsArchived && x.State is not BrowserSessionState.Killed && StringComparer.Ordinal.Equals(x.ProjectRunId, run.Id.ToString()) && StringComparer.Ordinal.Equals(x.LogicalAgentId, managerAgentId.ToString()))
             ?? throw new InvalidOperationException("Manager Browser runtime is unavailable.");
-        if (string.IsNullOrWhiteSpace(runtime.TaskId) || string.IsNullOrWhiteSpace(runtime.ConversationIdentity) || string.IsNullOrWhiteSpace(runtime.ProviderConversationIdentity) || string.Equals(runtime.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Manager conversation identity is not yet proven. Wait for submission reconciliation before reading a response.");
+        if (string.IsNullOrWhiteSpace(runtime.TaskId) || string.IsNullOrWhiteSpace(runtime.ConversationIdentity))
+            throw new InvalidOperationException("Manager dispatch binding is incomplete before response reconciliation.");
 
-        var expected = new BrowserDispatchExpectation(run.Id.ToString(), managerAgentId.ToString(), runtime.TaskId, runtime.ConversationIdentity, runtime.ProviderConversationIdentity);
+        if (string.IsNullOrWhiteSpace(runtime.ProviderConversationIdentity) || string.Equals(runtime.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
+        {
+            var proof = await _ownership.ProveAsync(runtime, cancellationToken).ConfigureAwait(false);
+            if (!proof.IsProven)
+                throw new InvalidOperationException($"Manager conversation reconciliation refused because PCC ownership is not proven: {proof.Reason}.");
+
+            var managerIdentityFragments = new List<string>
+            {
+                $"PROJECT_RUN: {run.Id}",
+                $"REPOSITORY: {_projectRepository}",
+                "Return one JSON object only with ManagerEstimate"
+            };
+            if (_managerBaseline is not null && !string.IsNullOrWhiteSpace(_managerBaseline.PccSourceSha))
+                managerIdentityFragments.Add($"PCC_SOURCE_SHA: {_managerBaseline.PccSourceSha}");
+
+            var providerIdentity = _browserAdapter is IConversationIdentityEvidenceResolver resolver
+                ? await resolver.ResolveConversationIdentityAsync(runtime, null, managerIdentityFragments, cancellationToken).ConfigureAwait(false)
+                : await _browserAdapter.GetCurrentConversationIdentityAsync(runtime, cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(providerIdentity) || string.Equals(providerIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
+            {
+                _autopilot = "RECONCILING_CONVERSATION";
+                _latestManagerHandoff = "RECONCILING_CONVERSATION — Manager submission is already accepted, but ChatGPT has not exposed a stable conversation identity yet. PCC is polling automatically; no resend and no Loop Guard error.";
+                _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "RECONCILING_CONVERSATION", "Provider conversation identity is pending after accepted Manager submission.", true));
+                await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            runtime = runtime with { ProviderConversationIdentity = providerIdentity, LastActivityAt = DateTimeOffset.UtcNow };
+            await _runtimeRegistry.UpsertAsync(runtime, cancellationToken).ConfigureAwait(false);
+            await _store.SaveBrowserConversationAsync(new ConversationRecord { ConversationId = runtime.ConversationIdentity!, LogicalAgentId = managerAgentId.ToString(), ProjectRunId = run.Id.ToString(), Sequence = 1, UrlOrProviderIdentity = providerIdentity, CreatedAt = DateTimeOffset.UtcNow, State = ConversationLifecycleState.Active }, cancellationToken).ConfigureAwait(false);
+            _recovery.Insert(0, new RecoveryEventSummary(DateTimeOffset.UtcNow, "CONVERSATION_READY", $"Manager provider conversation identity proven: {providerIdentity}", true));
+        }
+
+        if (_autopilot == "RECONCILING_CONVERSATION")
+            _autopilot = "PLANNING";
+        var providerConversationIdentity = runtime.ProviderConversationIdentity!;
+        var expected = new BrowserDispatchExpectation(run.Id.ToString(), managerAgentId.ToString(), runtime.TaskId, runtime.ConversationIdentity, providerConversationIdentity);
         var semantic = await _browserAdapter.InspectAsync(runtime, expected, cancellationToken).ConfigureAwait(false);
         var resilience = new ChatGptResilienceClassifier().Classify(semantic, DateTimeOffset.UtcNow - runtime.LastActivityAt);
         if (semantic.Auth.State is AuthState.LoginRequired or AuthState.Challenge)
@@ -577,29 +986,26 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         }
         if (semantic.Generation.State == GenerationState.Generating)
         {
-            _latestManagerHandoff = "Manager generation is still active; no plan has been accepted.";
+            _latestManagerHandoff = "READING_MANAGER_RESPONSE — ChatGPT is still generating; PCC is polling automatically and no plan has been accepted yet.";
             await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
             return;
         }
         if (semantic.ResponseCompleteness != ResponseCompleteness.Complete || string.IsNullOrWhiteSpace(semantic.CapturedResponseText))
-            throw new InvalidOperationException($"Manager response is not proven complete ({semantic.ResponseCompleteness}); dispatch remains blocked.");
-
-        var parsed = new StructuredManagerPlanParser().Parse(semantic.CapturedResponseText);
-        if (!parsed.IsValid || parsed.Plan is null)
-            throw new InvalidOperationException($"Manager response rejected: {string.Join("; ", parsed.Findings.Select(x => $"{x.Code}:{x.Message}"))}");
-        var planFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", parsed.Plan.Tasks.Select(x => x.Task.Fingerprint))))).ToLowerInvariant();
-        _recentPlanFingerprints.Enqueue(planFingerprint);
-        while (_recentPlanFingerprints.Count > 3) _recentPlanFingerprints.Dequeue();
-        await PersistLoopGuardAsync(false, cancellationToken).ConfigureAwait(false);
-        if (_recentPlanFingerprints.Count == 3 && _recentPlanFingerprints.Distinct(StringComparer.Ordinal).Count() == 1)
         {
-            _run = run with { State = ProjectRunState.StalledAutoStopped };
-            _autopilot = "STALLED";
-            _latestManagerHandoff = "STALLED_AUTO_STOPPED — Manager repeated the identical task fingerprint for three plans.";
-            await _orchestrationStore.SaveAsync(new OrchestrationRecoverySnapshot(_run, _currentWave, _runtimeTasks, _assignments, [], null, OrchestrationPhase.StalledAutoStopped, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+            _latestManagerHandoff = $"READING_MANAGER_RESPONSE — response observed but completion is not yet proven. completeness={semantic.ResponseCompleteness}; generation={semantic.Generation.State}; assistantMessages={semantic.AssistantMessageCount}. Retrying automatically.";
             await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
             return;
         }
+
+        var parsed = new StructuredManagerPlanParser().Parse(semantic.CapturedResponseText);
+        if (!parsed.IsValid || parsed.Plan is null)
+        {
+            if (await TryRepairManagerResponseFormatAsync(run, managerAgentId, runtime, semantic, parsed, cancellationToken).ConfigureAwait(false))
+                return;
+            throw new InvalidOperationException($"Manager response rejected after bounded automatic format repair: {string.Join("; ", parsed.Findings.Select(x => $"{x.Code}:{x.Message}"))}");
+        }
+        await ResetManagerFormatRepairStateAsync(run, cancellationToken).ConfigureAwait(false);
+        var planFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", parsed.Plan.Tasks.Select(x => x.Task.Fingerprint))))).ToLowerInvariant();
         var routingResult = await _pcc.ResolveProjectAsync(_projectControlId!, cancellationToken).ConfigureAwait(false);
         var baselineResult = await _baseline.BuildAsync(_projectControlId!, cancellationToken).ConfigureAwait(false);
         if (!routingResult.IsSuccess || routingResult.Project is null || !baselineResult.IsSuccess || baselineResult.Value is null)
@@ -607,6 +1013,22 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         var validation = new ManagerWaveValidator().Validate(parsed.Plan, routingResult.Project, baselineResult.Value, EmptyCompletedTaskIndex.Instance, run.CompletionMode);
         if (!validation.IsValid)
             throw new InvalidOperationException($"Manager wave rejected: {string.Join("; ", validation.Findings.Select(x => $"{x.Code}:{x.Message}"))}");
+
+        // Count repetition only after a fresh wave is accepted. Re-reading one already-
+        // received response must never manufacture three Manager plans and self-stall.
+        _recentPlanFingerprints.Enqueue(planFingerprint);
+        while (_recentPlanFingerprints.Count > 3) _recentPlanFingerprints.Dequeue();
+        if (_recentPlanFingerprints.Count == 3 && _recentPlanFingerprints.Distinct(StringComparer.Ordinal).Count() == 1)
+        {
+            _run = run with { State = ProjectRunState.StalledAutoStopped };
+            _autopilot = "STALLED";
+            _latestManagerHandoff = "STALLED_AUTO_STOPPED — Manager repeated the identical accepted task fingerprint across three Manager waves.";
+            await PersistLoopGuardAsync(true, cancellationToken).ConfigureAwait(false);
+            await _orchestrationStore.SaveAsync(new OrchestrationRecoverySnapshot(_run, _currentWave, _runtimeTasks, _assignments, [], null, OrchestrationPhase.StalledAutoStopped, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+            await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        await PersistLoopGuardAsync(false, cancellationToken).ConfigureAwait(false);
         if (parsed.Plan.Tasks.Count == 0)
         {
             if (string.Equals(parsed.Plan.ProjectDecision, "CLOSE", StringComparison.OrdinalIgnoreCase) && run.VerifiedCompletion.Percent >= 99m)
@@ -621,7 +1043,22 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                 await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
                 return;
             }
-            throw new InvalidOperationException("A zero-task Manager response must request CLOSE with 99% evidence-backed completion, or identify a real blocker.");
+            if (string.Equals(parsed.Plan.ProjectDecision, "BLOCKED", StringComparison.OrdinalIgnoreCase) && parsed.Plan.KnownBlockers.Count > 0)
+            {
+                _run = run with { State = ProjectRunState.BlockedExternal, ManagerEstimate = parsed.Plan.ManagerEstimate, CompletionMode = ProjectCompletionMode.Blocked };
+                _currentPlan = parsed.Plan;
+                _currentWave = _currentWave is null ? null : _currentWave with { State = WaveState.Blocked };
+                await _store.SaveCheckpointAsync(new DurableCheckpoint($"manager-plan:{run.Id}", run.Id.ToString(), "structured-manager-plan-v1", semantic.CapturedResponseText, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+                await _orchestrationStore.SaveAsync(new OrchestrationRecoverySnapshot(_run, _currentWave, _runtimeTasks, _assignments, [], null, OrchestrationPhase.BlockedExternal, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
+                _autopilot = "BLOCKED_EXTERNAL";
+                _runtimeErrorFingerprint = null;
+                _runtimeErrorCount = 0;
+                await PersistLoopGuardAsync(false, cancellationToken).ConfigureAwait(false);
+                _latestManagerHandoff = $"BLOCKED_EXTERNAL — Manager supplied a valid structured blocker response: {string.Join("; ", parsed.Plan.KnownBlockers)}";
+                await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            throw new InvalidOperationException("A zero-task Manager response must request CLOSE with 99% evidence-backed completion or ProjectDecision BLOCKED with concrete KnownBlockers.");
         }
 
         var taskStates = parsed.Plan.Tasks.ToDictionary(x => x.Task.Id, x => x.Task.State);
@@ -635,6 +1072,9 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         await _orchestrationStore.CreateWaveAsync(snapshot, cancellationToken: cancellationToken).ConfigureAwait(false);
         await _store.SaveCheckpointAsync(new DurableCheckpoint($"manager-plan:{run.Id}", run.Id.ToString(), "structured-manager-plan-v1", semantic.CapturedResponseText, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
         _autopilot = "READY_TO_DISPATCH";
+        _runtimeErrorFingerprint = null;
+        _runtimeErrorCount = 0;
+        await PersistLoopGuardAsync(false, cancellationToken).ConfigureAwait(false);
         _latestManagerHandoff = $"Validated Wave {_currentWave.Id}: {parsed.Plan.Tasks.Count} task(s), {batch.Assignments.Count} ready, {batch.Deferred.Count} dependency/scope deferred.";
         await RefreshLocalSnapshotAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -866,8 +1306,12 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
     {
         if (errorCode is not ("LOGIN_REQUIRED" or "CHALLENGE")) return;
         var id = $"browser-attention:{runtimeId}";
-        var reason = errorCode == "CHALLENGE" ? "ChatGPT presented a challenge/CAPTCHA that automation must not bypass." : "ChatGPT authentication is required in the isolated PCC-owned profile.";
-        _attention[id] = (new AttentionSummary(id, errorCode, reason, "Open PCC Browser", target, "P0"), runtimeId);
+        var challenge = errorCode == "CHALLENGE";
+        var happened = challenge ? "ChatGPT requires an account challenge." : "ChatGPT sign-in is required.";
+        var reason = challenge
+            ? "PCC Executive cannot complete a CAPTCHA or account challenge. Open this PCC browser and complete the challenge."
+            : "PCC Executive cannot complete account sign-in. Open this PCC browser and complete sign-in.";
+        _attention[id] = (new AttentionSummary(id, happened, reason, challenge ? "Complete challenge" : "Complete sign-in", target, "P0"), runtimeId);
         _autopilot = "ATTENTION_REQUIRED";
     }
 
@@ -899,6 +1343,7 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         {
             try
             {
+                NormalizeRecoveredAutopilotState();
                 if (_autopilot == "PAUSED" || _run?.State is ProjectRunState.VerifiedComplete or ProjectRunState.BlockedExternal or ProjectRunState.StalledAutoStopped or ProjectRunState.StoppedByOperator)
                 {
                     await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
@@ -912,9 +1357,13 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
                 await _autopilotOperation.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
-                    if (_currentWave?.State == WaveState.Running)
+                    if (_currentPlan is null &&
+                        _autopilot is "READY" or "RECOVERING" &&
+                        DateTimeOffset.UtcNow >= _nextExternalEvidenceRetryAt)
+                        await StartManagerAsync(cancellationToken).ConfigureAwait(false);
+                    else if (_currentWave?.State == WaveState.Running)
                         await ReconcileWorkerResponsesAsync(cancellationToken).ConfigureAwait(false);
-                    else if (_autopilot is "PLANNING" or "MANAGER_REVIEW")
+                    else if (_autopilot is "PLANNING" or "MANAGER_REVIEW" or "RECONCILING_CONVERSATION")
                         await ReconcileManagerResponseAsync(cancellationToken).ConfigureAwait(false);
                     else if (_autopilot == "CLOSURE_VERIFY")
                         await RunIndependentFinalVerificationAsync(cancellationToken).ConfigureAwait(false);
@@ -1217,3 +1666,6 @@ public sealed class PccExecutiveRuntimeHost : IPccExecutivePresentationGateway, 
         public bool ContainsFingerprint(string fingerprint) => false;
     }
 }
+
+
+

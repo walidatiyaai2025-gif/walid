@@ -17,6 +17,31 @@ public enum DispatchState { Prepared, Submitting, Submitted, SubmittedUnknown, A
 public enum BrowserDispatchOutcome { NotSent, Submitted, SubmittedUnknown, DuplicateBlocked }
 public enum ConversationLifecycleState { Active, RolloverPending, Candidate, Archived, FailedCandidate }
 public enum ConversationHealthState { Fresh, Growing, RolloverSoon, Rotate }
+public enum BrowserEndpointFailureKind { None, ConnectionRefused, EndpointMissing, EndpointMalformed, TimedOut, ProcessExited, Unknown }
+public enum BrowserRecoveryPhase { Detect, Classify, ProveOwnership, Recover, Reconcile, Verify, Resume }
+
+public sealed record BrowserRecoveryTelemetryEvent(
+    Guid CorrelationId,
+    DateTimeOffset Timestamp,
+    BrowserRecoveryPhase Phase,
+    string ReasonCode,
+    string RuntimeId,
+    string LogicalAgentId,
+    string ProjectRunId,
+    bool Succeeded,
+    string? ReplacementRuntimeId = null);
+
+public interface IBrowserRecoveryTelemetrySink
+{
+    Task EmitAsync(BrowserRecoveryTelemetryEvent recoveryEvent, CancellationToken cancellationToken = default);
+}
+
+public sealed class NullBrowserRecoveryTelemetrySink : IBrowserRecoveryTelemetrySink
+{
+    public static NullBrowserRecoveryTelemetrySink Instance { get; } = new();
+    private NullBrowserRecoveryTelemetrySink() { }
+    public Task EmitAsync(BrowserRecoveryTelemetryEvent recoveryEvent, CancellationToken cancellationToken = default) => Task.CompletedTask;
+}
 
 public sealed record BrowserRuntimeRecord
 {
@@ -208,6 +233,8 @@ public interface IProcessInspector
 public interface IOwnershipProofService
 {
     Task<OwnershipProof> ProveAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default);
+    Task<OwnershipProof> ProveRecordedOwnershipAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default) =>
+        ProveAsync(runtime, cancellationToken);
 }
 
 public interface IBrowserRuntimeHost

@@ -132,7 +132,9 @@ public sealed class BrowserChatProvider
         {
             if (string.Equals(request.ProviderConversationIdentity, "NEW", StringComparison.OrdinalIgnoreCase))
             {
-                var providerIdentity = await _adapter.GetCurrentConversationIdentityAsync(runtime, cancellationToken).ConfigureAwait(false);
+                var providerIdentity = _adapter is IConversationIdentityEvidenceResolver resolver
+                    ? await resolver.ResolveConversationIdentityAsync(runtime, request.Prompt, null, cancellationToken).ConfigureAwait(false)
+                    : await _adapter.GetCurrentConversationIdentityAsync(runtime, cancellationToken).ConfigureAwait(false);
                 if (string.IsNullOrWhiteSpace(providerIdentity))
                 {
                     await _ledger.UpdateAsync(request.DispatchId, DispatchState.SubmittedUnknown, "NEW_CONVERSATION_IDENTITY_NOT_PROVEN", cancellationToken).ConfigureAwait(false);

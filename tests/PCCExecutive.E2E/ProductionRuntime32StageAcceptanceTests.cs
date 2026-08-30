@@ -51,7 +51,11 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         Stage(7);
 
         await h.ConnectManagerAsync();
+        var autopilotCancellation = ProductionRuntimeAcceptanceHarness.GetField<CancellationTokenSource>(h.Host, "_autopilotCancellation");
+        autopilotCancellation.Cancel();
         await h.StartManagerAsync();
+        var autopilotTask = ProductionRuntimeAcceptanceHarness.GetField<Task?>(h.Host, "_autopilotTask");
+        if (autopilotTask is not null) await autopilotTask;
         var managerRuntime = await h.RuntimeForAsync(h.ManagerAgentId);
         var managerPrompt = h.Adapter.SubmittedPrompts.Last(x => x.RuntimeId == managerRuntime.RuntimeId).Prompt;
         Assert.Contains("PCC_SOURCE_SHA:", managerPrompt, StringComparison.Ordinal);
@@ -338,7 +342,7 @@ public sealed class ProductionRuntime32StageAcceptanceTests
         var futureResult = await h.AgentProvider.SendAsync(new AgentRequest(
             h.Run.Id, h.ManagerAgentId, new ConversationId(Guid.Parse(activeManager.ConversationId)), DispatchId.New(),
             futurePrompt, futureHash, ProviderConversationId: managerRuntime.ProviderConversationIdentity));
-        Assert.True(futureResult.Accepted);
+        Assert.True(futureResult.Accepted, $"error={futureResult.ErrorCode}; evidence={futureResult.ProviderEvidence}");
         Assert.Equal(enterBeforeFuture + 1, h.Adapter.PhysicalEnterCount);
 
         var retiredResult = await h.AgentProvider.SendAsync(new AgentRequest(

@@ -26,6 +26,10 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
         _store = PccHostRecoveryAccess.Store(_host);
         _profileRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PCC Executive", "browser-profiles");
         RecoverInterruptedRolloversAsync().GetAwaiter().GetResult();
+        var run = PccHostRecoveryAccess.Run(_host);
+        if (run is not null)
+            PccHostRecoveryAccess.RecoveryLeases(_host).Forget(run.Id.ToString());
+        PccHostRecoveryAccess.RecoverStartupBrowserStateAsync(_host, CancellationToken.None).GetAwaiter().GetResult();
         RecoverDurableAttentionAsync().GetAwaiter().GetResult();
         _loop = MonitorAsync(_shutdown.Token);
     }
@@ -449,6 +453,10 @@ public sealed class AutonomousConversationRolloverRuntime : IAsyncDisposable
 
 internal static class PccHostRecoveryAccess
 {
+    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "RecoverStartupBrowserStateAsync")]
+    internal static extern Task RecoverStartupBrowserStateAsync(PccExecutiveRuntimeHost host, CancellationToken cancellationToken);
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_recoveryLeases")]
+    internal static extern ref PCCExecutive.Application.RuntimeRecoveryLeaseCoordinator RecoveryLeases(PccExecutiveRuntimeHost host);
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_store")]
     internal static extern ref SqliteStateStore Store(PccExecutiveRuntimeHost host);
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_run")]

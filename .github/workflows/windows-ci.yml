@@ -201,6 +201,17 @@ jobs:
             -InstallRoot "$env:LOCALAPPDATA/PCC Executive Smoke/Fresh" `
             -EvidencePath "artifacts/install-evidence/persistence-reopen.json"
 
+      - name: Same-version repair preserves guided-runtime state
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          ./tests/installer/Smoke-Repair.ps1 `
+            -InstallerPath "artifacts/package/PCCExecutive-$version-Setup-x64.exe" `
+            -ExpectedVersion $version `
+            -ExpectedSourceSha "${{ needs.infrastructure.outputs.source_sha }}" `
+            -InstallRoot "$env:LOCALAPPDATA/PCC Executive Smoke/Fresh" `
+            -EvidencePath "artifacts/install-evidence/same-version-repair.json"
+
       - name: Uninstall preserve-data smoke
         shell: pwsh
         run: |

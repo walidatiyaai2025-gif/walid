@@ -114,6 +114,101 @@ public sealed class ManagerOrchestrationTests
     }
 
     [Fact]
+    public void Live_manager_schema_accepts_structured_routing_priority_pr_arrays_and_external_dependency_context()
+    {
+        var routing = Routing();
+        var baseline = Baseline(routing);
+        var json = JsonSerializer.Serialize(new
+        {
+            ManagerEstimate = 40,
+            ExpectedHead = "pr-head",
+            ExpectedRoutingIdentity = new
+            {
+                ProjectId = routing.ProjectControlId,
+                DisplayName = routing.DisplayName,
+                PccSourceSha = routing.Provenance.SourceSha,
+                Repository = routing.Repository,
+                CanonicalTask = "PCCEXECUTIVE-T0001",
+                TargetScope = routing.Scope.ToString(),
+                TargetVariant = routing.VariantId,
+                ImplementationRoot = routing.ImplementationLocation,
+                DefaultBranch = baseline.DefaultBranch,
+                DefaultHead = baseline.DefaultHeadSha,
+                ConvergenceBranch = "worker/test",
+                ConvergenceHead = "pr-head"
+            },
+            ProjectDecision = "RECONCILE_AND_CONVERGE",
+            KnownBlockers = Array.Empty<string>(),
+            Tasks = new[]
+            {
+                new
+                {
+                    TaskId = TaskId.New().ToString(),
+                    Objective = "integrate green stack",
+                    Repository = routing.Repository,
+                    Paths = new[] { "src/a" },
+                    Components = Array.Empty<string>(),
+                    ExclusiveResources = Array.Empty<string>(),
+                    Dependencies = new[] { "PR #4 exact green input" },
+                    AcceptanceCriteria = new[] { "exact-head green" },
+                    EvidenceExpected = new[] { "tests" },
+                    Priority = "P0",
+                    SuggestedWorkerSlot = 1,
+                    Reason = "needed",
+                    KnownBlockers = Array.Empty<string>(),
+                    RequiredPreviousTasks = Array.Empty<string>(),
+                    RecommendedExecutionMode = "AUTONOMOUS_EXACT_HEAD_INTEGRATION",
+                    TargetScope = routing.Scope.ToString(),
+                    TargetVariant = routing.VariantId,
+                    ExpectedHead = "pr-head",
+                    RelatedPullRequest = new[] { 4 },
+                    ExpectedPullRequestState = "OPEN_UNMERGED_GREEN_INPUTS",
+                    TargetBranch = "manager/new-convergence",
+                    FeatureExpansion = false
+                }
+            }
+        });
+
+        var parsed = new StructuredManagerPlanParser().Parse(json);
+
+        Assert.True(parsed.IsValid, string.Join("; ", parsed.Findings.Select(x => $"{x.Code}:{x.Message}")));
+        var proposal = Assert.Single(parsed.Plan!.Tasks);
+        Assert.Equal(0, proposal.Priority);
+        Assert.Empty(proposal.Task.Dependencies);
+        Assert.Equal(new[] { 4 }, proposal.RelatedPullRequests);
+        Assert.Equal(ManagerExecutionMode.AutomaticStaged, proposal.RecommendedExecutionMode);
+        var validation = new ManagerWaveValidator().Validate(parsed.Plan, routing, baseline, new CompletedIndex(), ProjectCompletionMode.Active);
+        Assert.True(validation.IsValid, string.Join("; ", validation.Findings.Select(x => $"{x.Code}:{x.Message}")));
+        Assert.Contains(validation.Findings, x => x.Code == "TASK_BRANCH_NEW" && x.Severity == PlanFindingSeverity.Info);
+    }
+
+    [Fact]
+    public void Structured_routing_expectation_still_fails_closed_on_live_mismatch()
+    {
+        var routing = Routing();
+        var baseline = Baseline(routing);
+        var json = JsonSerializer.Serialize(new
+        {
+            ManagerEstimate = 10,
+            ExpectedHead = baseline.DefaultHeadSha,
+            ExpectedRoutingIdentity = new
+            {
+                ProjectId = routing.ProjectControlId,
+                Repository = "owner/wrong",
+                PccSourceSha = routing.Provenance.SourceSha,
+                TargetScope = routing.Scope.ToString()
+            },
+            Tasks = Array.Empty<object>()
+        });
+
+        var parsed = new StructuredManagerPlanParser().Parse(json);
+        Assert.True(parsed.IsValid);
+        var validation = new ManagerWaveValidator().Validate(parsed.Plan!, routing, baseline, new CompletedIndex(), ProjectCompletionMode.Active);
+        Assert.False(validation.IsValid);
+        Assert.Contains(validation.Findings, x => x.Code == "ROUTING_CHANGED");
+    }
+
+    [Fact]
     public void Valid_worker_handoff_passes_quality_gate()
     {
         var proposal = Proposal();

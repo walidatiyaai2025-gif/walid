@@ -109,6 +109,17 @@ jobs:
           ./tests/installer/Smoke-FreshInstall.ps1 -InstallerPath "artifacts/package/PCCExecutive-$v-Setup-x64.exe" -ExpectedVersion $v
           ./build/Write-GateEvidence.ps1 -Gate INSTALL_SMOKE
 
+      - name: Same-version repair smoke
+        shell: pwsh
+        run: |
+          $v=(Get-Content VERSION -Raw).Trim()
+          ./tests/installer/Smoke-Repair.ps1 `
+            -InstallerPath "artifacts/package/PCCExecutive-$v-Setup-x64.exe" `
+            -ExpectedVersion $v `
+            -ExpectedSourceSha "${{ github.sha }}" `
+            -InstallRoot "$env:LOCALAPPDATA/PCC Executive Smoke/Fresh" `
+            -EvidencePath "artifacts/release-evidence/same-version-repair.json"
+
       - name: Uninstall preserve-data smoke
         shell: pwsh
         run: |

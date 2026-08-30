@@ -125,7 +125,7 @@ public sealed class RecoveryIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public void Browser_reconciliation_matches_same_conversation_uuid_across_guid_formats()
+    public void Browser_reconciliation_requires_canonical_conversation_uuid_format()
     {
         var run = Run(ProjectRunState.WaveRunning);
         var agent = LogicalAgentId.New();
@@ -143,10 +143,13 @@ public sealed class RecoveryIntegrationTests : IAsyncLifetime
             LastHeartbeatAt = DateTimeOffset.UtcNow,
             LastActivityAt = DateTimeOffset.UtcNow
         };
+        var reconciliation = new BrowserSessionReconciliationService();
 
-        var result = new BrowserSessionReconciliationService().Reconcile(session, runtime);
+        var nonCanonical = reconciliation.Reconcile(session, runtime);
+        var canonical = reconciliation.Reconcile(session, runtime with { ConversationIdentity = conversation.ToString() });
 
-        Assert.Equal(BrowserReconciliationKind.MATCHED, result.Outcome);
+        Assert.Equal(BrowserReconciliationKind.IDENTITY_MISMATCH, nonCanonical.Outcome);
+        Assert.Equal(BrowserReconciliationKind.MATCHED, canonical.Outcome);
     }
 
     [Fact]

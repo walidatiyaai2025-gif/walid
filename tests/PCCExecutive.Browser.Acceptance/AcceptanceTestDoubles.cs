@@ -49,6 +49,7 @@ public sealed class FakeRuntimeHost : IBrowserRuntimeHost
 
     public List<string> KilledRuntimeIds { get; } = [];
     public List<string> RecoveredRuntimeIds { get; } = [];
+    public Exception? RecoverException { get; set; }
 
     public Task<BrowserRuntimeRecord> LaunchAsync(BrowserSessionRequest request, CancellationToken cancellationToken = default)
     {
@@ -77,6 +78,7 @@ public sealed class FakeRuntimeHost : IBrowserRuntimeHost
     {
         cancellationToken.ThrowIfCancellationRequested();
         RecoveredRuntimeIds.Add(runtime.RuntimeId);
+        if (RecoverException is not null) throw RecoverException;
         return Task.FromResult(runtime.ProcessId is > 0 && _processes.IsAlive(runtime.ProcessId.Value));
     }
 

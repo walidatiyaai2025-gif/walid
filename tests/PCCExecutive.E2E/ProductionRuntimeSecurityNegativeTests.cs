@@ -103,7 +103,7 @@ public sealed class ProductionRuntimeSecurityNegativeTests
         h.Adapter.SetSemantic(runtime.RuntimeId, ProductionRuntimeAcceptanceHarness.ScriptedBrowserAdapter.SemanticReady(auth: auth));
         await h.ReconcileAsync();
         Assert.True(h.SendGate.Snapshot.IsPaused);
-        Assert.Contains(fault == "CHALLENGE" ? "CHALLENGE" : "LOGIN", h.Host.Snapshot.AttentionItems.Single().WhatHappened, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(fault == "CHALLENGE" ? "CHALLENGE" : "sign-in", h.Host.Snapshot.AttentionItems.Single().WhatHappened, StringComparison.OrdinalIgnoreCase);
         var enters = h.Adapter.PhysicalEnterCount;
         var blocked = await h.AgentProvider.SendAsync(new AgentRequest(h.Run.Id, h.ManagerAgentId, new ConversationId(Guid.Parse(runtime.ConversationIdentity!)), DispatchId.New(), "blocked", "blocked-hash", null, null, null, runtime.ProviderConversationIdentity));
         Assert.False(blocked.Accepted);

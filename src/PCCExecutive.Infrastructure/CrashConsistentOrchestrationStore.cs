@@ -78,16 +78,17 @@ public sealed class CrashConsistentOrchestrationStore : IOrchestrationStateStore
 
     private async Task<DurableCommitResult> CommitCoreAsync(OrchestrationRecoverySnapshot snapshot, string operationKind, string idempotencyKey, ICrashFaultInjector faultInjector, long? expectedRevision, CancellationToken cancellationToken)
     {
-        snapshot = await DispatchMergedOrchestrationStateStore.MergeAsync(_store, snapshot, cancellationToken).ConfigureAwait(false);
-        await _schema.InitializeMetadataAsync(cancellationToken).ConfigureAwait(false);
-        if (await _schema.ClassifyAsync(cancellationToken).ConfigureAwait(false) == SchemaCompatibility.UPGRADE_REQUIRED)
-            await _schema.MigrateAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-        var payload = Persist(snapshot);
-        var hash = Hash(payload);
         var gate = Gates.GetOrAdd(Path.GetFullPath(_store.DatabasePath), static _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            snapshot = await DispatchMergedOrchestrationStateStore.MergeAsync(_store, snapshot, cancellationToken).ConfigureAwait(false);
+            await _schema.InitializeMetadataAsync(cancellationToken).ConfigureAwait(false);
+            if (await _schema.ClassifyAsync(cancellationToken).ConfigureAwait(false) == SchemaCompatibility.UPGRADE_REQUIRED)
+                await _schema.MigrateAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            var payload = Persist(snapshot);
+            var hash = Hash(payload);
+
             return await WithBusyRetryAsync(async () =>
             {
                 faultInjector.Hit(CrashFaultPoint.BEFORE_BEGIN);

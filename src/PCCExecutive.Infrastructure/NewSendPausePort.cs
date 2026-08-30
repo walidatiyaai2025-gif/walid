@@ -100,6 +100,8 @@ public sealed class BrowserNewSendPausePort : INewSendPausePort
 
     private static PauseKind ClassifyResume(string reason)
     {
+        if (reason.StartsWith("STARTUP_BROWSER_RECONCILIATION:", StringComparison.Ordinal))
+            return PauseKind.StartupRecovery;
         if (reason.StartsWith("Operator resumed AI", StringComparison.Ordinal))
             return PauseKind.Operator;
         if (reason.Contains("rollover", StringComparison.OrdinalIgnoreCase))

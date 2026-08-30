@@ -386,10 +386,39 @@ public sealed class DeterministicBrowserAcceptanceTests
         var recovered = await controller.RecoverOrphanAsync(runtime.RuntimeId);
 
         Assert.True(recovered.Succeeded);
-        Assert.Equal("DEAD_ORPHAN_REPLACED_WITH_NEW_PCC_RUNTIME", recovered.Reason);
+        Assert.Equal("STALE_OR_DEAD_ORPHAN_REPLACED_WITH_NEW_PCC_RUNTIME", recovered.Reason);
         Assert.Equal(runtime.LogicalAgentId, recovered.Runtime!.LogicalAgentId);
         Assert.Empty(host.KilledRuntimeIds);
         Assert.True(processes.IsAlive(unrelatedPid));
+    }
+
+    [Fact]
+    public async Task Startup_connection_refusal_is_nonfatal_and_reconciles_persisted_endpoint_metadata()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "pcc-startup-refused", Guid.NewGuid().ToString("N"));
+        var processes = new FakeProcesses();
+        var markers = new FakeMarkers();
+        var registry = new InMemoryBrowserRuntimeRegistry();
+        var host = new FakeRuntimeHost(root, processes) { RecoverException = new InvalidOperationException("connect ECONNREFUSED 127.0.0.1:58760") };
+        var manager = ControlledBrowserAcceptanceHarness.CreateRuntime("stale-manager", "manager-agent", null, "manager-task", "M-C01", true, 41002) with
+        {
+            ProfilePath = Path.Combine(root, "manager"),
+            LastHeartbeatAt = DateTimeOffset.UtcNow
+        };
+        processes.Set(manager.ProcessId!.Value, manager.ProcessStartIdentity!, true);
+        markers.Set(AcceptanceTestFactory.Marker(manager));
+        await registry.UpsertAsync(manager);
+        var controller = new BrowserSessionController(registry, host, new OwnershipProofService(root, markers, processes), markers, processes);
+
+        var startup = await new BrowserStartupRecoveryCoordinator(registry, controller).ReconcileAsync(manager.ProjectRunId);
+
+        Assert.True(startup.StartupMayContinue);
+        var recovered = Assert.Single(startup.Reconciliations);
+        Assert.Equal(manager.LogicalAgentId, recovered.Runtime!.LogicalAgentId);
+        Assert.Equal(manager.ConversationIdentity, recovered.Runtime.ConversationIdentity);
+        Assert.NotEqual(manager.RuntimeId, recovered.RuntimeId);
+        Assert.Contains(manager.RuntimeId, host.KilledRuntimeIds);
+        Assert.True((await registry.GetAsync(manager.RuntimeId))!.IsArchived);
     }
 
     [Fact]

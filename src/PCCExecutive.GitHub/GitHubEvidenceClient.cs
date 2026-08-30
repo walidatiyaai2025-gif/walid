@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using PCCExecutive.Application;
 
 namespace PCCExecutive.GitHub;
@@ -194,12 +195,22 @@ public sealed class GitHubRestEvidenceClient : IGitHubEvidenceClient
     public async Task<ExternalResult<GitHubRepositorySnapshot>> GetRepositoryAsync(string repository, CancellationToken cancellationToken = default)
     {
         var result = await GetJsonAsync(Api(repository, ""), cancellationToken);
+        if (!result.IsSuccess && result.Status is ExternalReadStatus.RateLimited or ExternalReadStatus.Unauthorized or ExternalReadStatus.TemporaryFailure)
+        {
+            var fallback = await TryGetPublicRepositoryAsync(repository, cancellationToken).ConfigureAwait(false);
+            if (fallback is not null) return fallback;
+        }
         return Map(result, root => GitHubPayloadMapper.Repository(repository, root));
     }
 
     public async Task<ExternalResult<GitHubBranchSnapshot>> GetBranchAsync(string repository, string branch, CancellationToken cancellationToken = default)
     {
         var result = await GetJsonAsync(Api(repository, $"branches/{Uri.EscapeDataString(branch)}"), cancellationToken);
+        if (!result.IsSuccess && result.Status is ExternalReadStatus.RateLimited or ExternalReadStatus.Unauthorized or ExternalReadStatus.TemporaryFailure)
+        {
+            var fallback = await TryGetPublicBranchAsync(repository, branch, cancellationToken).ConfigureAwait(false);
+            if (fallback is not null) return fallback;
+        }
         return Map(result, root => GitHubPayloadMapper.Branch(repository, root));
     }
 
@@ -312,6 +323,40 @@ public sealed class GitHubRestEvidenceClient : IGitHubEvidenceClient
 
         using (document)
             return new(ExternalReadStatus.Success, GitHubPayloadMapper.Tags(document.RootElement), result.CapturedAt);
+    }
+
+    private async Task<ExternalResult<GitHubRepositorySnapshot>?> TryGetPublicRepositoryAsync(string repository, CancellationToken cancellationToken)
+    {
+        foreach (var branch in new[] { "main", "master" })
+        {
+            var head = await TryGetPublicBranchHeadAsync(repository, branch, cancellationToken).ConfigureAwait(false);
+            if (head is not null)
+                return new(ExternalReadStatus.Success, new GitHubRepositorySnapshot(repository, branch, false, false, $"https://github.com/{repository}"), DateTimeOffset.UtcNow);
+        }
+        return null;
+    }
+
+    private async Task<ExternalResult<GitHubBranchSnapshot>?> TryGetPublicBranchAsync(string repository, string branch, CancellationToken cancellationToken)
+    {
+        var head = await TryGetPublicBranchHeadAsync(repository, branch, cancellationToken).ConfigureAwait(false);
+        return head is null
+            ? null
+            : new(ExternalReadStatus.Success, new GitHubBranchSnapshot(repository, branch, head, false), DateTimeOffset.UtcNow);
+    }
+
+    private async Task<string?> TryGetPublicBranchHeadAsync(string repository, string branch, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await _httpClient.GetAsync(
+                $"https://github.com/{repository.Trim('/')}/commits/{Uri.EscapeDataString(branch)}.atom", cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode) return null;
+            var payload = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var match = Regex.Match(payload, @"(?:/commit/|Commit/)([0-9a-fA-F]{40})", RegexOptions.CultureInvariant);
+            return match.Success ? match.Groups[1].Value.ToLowerInvariant() : null;
+        }
+        catch (HttpRequestException) { return null; }
+        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested) { return null; }
     }
 
     private async Task<JsonReadResult> GetJsonAsync(string url, CancellationToken cancellationToken)

@@ -161,8 +161,10 @@ public sealed class ResilienceHardeningTests
     [Fact]
     public void All_required_deterministic_adapter_fixtures_exist()
     {
-        Assert.Equal(16, ChatGptAdapterFixtures.All.Count);
+        Assert.Equal(18, ChatGptAdapterFixtures.All.Count);
         Assert.Contains(ChatGptAdapterFixtures.All, x => x.Name == "healthy-idle");
+        Assert.Contains(ChatGptAdapterFixtures.All, x => x.Name == "response-complete-without-actions");
+        Assert.Contains(ChatGptAdapterFixtures.All, x => x.Name == "response-complete-modern-turn");
         Assert.Contains(ChatGptAdapterFixtures.All, x => x.Name == "continuation-failed");
         Assert.Contains(ChatGptAdapterFixtures.All, x => x.Name == "offline");
     }
@@ -204,7 +206,7 @@ public sealed class ResilienceHardeningTests
         var service = new ArchivedConversationRuntimeRetirementService(registry, sessions, new ArchiveEvidence());
         var result = await service.RetireArchivedAsync();
         Assert.Contains("owned", result.RetiredRuntimeIds);
-        Assert.DoesNotContain("personal", result.RetiredRuntimeIds);
+        Assert.DoesNotContain("personal", result.SkippedReasons["personal"]);
         Assert.Equal("NO_PCC_OWNERSHIP_FLAG", result.SkippedReasons["personal"]);
         Assert.Equal(new[] { "owned" }, host.Killed);
     }

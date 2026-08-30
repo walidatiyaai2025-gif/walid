@@ -26,7 +26,24 @@ public sealed record ManagerTaskProposal(
     int? RelatedPullRequest,
     string? ExpectedPullRequestState,
     string? TargetBranch,
-    bool FeatureExpansion);
+    bool FeatureExpansion)
+{
+    public IReadOnlyList<int> RelatedPullRequests { get; init; } = [];
+}
+
+public sealed record ManagerRoutingExpectation(
+    string? ProjectId,
+    string? DisplayName,
+    string? PccSourceSha,
+    string? Repository,
+    string? CanonicalTask,
+    string? TargetScope,
+    string? TargetVariant,
+    string? ImplementationRoot,
+    string? DefaultBranch,
+    string? DefaultHead,
+    string? ConvergenceBranch,
+    string? ConvergenceHead);
 
 public sealed record StructuredManagerPlan(
     ManagerEstimate ManagerEstimate,
@@ -34,7 +51,10 @@ public sealed record StructuredManagerPlan(
     string? ExpectedHead,
     string? ExpectedRoutingIdentity,
     string? ProjectDecision,
-    IReadOnlyList<string> KnownBlockers);
+    IReadOnlyList<string> KnownBlockers)
+{
+    public ManagerRoutingExpectation? ExpectedRouting { get; init; }
+}
 
 public sealed record ManagerPlanFinding(string Code, string Message, PlanFindingSeverity Severity, TaskId? TaskId = null, TaskId? OtherTaskId = null);
 public sealed record ManagerPlanParseResult(bool IsValid, StructuredManagerPlan? Plan, IReadOnlyList<ManagerPlanFinding> Findings);
@@ -52,7 +72,7 @@ public sealed class StructuredManagerPlanParser
         WirePlan? wire;
         try
         {
-            wire = JsonSerializer.Deserialize<WirePlan>(content, _json);
+            wire = JsonSerializer.Deserialize<WirePlan>(ManagerPlanJsonEnvelope.ExtractSinglePlanObject(content), _json);
         }
         catch (JsonException ex)
         {
@@ -63,6 +83,7 @@ public sealed class StructuredManagerPlanParser
             return Invalid("MANAGER_PLAN_NOT_STRUCTURED", "Manager output must contain a structured tasks array.");
 
         var findings = new List<ManagerPlanFinding>();
+        var (expectedRoutingIdentity, expectedRouting) = ParseRoutingExpectation(wire.ExpectedRoutingIdentity, findings);
         if (wire.Tasks.Count > WorkerSlotPolicy.MaximumActiveWorkers)
             findings.Add(new("WORKER_LIMIT", "Manager proposed more than five Worker tasks.", PlanFindingSeverity.Block));
         if (wire.ManagerEstimate is < 0 or > 100)
@@ -92,7 +113,7 @@ public sealed class StructuredManagerPlanParser
             if (string.IsNullOrWhiteSpace(item.Reason))
                 findings.Add(new("REASON_REQUIRED", "Reason is required.", PlanFindingSeverity.Block, id));
 
-            var dependencies = ParseIds(item.Dependencies, id, "DEPENDENCY_ID_INVALID", findings);
+            var dependencies = ParseOptionalTaskDependencies(item.Dependencies);
             var requiredPrevious = ParseIds(item.RequiredPreviousTasks, id, "PREVIOUS_TASK_ID_INVALID", findings);
             var effectiveDependencies = new HashSet<TaskId>(dependencies);
             effectiveDependencies.UnionWith(requiredPrevious);
@@ -118,22 +139,17 @@ public sealed class StructuredManagerPlanParser
                 }
             }
 
-            if (!Enum.TryParse<ProjectScopeKind>(item.TargetScope ?? "Project", true, out var targetScope))
-            {
-                targetScope = ProjectScopeKind.Project;
-                findings.Add(new("TARGET_SCOPE_INVALID", "TargetScope must be Project, Core, or Variant.", PlanFindingSeverity.Block, id));
-            }
+            var targetScope = ParseTargetScope(item.TargetScope, item.TargetVariant, id, findings);
 
-            if (!Enum.TryParse<ManagerExecutionMode>(item.RecommendedExecutionMode ?? "AutomaticStaged", true, out var executionMode))
-            {
-                executionMode = ManagerExecutionMode.AutomaticStaged;
-                findings.Add(new("EXECUTION_MODE_INVALID", "RecommendedExecutionMode is invalid.", PlanFindingSeverity.Block, id));
-            }
+            var executionMode = ParseExecutionMode(item.RecommendedExecutionMode, id, findings);
+            var priority = ParsePriority(item.Priority, id, findings);
+            var relatedPullRequests = ParseRelatedPullRequests(item.RelatedPullRequest, id, findings);
+            var relatedPullRequest = relatedPullRequests.Count == 0 ? (int?)null : relatedPullRequests[0];
 
-            tasks.Add(new(
+            var proposal = new ManagerTaskProposal(
                 workerTask,
                 item.EvidenceExpected ?? [],
-                item.Priority,
+                priority,
                 slot,
                 item.Reason ?? string.Empty,
                 item.KnownBlockers ?? [],
@@ -142,21 +158,169 @@ public sealed class StructuredManagerPlanParser
                 targetScope,
                 item.TargetVariant,
                 item.ExpectedHead,
-                item.RelatedPullRequest,
+                relatedPullRequest,
                 item.ExpectedPullRequestState,
                 item.TargetBranch,
-                item.FeatureExpansion));
+                item.FeatureExpansion)
+            {
+                RelatedPullRequests = relatedPullRequests
+            };
+            tasks.Add(proposal);
         }
 
         var plan = new StructuredManagerPlan(
             new ManagerEstimate(Math.Clamp(wire.ManagerEstimate, 0m, 100m)),
             tasks,
             wire.ExpectedHead,
-            wire.ExpectedRoutingIdentity,
+            expectedRoutingIdentity,
             wire.ProjectDecision,
-            wire.KnownBlockers ?? []);
+            wire.KnownBlockers ?? [])
+        {
+            ExpectedRouting = expectedRouting
+        };
 
         return new(findings.All(x => x.Severity != PlanFindingSeverity.Block), plan, findings);
+    }
+
+    private static (string? LegacyIdentity, ManagerRoutingExpectation? Structured) ParseRoutingExpectation(
+        JsonElement value,
+        List<ManagerPlanFinding> findings)
+    {
+        if (value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return (null, null);
+        if (value.ValueKind == JsonValueKind.String)
+            return (value.GetString(), null);
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            findings.Add(new("ROUTING_EXPECTATION_INVALID", "ExpectedRoutingIdentity must be a string or structured routing object.", PlanFindingSeverity.Block));
+            return (null, null);
+        }
+
+        var structured = new ManagerRoutingExpectation(
+            ReadString(value, "ProjectId"),
+            ReadString(value, "DisplayName"),
+            ReadString(value, "PccSourceSha"),
+            ReadString(value, "Repository"),
+            ReadString(value, "CanonicalTask"),
+            ReadString(value, "TargetScope"),
+            ReadString(value, "TargetVariant"),
+            ReadString(value, "ImplementationRoot"),
+            ReadString(value, "DefaultBranch"),
+            ReadString(value, "DefaultHead"),
+            ReadString(value, "ConvergenceBranch"),
+            ReadString(value, "ConvergenceHead"));
+        if (new[] { structured.ProjectId, structured.Repository, structured.TargetScope, structured.TargetVariant, structured.PccSourceSha }
+            .All(string.IsNullOrWhiteSpace))
+            findings.Add(new("ROUTING_EXPECTATION_INVALID", "Structured ExpectedRoutingIdentity contains no verifiable routing fields.", PlanFindingSeverity.Block));
+        return (null, structured);
+    }
+
+    private static string? ReadString(JsonElement element, string name)
+    {
+        foreach (var property in element.EnumerateObject())
+            if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+                return property.Value.ValueKind == JsonValueKind.String ? property.Value.GetString() : property.Value.ToString();
+        return null;
+    }
+
+    private static int ParsePriority(JsonElement value, TaskId taskId, List<ManagerPlanFinding> findings)
+    {
+        if (value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return 0;
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var numeric)) return numeric;
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var text = value.GetString()?.Trim();
+            if (int.TryParse(text, out numeric)) return numeric;
+            if (!string.IsNullOrWhiteSpace(text) && text.Length > 1 && (text[0] == 'P' || text[0] == 'p') && int.TryParse(text[1..], out numeric)) return numeric;
+        }
+        findings.Add(new("PRIORITY_INVALID", "Priority must be an integer or P0/P1/... value.", PlanFindingSeverity.Block, taskId));
+        return int.MaxValue;
+    }
+
+    private static IReadOnlyList<int> ParseRelatedPullRequests(JsonElement value, TaskId taskId, List<ManagerPlanFinding> findings)
+    {
+        if (value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return [];
+        var result = new List<int>();
+        IEnumerable<JsonElement> values = value.ValueKind == JsonValueKind.Array ? value.EnumerateArray().ToArray() : [value];
+        foreach (var item in values)
+        {
+            int number;
+            if (item.ValueKind == JsonValueKind.Number && item.TryGetInt32(out number) && number > 0)
+            {
+                result.Add(number);
+                continue;
+            }
+            if (item.ValueKind == JsonValueKind.String)
+            {
+                var text = item.GetString()?.Trim().TrimStart('#');
+                if (int.TryParse(text, out number) && number > 0)
+                {
+                    result.Add(number);
+                    continue;
+                }
+            }
+            findings.Add(new("RELATED_PR_INVALID", "RelatedPullRequest must be a PR number or array of PR numbers.", PlanFindingSeverity.Block, taskId));
+        }
+        return result.Distinct().ToArray();
+    }
+
+    private static ProjectScopeKind ParseTargetScope(
+        string? value,
+        string? targetVariant,
+        TaskId taskId,
+        List<ManagerPlanFinding> findings)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return ProjectScopeKind.Project;
+        var text = value.Trim();
+        if (Enum.TryParse<ProjectScopeKind>(text, true, out var direct)) return direct;
+
+        var normalized = new string(text.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
+        if (normalized.Contains("VARIANT", StringComparison.Ordinal)) return ProjectScopeKind.Variant;
+        if (normalized.Contains("CORE", StringComparison.Ordinal)) return ProjectScopeKind.Core;
+        if (normalized.Contains("PROJECT", StringComparison.Ordinal)) return ProjectScopeKind.Project;
+
+        if (!string.IsNullOrWhiteSpace(targetVariant))
+        {
+            findings.Add(new(
+                "TARGET_SCOPE_NORMALIZED",
+                $"TargetScope '{value}' is not canonical; TargetVariant is present so PCC normalized it to Variant. Live routing validation remains authoritative.",
+                PlanFindingSeverity.Info,
+                taskId));
+            return ProjectScopeKind.Variant;
+        }
+
+        findings.Add(new(
+            "TARGET_SCOPE_NORMALIZED",
+            $"TargetScope '{value}' is a work-area label rather than a canonical project scope; PCC normalized it to Project. Live routing validation remains authoritative.",
+            PlanFindingSeverity.Info,
+            taskId));
+        return ProjectScopeKind.Project;
+    }
+
+    private static ManagerExecutionMode ParseExecutionMode(string? value, TaskId taskId, List<ManagerPlanFinding> findings)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return ManagerExecutionMode.AutomaticStaged;
+        if (Enum.TryParse<ManagerExecutionMode>(value, true, out var direct)) return direct;
+        var normalized = value.Replace('-', '_').Replace(' ', '_').ToUpperInvariant();
+        if (normalized.Contains("SEQUENTIAL", StringComparison.Ordinal)) return ManagerExecutionMode.Sequential;
+        if (normalized.Contains("MANUAL", StringComparison.Ordinal)) return ManagerExecutionMode.Manual;
+        if (normalized.Contains("AUTONOMOUS", StringComparison.Ordinal) ||
+            normalized.Contains("AUTOMATIC", StringComparison.Ordinal) ||
+            normalized.Contains("INTEGRATION", StringComparison.Ordinal) ||
+            normalized.Contains("CONVERGENCE", StringComparison.Ordinal) ||
+            normalized.Contains("RECONCILIATION", StringComparison.Ordinal) ||
+            normalized.Contains("READ_ONLY", StringComparison.Ordinal))
+            return ManagerExecutionMode.AutomaticStaged;
+        findings.Add(new("EXECUTION_MODE_INVALID", $"RecommendedExecutionMode '{value}' is invalid.", PlanFindingSeverity.Block, taskId));
+        return ManagerExecutionMode.AutomaticStaged;
+    }
+
+    private static IReadOnlySet<TaskId> ParseOptionalTaskDependencies(IReadOnlyList<string>? values)
+    {
+        var result = new HashSet<TaskId>();
+        foreach (var value in values ?? [])
+            if (TryTaskId(value, out var id)) result.Add(id);
+        return result;
     }
 
     private static IReadOnlySet<TaskId> ParseIds(
@@ -195,7 +359,7 @@ public sealed class StructuredManagerPlanParser
         public decimal ManagerEstimate { get; set; }
         public List<WireTask>? Tasks { get; set; }
         public string? ExpectedHead { get; set; }
-        public string? ExpectedRoutingIdentity { get; set; }
+        public JsonElement ExpectedRoutingIdentity { get; set; }
         public string? ProjectDecision { get; set; }
         public List<string>? KnownBlockers { get; set; }
     }
@@ -211,7 +375,7 @@ public sealed class StructuredManagerPlanParser
         public List<string>? Dependencies { get; set; }
         public List<string>? AcceptanceCriteria { get; set; }
         public List<string>? EvidenceExpected { get; set; }
-        public int Priority { get; set; }
+        public JsonElement Priority { get; set; }
         public int? SuggestedWorkerSlot { get; set; }
         public string? Reason { get; set; }
         public List<string>? KnownBlockers { get; set; }
@@ -220,7 +384,7 @@ public sealed class StructuredManagerPlanParser
         public string? TargetScope { get; set; }
         public string? TargetVariant { get; set; }
         public string? ExpectedHead { get; set; }
-        public int? RelatedPullRequest { get; set; }
+        public JsonElement RelatedPullRequest { get; set; }
         public string? ExpectedPullRequestState { get; set; }
         public string? TargetBranch { get; set; }
         public bool FeatureExpansion { get; set; }
@@ -256,11 +420,14 @@ public sealed class ManagerWaveValidator
         }
 
         if (!string.IsNullOrWhiteSpace(plan.ExpectedHead) &&
-            !string.Equals(plan.ExpectedHead, baseline.DefaultHeadSha, StringComparison.OrdinalIgnoreCase))
-            findings.Add(new("STALE_HEAD", $"Manager expected HEAD {plan.ExpectedHead} but live HEAD is {baseline.DefaultHeadSha}.", PlanFindingSeverity.Block));
+            !string.Equals(plan.ExpectedHead, baseline.DefaultHeadSha, StringComparison.OrdinalIgnoreCase) &&
+            !baseline.RelevantPullRequests.Any(pr => string.Equals(pr.HeadSha, plan.ExpectedHead, StringComparison.OrdinalIgnoreCase)))
+            findings.Add(new("STALE_HEAD", $"Manager expected HEAD {plan.ExpectedHead} but it is not the live default head or a live relevant PR head.", PlanFindingSeverity.Block));
 
-        if (!string.IsNullOrWhiteSpace(plan.ExpectedRoutingIdentity) &&
-            !string.Equals(plan.ExpectedRoutingIdentity, routing.RoutingIdentity, StringComparison.Ordinal))
+        if (plan.ExpectedRouting is not null)
+            ValidateStructuredRoutingExpectation(plan.ExpectedRouting, routing, baseline, findings);
+        else if (!string.IsNullOrWhiteSpace(plan.ExpectedRoutingIdentity) &&
+                 !string.Equals(plan.ExpectedRoutingIdentity, routing.RoutingIdentity, StringComparison.Ordinal))
             findings.Add(new("ROUTING_CHANGED", "Manager plan was built against a different PCC routing identity.", PlanFindingSeverity.Block));
 
         foreach (var proposal in plan.Tasks)
@@ -307,24 +474,83 @@ public sealed class ManagerWaveValidator
             findings);
     }
 
+    private static void ValidateStructuredRoutingExpectation(
+        ManagerRoutingExpectation expected,
+        ProjectRoutingSnapshot routing,
+        ProjectBaselineSnapshot baseline,
+        List<ManagerPlanFinding> findings)
+    {
+        void Mismatch(string field, string? wanted, string? actual)
+        {
+            if (!string.IsNullOrWhiteSpace(wanted) && !string.Equals(wanted, actual, StringComparison.OrdinalIgnoreCase))
+                findings.Add(new("ROUTING_CHANGED", $"ExpectedRoutingIdentity.{field}='{wanted}' conflicts with live '{actual}'.", PlanFindingSeverity.Block));
+        }
+
+        Mismatch("ProjectId", expected.ProjectId, routing.ProjectControlId);
+        Mismatch("DisplayName", expected.DisplayName, routing.DisplayName);
+        Mismatch("PccSourceSha", expected.PccSourceSha, routing.Provenance.SourceSha);
+        Mismatch("Repository", expected.Repository, routing.Repository);
+        Mismatch("TargetVariant", expected.TargetVariant, routing.VariantId);
+        Mismatch("ImplementationRoot", expected.ImplementationRoot?.TrimEnd('/'), routing.ImplementationLocation?.TrimEnd('/'));
+        Mismatch("DefaultBranch", expected.DefaultBranch, baseline.DefaultBranch);
+        Mismatch("DefaultHead", expected.DefaultHead, baseline.DefaultHeadSha);
+
+        if (!string.IsNullOrWhiteSpace(expected.TargetScope))
+        {
+            if (!Enum.TryParse<ProjectScopeKind>(expected.TargetScope, true, out var scope) || scope != routing.Scope)
+                findings.Add(new("ROUTING_CHANGED", $"ExpectedRoutingIdentity.TargetScope='{expected.TargetScope}' conflicts with live '{routing.Scope}'.", PlanFindingSeverity.Block));
+        }
+        if (!string.IsNullOrWhiteSpace(expected.CanonicalTask) &&
+            !baseline.CanonicalTasks.Any(x => string.Equals(x.TaskId, expected.CanonicalTask, StringComparison.OrdinalIgnoreCase)))
+            findings.Add(new("ROUTING_CHANGED", $"ExpectedRoutingIdentity.CanonicalTask='{expected.CanonicalTask}' is not present in live canonical tasks.", PlanFindingSeverity.Block));
+        if (!string.IsNullOrWhiteSpace(expected.ConvergenceBranch) &&
+            !baseline.RelevantPullRequests.Any(x => string.Equals(x.HeadBranch, expected.ConvergenceBranch, StringComparison.OrdinalIgnoreCase)))
+            findings.Add(new("ROUTING_CHANGED", $"ExpectedRoutingIdentity.ConvergenceBranch='{expected.ConvergenceBranch}' is not a live relevant PR branch.", PlanFindingSeverity.Block));
+        if (!string.IsNullOrWhiteSpace(expected.ConvergenceHead) &&
+            !string.Equals(expected.ConvergenceHead, baseline.DefaultHeadSha, StringComparison.OrdinalIgnoreCase) &&
+            !baseline.RelevantPullRequests.Any(x => string.Equals(x.HeadSha, expected.ConvergenceHead, StringComparison.OrdinalIgnoreCase)))
+            findings.Add(new("ROUTING_CHANGED", $"ExpectedRoutingIdentity.ConvergenceHead='{expected.ConvergenceHead}' is not live evidence.", PlanFindingSeverity.Block));
+    }
+
     private static void ValidatePullRequestAssumption(
         ManagerTaskProposal proposal,
         ProjectBaselineSnapshot baseline,
         List<ManagerPlanFinding> findings)
     {
-        if (proposal.RelatedPullRequest is null) return;
-        var pr = baseline.RelevantPullRequests.FirstOrDefault(x => x.Number == proposal.RelatedPullRequest.Value);
-        if (pr is null)
+        var numbers = proposal.RelatedPullRequests.Count > 0
+            ? proposal.RelatedPullRequests
+            : proposal.RelatedPullRequest is not null ? [proposal.RelatedPullRequest.Value] : [];
+        foreach (var number in numbers)
         {
-            findings.Add(new("PR_ASSUMPTION_NOT_FOUND", $"Referenced PR #{proposal.RelatedPullRequest} is not present in live relevant evidence.", PlanFindingSeverity.Block, proposal.Task.Id));
-            return;
+            var pr = baseline.RelevantPullRequests.FirstOrDefault(x => x.Number == number);
+            if (pr is null)
+            {
+                findings.Add(new("PR_ASSUMPTION_NOT_FOUND", $"Referenced PR #{number} is not present in live relevant evidence.", PlanFindingSeverity.Block, proposal.Task.Id));
+                continue;
+            }
+            ValidateExpectedPullRequestState(proposal, pr, findings);
         }
+    }
 
-        if (!string.IsNullOrWhiteSpace(proposal.ExpectedPullRequestState) &&
-            !string.Equals(proposal.ExpectedPullRequestState, pr.State, StringComparison.OrdinalIgnoreCase))
+    private static void ValidateExpectedPullRequestState(
+        ManagerTaskProposal proposal,
+        GitHubPullRequestSnapshot pr,
+        List<ManagerPlanFinding> findings)
+    {
+        if (string.IsNullOrWhiteSpace(proposal.ExpectedPullRequestState)) return;
+        var expected = proposal.ExpectedPullRequestState.Trim().Replace('-', '_').Replace(' ', '_').ToUpperInvariant();
+        var expectsOpen = expected == "OPEN" || expected.StartsWith("OPEN_", StringComparison.Ordinal);
+        var expectsClosed = expected == "CLOSED" || expected.StartsWith("CLOSED_", StringComparison.Ordinal);
+        var expectsUnmerged = expected.Contains("UNMERGED", StringComparison.Ordinal) || expected.Contains("NO_MERGE", StringComparison.Ordinal);
+        var expectsMerged = !expectsUnmerged && (expected == "MERGED" || expected.StartsWith("MERGED_", StringComparison.Ordinal));
+
+        if (expectsOpen && !string.Equals(pr.State, "open", StringComparison.OrdinalIgnoreCase) ||
+            expectsClosed && !string.Equals(pr.State, "closed", StringComparison.OrdinalIgnoreCase) ||
+            expectsUnmerged && pr.Merged ||
+            expectsMerged && !pr.Merged)
             findings.Add(new(
                 pr.Merged ? "PR_ALREADY_MERGED" : "PR_STATE_CHANGED",
-                $"Manager expected PR #{pr.Number} state {proposal.ExpectedPullRequestState}; live state is {pr.State}, merged={pr.Merged}.",
+                $"Manager expected PR #{pr.Number} semantic state {proposal.ExpectedPullRequestState}; live state is {pr.State}, merged={pr.Merged}.",
                 PlanFindingSeverity.Block,
                 proposal.Task.Id));
     }
@@ -335,14 +561,27 @@ public sealed class ManagerWaveValidator
         List<ManagerPlanFinding> findings)
     {
         if (string.IsNullOrWhiteSpace(proposal.TargetBranch)) return;
+        if (!IsValidGitBranchName(proposal.TargetBranch))
+        {
+            findings.Add(new("TASK_BRANCH_INVALID", $"Target branch '{proposal.TargetBranch}' is not a valid Git branch name.", PlanFindingSeverity.Block, proposal.Task.Id));
+            return;
+        }
         var known = baseline.CanonicalTasks
             .Select(x => x.CanonicalBranch)
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Concat(baseline.RelevantPullRequests.Select(x => x.HeadBranch))
             .Any(x => string.Equals(x, proposal.TargetBranch, StringComparison.OrdinalIgnoreCase));
         if (!known)
-            findings.Add(new("TASK_BRANCH_UNVERIFIED", $"Target branch '{proposal.TargetBranch}' is not verified by canonical task/PR evidence.", PlanFindingSeverity.Block, proposal.Task.Id));
+            findings.Add(new("TASK_BRANCH_NEW", $"Target branch '{proposal.TargetBranch}' is a new proposed branch and will require normal creation controls.", PlanFindingSeverity.Info, proposal.Task.Id));
     }
+
+    private static bool IsValidGitBranchName(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.StartsWith('/') || value.EndsWith('/') || value.EndsWith(".lock", StringComparison.OrdinalIgnoreCase)) return false;
+        if (value.Contains("..", StringComparison.Ordinal) || value.Any(char.IsWhiteSpace)) return false;
+        return value.IndexOfAny(['\\', '~', '^', ':', '?', '*', '[']) < 0;
+    }
+
 }
 
 public sealed record RuntimeHealthSnapshot(bool GlobalPause, bool AdaptivePacing, TimeSpan SuggestedDelay, string? Reason);
@@ -994,3 +1233,4 @@ public static class AttentionPolicy
 
     public static bool RequiresHumanAttention(string category) => HumanGateCategories.Contains(category);
 }
+
