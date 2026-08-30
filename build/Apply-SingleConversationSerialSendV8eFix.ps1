@@ -105,16 +105,27 @@ $newContextIdentity = @'
 '@
 Replace-ExactlyOnce $hostPath $oldContextIdentity $newContextIdentity 'Keep one canonical ChatGPT tab after PCC Chrome launch/replacement'
 
-$oldRecoveryBind = @'
-        var page = recoveryPages[recoveryPageIndex];
-        _connections[runtime.RuntimeId] = new Connection(process, browser, page, runtime.ContextIdentity ?? Guid.NewGuid().ToString("N"), runtime.ProfilePath);
-'@
-$newRecoveryBind = @'
-        var page = recoveryPages[recoveryPageIndex];
-        await CloseOtherChatGptPagesAsync(context, page).ConfigureAwait(false);
-        _connections[runtime.RuntimeId] = new Connection(process, browser, page, runtime.ContextIdentity ?? Guid.NewGuid().ToString("N"), runtime.ProfilePath);
-'@
-Replace-ExactlyOnce $hostPath $oldRecoveryBind $newRecoveryBind 'Keep one canonical ChatGPT tab after CDP/Playwright recovery'
+# The recovery body is transformed by earlier Browser-liveness patches, so do not
+# couple this safety insertion to surrounding whitespace or the full two-line tail.
+# Anchor inside RecoverAsync on the unique selected-page line and unique connection bind.
+$host = Read-Normalized $hostPath
+$recoverAnchor = '    public async Task<bool> RecoverAsync(BrowserRuntimeRecord runtime, CancellationToken cancellationToken = default)'
+$recoverIndex = $host.IndexOf($recoverAnchor, [StringComparison]::Ordinal)
+if ($recoverIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: RecoverAsync anchor missing.' }
+$pageLine = '        var page = recoveryPages[recoveryPageIndex];'
+$pageIndex = $host.IndexOf($pageLine, $recoverIndex, [StringComparison]::Ordinal)
+if ($pageIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: recovery selected-page anchor missing.' }
+$recoveryBind = '        _connections[runtime.RuntimeId] = new Connection(process, browser, page, runtime.ContextIdentity ?? Guid.NewGuid().ToString("N"), runtime.ProfilePath);'
+$bindIndex = $host.IndexOf($recoveryBind, $pageIndex, [StringComparison]::Ordinal)
+if ($bindIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: recovery connection bind anchor missing.' }
+$betweenRecovery = $host.Substring($pageIndex + $pageLine.Length, $bindIndex - ($pageIndex + $pageLine.Length))
+if ($betweenRecovery.Contains('CloseOtherChatGptPagesAsync', [StringComparison]::Ordinal)) {
+    throw 'PATCH_CONTRACT_MISMATCH: recovery duplicate-tab cleanup already inserted.'
+}
+$recoveryInsertAt = $pageIndex + $pageLine.Length
+$host = $host.Insert($recoveryInsertAt, "`n        await CloseOtherChatGptPagesAsync(context, page).ConfigureAwait(false);")
+Set-Content -Path $hostPath -Value $host -Encoding utf8 -NoNewline
+Write-Host 'PATCHED: Keep one canonical ChatGPT tab after CDP/Playwright recovery structurally'
 
 $host = Read-Normalized $hostPath
 $helperAnchor = '    private async Task<IPlaywright> GetPlaywrightAsync(CancellationToken cancellationToken)'
