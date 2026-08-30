@@ -59,7 +59,7 @@ jobs:
 
       - name: Apply Manager Browser liveness V6
         shell: pwsh
-        run: ./build/Apply-ManagerBrowserLivenessV6Fix.ps1
+        run: ./build/Apply-ManagerBrowserLivenessV6bFix.ps1
 
       - name: Build WPF product
         shell: pwsh
