@@ -45,6 +45,10 @@ jobs:
         shell: pwsh
         run: ./build/Apply-RateLimitRecoveryV2Fix.ps1
 
+      - name: Apply PR assumption recovery closure
+        shell: pwsh
+        run: ./build/Apply-PrAssumptionRecoveryFix.ps1
+
       - name: Build WPF product
         shell: pwsh
         run: dotnet build src/PCCExecutive.App/PCCExecutive.App.csproj --configuration Release
@@ -110,7 +114,7 @@ jobs:
             fileName=(Split-Path $installer -Leaf)
             targetArchitecture='win-x64'
             artifactHash="sha256:$hash"
-            buildType='RATE_LIMIT_RECOVERY_V2_USER_FIX'
+            buildType='PR_ASSUMPTION_RECOVERY_V3_USER_FIX'
             generatedAt=[DateTimeOffset]::UtcNow.ToString('o')
           } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $packageDir "PCCExecutive-$version-Setup-x64.manifest.json") -Encoding UTF8
 
@@ -165,7 +169,7 @@ jobs:
       - name: Upload user-fix installer
         uses: actions/upload-artifact@v4
         with:
-          name: PCCExecutive-rate-limit-recovery-v2-${{ github.sha }}-win-x64
+          name: PCCExecutive-pr-assumption-recovery-v3-${{ github.sha }}-win-x64
           path: |
             artifacts/package/*
             artifacts/release-evidence/published-app-smoke.json
