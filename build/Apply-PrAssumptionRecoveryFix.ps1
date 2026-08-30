@@ -3,42 +3,50 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$gatewayPath = Join-Path $repoRoot 'src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs'
+$text = (Get-Content $gatewayPath -Raw).Replace("`r`n", "`n")
 
-function Read-NormalizedText([string]$Path) {
-    return (Get-Content $Path -Raw).Replace("`r`n", "`n")
+$parseAnchor = '        var parsed = new StructuredManagerPlanParser().Parse(semantic.CapturedResponseText);'
+$fingerprintAnchor = '        var planFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", parsed.Plan.Tasks.Select(x => x.Task.Fingerprint))))).ToLowerInvariant();'
+$resetLine = '        await ResetManagerFormatRepairStateAsync(run, cancellationToken).ConfigureAwait(false);'
+$validationAnchor = '        var validation = new ManagerWaveValidator().Validate('
+$countMarker = "`n`n        // Count repetition only after a fresh wave is accepted."
+
+$parseIndex = $text.IndexOf($parseAnchor, [StringComparison]::Ordinal)
+if ($parseIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: Manager parse anchor not found.' }
+$fingerprintIndex = $text.IndexOf($fingerprintAnchor, $parseIndex, [StringComparison]::Ordinal)
+if ($fingerprintIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: Manager plan fingerprint anchor not found.' }
+$resetIndex = $text.IndexOf($resetLine, $parseIndex, [StringComparison]::Ordinal)
+if ($resetIndex -lt 0 -or $resetIndex -gt $fingerprintIndex) { throw 'PATCH_CONTRACT_MISMATCH: bounded repair reset was not found between parse and fingerprint.' }
+
+# Do not clear the bounded repair checkpoint merely because the response parsed as JSON.
+# It is cleared only after the fresh live-evidence wave validation succeeds.
+$removeLength = $resetLine.Length
+if ($resetIndex + $removeLength -lt $text.Length -and $text.Substring($resetIndex + $removeLength, 1) -eq "`n") { $removeLength++ }
+$text = $text.Remove($resetIndex, $removeLength)
+Write-Host 'PATCHED: preserve bounded Manager repair state through live wave validation'
+
+$validationIndex = $text.IndexOf($validationAnchor, $parseIndex, [StringComparison]::Ordinal)
+if ($validationIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: Manager wave validation anchor not found.' }
+$ifIndex = $text.IndexOf('        if (!validation.IsValid)', $validationIndex, [StringComparison]::Ordinal)
+if ($ifIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: invalid-wave branch not found after ManagerWaveValidator.' }
+$markerIndex = $text.IndexOf($countMarker, $ifIndex, [StringComparison]::Ordinal)
+if ($markerIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: accepted-wave repetition marker not found.' }
+
+$existing = $text.Substring($ifIndex, $markerIndex - $ifIndex)
+if ($existing.Contains('ManagerLiveEvidenceRecoveryPolicy.CanAutoRepair', [StringComparison]::Ordinal)) {
+    throw 'PATCH_CONTRACT_MISMATCH: live PR recovery block is already present; build-time patch must remain single-application.'
 }
-
-function Replace-RequiredLiteral {
-    param(
-        [Parameter(Mandatory)][string]$RelativePath,
-        [Parameter(Mandatory)][AllowEmptyString()][string]$Old,
-        [Parameter(Mandatory)][AllowEmptyString()][string]$New,
-        [Parameter(Mandatory)][string]$Description
-    )
-    $path = Join-Path $repoRoot $RelativePath
-    $text = Read-NormalizedText $path
-    $count = ([regex]::Matches($text, [regex]::Escape($Old))).Count
-    if ($count -ne 1) { throw "PATCH_CONTRACT_MISMATCH: $Description expected exactly one literal match in $RelativePath, found $count." }
-    Set-Content -Path $path -Value $text.Replace($Old, $New) -Encoding utf8 -NoNewline
-    Write-Host "PATCHED: $Description"
-}
-
-$gateway = 'src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs'
-
-$oldValidation = @'
-        if (!validation.IsValid)
-            throw new InvalidOperationException($"Manager wave rejected: {string.Join("; ", validation.Findings.Select(x => $"{x.Code}:{x.Message}"))}");
-'@
-
-# PowerShell single-quoted here-strings do not need C# quote escaping. Normalize the
-# JSON-style escapes above into the exact C# source text before matching.
-$oldValidation = $oldValidation.Replace('\"', '"')
 
 $newValidation = @'
         if (!validation.IsValid)
         {
             if (ManagerLiveEvidenceRecoveryPolicy.CanAutoRepair(validation))
             {
+                // The validator is authoritative. Never dispatch a stale plan. Refresh the
+                // Manager repair context to the same fresh baseline that rejected this wave,
+                // then ask the existing Manager conversation for one bounded corrected plan.
+                _managerBaseline = baselineResult.Value;
                 var liveEvidenceRepair = new ManagerPlanParseResult(false, parsed.Plan, validation.Findings);
                 if (await TryRepairManagerResponseFormatAsync(run, managerAgentId, runtime, semantic, liveEvidenceRepair, cancellationToken).ConfigureAwait(false))
                 {
@@ -52,12 +60,12 @@ $newValidation = @'
 
             throw new InvalidOperationException($"Manager wave rejected: {string.Join("; ", validation.Findings.Select(x => $"{x.Code}:{x.Message}"))}");
         }
+
+        await ResetManagerFormatRepairStateAsync(run, cancellationToken).ConfigureAwait(false);
 '@
 $newValidation = $newValidation.Replace('\"', '"')
 
-Replace-RequiredLiteral -RelativePath $gateway `
-    -Old $oldValidation `
-    -New $newValidation `
-    -Description 'Auto-correct recoverable live PR drift before Loop Guard counts a runtime failure'
-
+$text = $text.Substring(0, $ifIndex) + $newValidation + $text.Substring($markerIndex)
+Set-Content -Path $gatewayPath -Value $text -Encoding utf8 -NoNewline
+Write-Host 'PATCHED: stale/missing PR assumptions trigger one fresh-evidence Manager replan before Loop Guard'
 Write-Host 'PR_ASSUMPTION_RECOVERY_FIX_APPLIED'
