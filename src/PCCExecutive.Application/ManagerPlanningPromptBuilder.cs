@@ -69,15 +69,35 @@ public static class ManagerPlanningPromptBuilder
         var findingText = findings.Count == 0
             ? "MANAGER_PLAN_NOT_STRUCTURED"
             : string.Join("; ", findings.Select(x => $"{x.Code}:{x.Message}"));
+        var livePullRequests = JsonSerializer.Serialize(baseline.RelevantPullRequests.Select(pr => new
+        {
+            pr.Number,
+            pr.Title,
+            pr.State,
+            pr.Merged,
+            pr.HeadBranch,
+            pr.HeadSha,
+            pr.BaseBranch,
+            pr.BaseSha
+        }));
+        var liveEvidenceDrift = findings.Any(ManagerLiveEvidenceRecoveryPolicy.IsRecoverableFinding);
 
         var text = new StringBuilder();
-        text.AppendLine("PCC_MANAGER_RESPONSE_FORMAT_REPAIR");
+        text.AppendLine(liveEvidenceDrift ? "PCC_MANAGER_LIVE_EVIDENCE_REPAIR" : "PCC_MANAGER_RESPONSE_FORMAT_REPAIR");
         text.AppendLine($"REJECTED_RESPONSE_SHA256: {rejectedResponseHash}");
         text.AppendLine($"EXPECTED_HEAD: {baseline.DefaultHeadSha}");
         text.AppendLine($"EXPECTED_ROUTING_IDENTITY: {baseline.RoutingIdentity}");
         text.AppendLine($"VALIDATION_FINDINGS: {findingText}");
+        text.AppendLine($"LIVE_RELEVANT_PULL_REQUESTS_JSON: {livePullRequests}");
         text.AppendLine();
-        text.AppendLine("Your previous response cannot be consumed by PCC. Re-emit the same intended plan in the required machine-readable contract. Do not explain, apologize, quote the previous response, or use markdown fences.");
+        if (liveEvidenceDrift)
+        {
+            text.AppendLine("Your previous structured plan conflicts with fresh PCC/GitHub evidence. Re-derive every affected task from the live evidence above instead of repeating the stale PR assumption. A PR number that is absent from LIVE_RELEVANT_PULL_REQUESTS_JSON must not be referenced again. If a referenced PR changed state or merged, use the live state. If no task remains safe after removing the contradicted assumption, return ProjectDecision BLOCKED with concrete KnownBlockers and an empty Tasks array. Do not explain, apologize, quote the previous response, or use markdown fences.");
+        }
+        else
+        {
+            text.AppendLine("Your previous response cannot be consumed by PCC. Re-emit the same intended plan in the required machine-readable contract. Do not explain, apologize, quote the previous response, or use markdown fences.");
+        }
         text.AppendLine(OutputContract());
         return text.ToString().TrimEnd();
     }
