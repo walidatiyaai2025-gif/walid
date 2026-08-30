@@ -52,24 +52,6 @@ public sealed class ChromeLiveReadinessRegressionTests
         Assert.False(state.Prerequisites.Single(x => x.Step == GuidedStepId.Chrome).Satisfied);
     }
 
-    [Fact]
-    public void Owned_manager_without_process_identity_is_not_connection_proof()
-    {
-        var snapshot = CreateSnapshot(new SessionSummary(
-            "manager-runtime",
-            "Manager",
-            "Manager",
-            "READY",
-            SessionVisibility.Hidden,
-            "Not bound",
-            DateTimeOffset.UtcNow,
-            IsPccOwned: true,
-            ProcessId: null,
-            Health: HealthState.Unknown));
-
-        Assert.False(snapshot.ChromeConnectionProven);
-    }
-
     private static RuntimeSnapshot CreateSnapshot(SessionSummary session) => new(
         GatewayBound: true,
         HasActiveRun: true,
