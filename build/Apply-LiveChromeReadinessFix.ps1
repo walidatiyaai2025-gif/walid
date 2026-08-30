@@ -4,6 +4,10 @@ param()
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
+function Read-NormalizedText([string]$Path) {
+    return (Get-Content $Path -Raw).Replace("`r`n", "`n")
+}
+
 function Replace-RequiredRegex {
     param(
         [Parameter(Mandatory)][string]$RelativePath,
@@ -12,7 +16,7 @@ function Replace-RequiredRegex {
         [Parameter(Mandatory)][string]$Description
     )
     $path = Join-Path $repoRoot $RelativePath
-    $text = Get-Content $path -Raw
+    $text = Read-NormalizedText $path
     $regex = [regex]::new($Pattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
     $matches = $regex.Matches($text)
     if ($matches.Count -ne 1) { throw "PATCH_CONTRACT_MISMATCH: $Description expected exactly one match in $RelativePath, found $($matches.Count)." }
@@ -29,7 +33,7 @@ function Replace-RequiredLiteral {
         [Parameter(Mandatory)][string]$Description
     )
     $path = Join-Path $repoRoot $RelativePath
-    $text = Get-Content $path -Raw
+    $text = Read-NormalizedText $path
     $count = ([regex]::Matches($text, [regex]::Escape($Old))).Count
     if ($count -ne 1) { throw "PATCH_CONTRACT_MISMATCH: $Description expected exactly one literal match in $RelativePath, found $count." }
     Set-Content -Path $path -Value $text.Replace($Old, $New) -Encoding utf8 -NoNewline
