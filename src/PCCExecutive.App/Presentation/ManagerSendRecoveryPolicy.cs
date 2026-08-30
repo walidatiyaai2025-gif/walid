@@ -3,7 +3,8 @@ namespace PCCExecutive.App.Presentation;
 public enum ManagerSendRecoveryAction
 {
     None,
-    GlobalRateLimitCooldown
+    GlobalRateLimitCooldown,
+    BrowserAdapterReprobe
 }
 
 public static class ManagerSendRecoveryPolicy
@@ -15,8 +16,10 @@ public static class ManagerSendRecoveryPolicy
             .Replace("-", string.Empty, StringComparison.Ordinal)
             .Replace(" ", string.Empty, StringComparison.Ordinal);
 
-        return normalized.Contains("RATELIMIT", StringComparison.OrdinalIgnoreCase)
-            ? ManagerSendRecoveryAction.GlobalRateLimitCooldown
-            : ManagerSendRecoveryAction.None;
+        if (normalized.Contains("RATELIMIT", StringComparison.OrdinalIgnoreCase))
+            return ManagerSendRecoveryAction.GlobalRateLimitCooldown;
+        if (normalized.Contains("BROWSERADAPTERUNCERTAIN", StringComparison.OrdinalIgnoreCase))
+            return ManagerSendRecoveryAction.BrowserAdapterReprobe;
+        return ManagerSendRecoveryAction.None;
     }
 }
