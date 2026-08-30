@@ -67,7 +67,7 @@ jobs:
 
       - name: Apply single-conversation serial-send V8
         shell: pwsh
-        run: ./build/Apply-SingleConversationSerialSendV8bFix.ps1
+        run: ./build/Apply-SingleConversationSerialSendV8cFix.ps1
 
       - name: Build WPF product
         shell: pwsh
