@@ -28,9 +28,11 @@ $gateway = 'src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs'
 $oldValidation = @'
         if (!validation.IsValid)
             throw new InvalidOperationException($"Manager wave rejected: {string.Join("; ", validation.Findings.Select(x => $"{x.Code}:{x.Message}"))}");
-
-        // Count repetition only after a fresh wave is accepted. Re-reading one already-
 '@
+
+# PowerShell single-quoted here-strings do not need C# quote escaping. Normalize the
+# JSON-style escapes above into the exact C# source text before matching.
+$oldValidation = $oldValidation.Replace('\"', '"')
 
 $newValidation = @'
         if (!validation.IsValid)
@@ -50,9 +52,8 @@ $newValidation = @'
 
             throw new InvalidOperationException($"Manager wave rejected: {string.Join("; ", validation.Findings.Select(x => $"{x.Code}:{x.Message}"))}");
         }
-
-        // Count repetition only after a fresh wave is accepted. Re-reading one already-
 '@
+$newValidation = $newValidation.Replace('\"', '"')
 
 Replace-RequiredLiteral -RelativePath $gateway `
     -Old $oldValidation `
