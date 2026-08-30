@@ -108,31 +108,6 @@ $ensureConditionNew = @'
 '@
 Replace-RequiredLiteral -RelativePath 'src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs' -Old $ensureConditionOld -New $ensureConditionNew -Description 'Manager readiness always re-probes Chrome endpoint'
 
-$startupOld = @'
-            foreach (var reconciliation in result.Reconciliations)
-            {
-                var browserState = reconciliation.Succeeded ? BrowserRecoveryState.Ready
-'@
-$startupNew = @'
-            foreach (var reconciliation in result.Reconciliations)
-            {
-                if (!reconciliation.Succeeded)
-                {
-                    var failedRuntime = await _runtimeRegistry.GetAsync(reconciliation.RuntimeId, cancellationToken).ConfigureAwait(false);
-                    if (failedRuntime is not null && !failedRuntime.IsArchived)
-                    {
-                        await _runtimeRegistry.UpsertAsync(failedRuntime with
-                        {
-                            State = BrowserSessionState.FailedRequiresAttention,
-                            LastActivityAt = DateTimeOffset.UtcNow
-                        }, cancellationToken).ConfigureAwait(false);
-                    }
-                }
-
-                var browserState = reconciliation.Succeeded ? BrowserRecoveryState.Ready
-'@
-Replace-RequiredLiteral -RelativePath 'src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs' -Old $startupOld -New $startupNew -Description 'Startup recovery failure invalidates stale Chrome readiness'
-
 Replace-RequiredLiteral -RelativePath 'src/PCCExecutive.App/ViewModels/MainViewModel.cs' -Old '            _ when manager => BrowserRecoveryState.Ready,' -New '            _ when Snapshot.ChromeConnectionProven => BrowserRecoveryState.Ready,' -Description 'Guided Chrome state uses canonical connection proof'
 
 $chromeProofOld = @'
