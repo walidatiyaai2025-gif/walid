@@ -44,23 +44,18 @@ catch {
     Write-Host 'V8E: accepted only the known V8D tail-anchor mismatch; continuing from verified partial transformation.'
 }
 
-# Complete the provider-wide outer try/finally structurally rather than depending on
-# the exact whitespace between the existing per-dispatch finally and the class tail.
+# Complete the provider-wide outer try/finally using a whitespace-agnostic structural
+# match. The semantic anchor is the unique dispatchGate release + TryRemove sequence,
+# so formatting changes cannot invalidate the closure again.
 $dispatch = Read-Normalized $dispatchPath
-$innerFinally = @'
-        finally
-        {
-            dispatchGate.Release();
-            if (dispatchGate.CurrentCount == 1) _dispatchGates.TryRemove(request.DispatchId, out _);
-        }
-'@
-$innerCount = ([regex]::Matches($dispatch, [regex]::Escape($innerFinally))).Count
-if ($innerCount -ne 1) {
-    throw "PATCH_CONTRACT_MISMATCH: inner per-dispatch finally expected exactly one match in $dispatchPath, found $innerCount."
+$innerFinallyPattern = '(?ms)^\s*finally\s*\{\s*dispatchGate\.Release\(\);\s*if\s*\(dispatchGate\.CurrentCount\s*==\s*1\)\s*_dispatchGates\.TryRemove\(request\.DispatchId,\s*out\s*_\);\s*\}'
+$innerMatches = [regex]::Matches($dispatch, $innerFinallyPattern)
+if ($innerMatches.Count -ne 1) {
+    throw "PATCH_CONTRACT_MISMATCH: semantic per-dispatch finally expected exactly one match in $dispatchPath, found $($innerMatches.Count)."
 }
-$innerIndex = $dispatch.IndexOf($innerFinally, [StringComparison]::Ordinal)
-$afterInner = $innerIndex + $innerFinally.Length
-$classAnchor = "`npublic sealed class BrowserDispatchScheduler"
+$inner = $innerMatches[0]
+$afterInner = $inner.Index + $inner.Length
+$classAnchor = 'public sealed class BrowserDispatchScheduler'
 $classIndex = $dispatch.IndexOf($classAnchor, $afterInner, [StringComparison]::Ordinal)
 if ($classIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: BrowserDispatchScheduler class anchor missing after BrowserChatProvider.' }
 $between = $dispatch.Substring($afterInner, $classIndex - $afterInner)
@@ -68,13 +63,14 @@ if ($between -notmatch '^\s*\}\s*\}\s*$') {
     throw "PATCH_CONTRACT_MISMATCH: unexpected BrowserChatProvider method/class tail before BrowserDispatchScheduler: [$between]"
 }
 $outerFinally = @'
+
         }
         finally
         {
             _serializedSendGate.Release();
         }
 '@
-$dispatch = $dispatch.Insert($afterInner, "`n$outerFinally")
+$dispatch = $dispatch.Insert($afterInner, $outerFinally)
 Set-Content -Path $dispatchPath -Value $dispatch -Encoding utf8 -NoNewline
 Write-Host 'PATCHED: Complete provider-wide serialized physical-send try/finally structurally'
 
