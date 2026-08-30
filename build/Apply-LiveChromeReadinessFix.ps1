@@ -110,19 +110,6 @@ Replace-RequiredLiteral -RelativePath 'src/PCCExecutive.App/Presentation/Integra
 
 Replace-RequiredLiteral -RelativePath 'src/PCCExecutive.App/ViewModels/MainViewModel.cs' -Old '            _ when manager => BrowserRecoveryState.Ready,' -New '            _ when Snapshot.ChromeConnectionProven => BrowserRecoveryState.Ready,' -Description 'Guided Chrome state uses canonical connection proof'
 
-$chromeProofOld = @'
-    public bool ChromeConnectionProven => GatewayBound && Sessions.Any(x =>
-        x.IsPccOwned &&
-        string.Equals(x.Role, "Manager", StringComparison.OrdinalIgnoreCase) &&
-'@
-$chromeProofNew = @'
-    public bool ChromeConnectionProven => GatewayBound && Sessions.Any(x =>
-        x.IsPccOwned &&
-        x.ProcessId is > 0 &&
-        string.Equals(x.Role, "Manager", StringComparison.OrdinalIgnoreCase) &&
-'@
-Replace-RequiredLiteral -RelativePath 'src/PCCExecutive.App/Presentation/PresentationModels.cs' -Old $chromeProofOld -New $chromeProofNew -Description 'Chrome connection proof requires concrete PCC-owned process identity'
-
 Replace-RequiredLiteral -RelativePath 'src/PCCExecutive.App/Presentation/RuntimeInspectorPresentation.cs' -Old 'new RuntimePrerequisiteEvidence(GuidedStepId.Chrome, "PCC-owned Chrome runtime ready", current.Sessions.Any(s => s.IsPccOwned), "CHROME_RUNTIME", true, false),' -New 'new RuntimePrerequisiteEvidence(GuidedStepId.Chrome, "PCC-owned Chrome runtime ready", current.ChromeConnectionProven, "CHROME_RUNTIME", true, false),' -Description 'Runtime Inspector Chrome prerequisite uses canonical connection proof'
 
 Replace-RequiredLiteral -RelativePath 'src/PCCExecutive.App/Presentation/RuntimeInspectorPresentation.cs' -Old 'var nextStep = !current.Sessions.Any(s => s.IsPccOwned) ? GuidedStepId.Chrome : !current.HasActiveRun ? GuidedStepId.Project : !current.HasManagerRuntime ? GuidedStepId.Manager : GuidedStepId.Orchestration;' -New 'var nextStep = !current.ChromeConnectionProven ? GuidedStepId.Chrome : !current.HasActiveRun ? GuidedStepId.Project : !current.HasManagerRuntime ? GuidedStepId.Manager : GuidedStepId.Orchestration;' -Description 'Runtime Inspector stays on Chrome until connection proof exists'
