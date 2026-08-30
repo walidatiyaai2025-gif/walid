@@ -3,51 +3,32 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$gatewayPath = Join-Path $repoRoot 'src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs'
+$text = (Get-Content $gatewayPath -Raw).Replace("`r`n", "`n")
 
-function Read-NormalizedText([string]$Path) {
-    return (Get-Content $Path -Raw).Replace("`r`n", "`n")
+$methodAnchor = '    private async Task<bool> TryRepairManagerResponseFormatAsync('
+$sendAnchor = '        var result = await _agentProvider.SendAsync(request, cancellationToken).ConfigureAwait(false);'
+$handoffAnchor = '        _latestManagerHandoff = result.IsUncertain'
+$nextMethodAnchor = '    private async Task ReconcileManagerResponseAsync('
+
+$methodIndex = $text.IndexOf($methodAnchor, [StringComparison]::Ordinal)
+if ($methodIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: TryRepairManagerResponseFormatAsync anchor not found.' }
+$nextMethodIndex = $text.IndexOf($nextMethodAnchor, $methodIndex, [StringComparison]::Ordinal)
+if ($nextMethodIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: ReconcileManagerResponseAsync boundary not found.' }
+$sendIndex = $text.IndexOf($sendAnchor, $methodIndex, [StringComparison]::Ordinal)
+if ($sendIndex -lt 0 -or $sendIndex -ge $nextMethodIndex) { throw 'PATCH_CONTRACT_MISMATCH: repair send anchor not found inside TryRepairManagerResponseFormatAsync.' }
+$handoffIndex = $text.IndexOf($handoffAnchor, $sendIndex, [StringComparison]::Ordinal)
+if ($handoffIndex -lt 0 -or $handoffIndex -ge $nextMethodIndex) { throw 'PATCH_CONTRACT_MISMATCH: repair handoff anchor not found inside TryRepairManagerResponseFormatAsync.' }
+
+$existing = $text.Substring($sendIndex, $handoffIndex - $sendIndex)
+if ($existing.Contains('ManagerSendRecoveryAction.BrowserAdapterReprobe', [StringComparison]::Ordinal)) {
+    throw 'PATCH_CONTRACT_MISMATCH: Browser adapter repair recovery block is already present; build-time patch must remain single-application.'
+}
+if (-not $existing.Contains('Manager structured-response repair send stopped safely:', [StringComparison]::Ordinal)) {
+    throw 'PATCH_CONTRACT_MISMATCH: expected terminal Manager repair send-stop branch is absent from structural replacement window.'
 }
 
-function Replace-RequiredLiteral {
-    param(
-        [Parameter(Mandatory)][string]$RelativePath,
-        [Parameter(Mandatory)][AllowEmptyString()][string]$Old,
-        [Parameter(Mandatory)][AllowEmptyString()][string]$New,
-        [Parameter(Mandatory)][string]$Description
-    )
-    $path = Join-Path $repoRoot $RelativePath
-    $text = Read-NormalizedText $path
-    $count = ([regex]::Matches($text, [regex]::Escape($Old))).Count
-    if ($count -ne 1) { throw "PATCH_CONTRACT_MISMATCH: $Description expected exactly one literal match in $RelativePath, found $count." }
-    Set-Content -Path $path -Value $text.Replace($Old, $New) -Encoding utf8 -NoNewline
-    Write-Host "PATCHED: $Description"
-}
-
-$gateway = 'src/PCCExecutive.App/Presentation/IntegratedPresentationGateway.cs'
-
-$oldRepairDecision = @'
-        var result = await _agentProvider.SendAsync(request, cancellationToken).ConfigureAwait(false);
-
-        if (repairState.AttemptsUsed == 0)
-        {
-            await _store.SaveCheckpointAsync(
-                new DurableCheckpoint(
-                    ManagerFormatRepairCheckpointKey(run),
-                    run.Id.ToString(),
-                    "manager-format-repair-v1",
-                    JsonSerializer.Serialize(new DurableManagerFormatRepair(rejectedResponseHash, 1, repairHash, DateTimeOffset.UtcNow)),
-                    DateTimeOffset.UtcNow),
-                cancellationToken).ConfigureAwait(false);
-        }
-
-        CaptureProviderAttention(result.ErrorCode, runtime.RuntimeId, "Manager ChatGPT session");
-        if (!result.Accepted && !result.IsUncertain)
-            throw new InvalidOperationException($"Manager structured-response repair send stopped safely: {result.ErrorCode ?? result.ProviderEvidence ?? "unknown provider state"}.");
-
-        _autopilot = "PLANNING";
-'@
-
-$newRepairDecision = @'
+$replacement = @'
         var result = await _agentProvider.SendAsync(request, cancellationToken).ConfigureAwait(false);
         var managerSendRecovery = ManagerSendRecoveryPolicy.Classify(result.ErrorCode, result.ProviderEvidence);
 
@@ -104,9 +85,7 @@ $newRepairDecision = @'
         _autopilot = "PLANNING";
 '@
 
-Replace-RequiredLiteral -RelativePath $gateway `
-    -Old $oldRepairDecision `
-    -New $newRepairDecision `
-    -Description 'Treat BROWSER_ADAPTER_UNCERTAIN during Manager repair as retryable pre-send evidence gap'
-
+$text = $text.Substring(0, $sendIndex) + $replacement + "`n" + $text.Substring($handoffIndex)
+Set-Content -Path $gatewayPath -Value $text -Encoding utf8 -NoNewline
+Write-Host 'PATCHED: Treat BROWSER_ADAPTER_UNCERTAIN during Manager repair as retryable pre-send evidence gap'
 Write-Host 'BROWSER_ADAPTER_UNCERTAIN_REPAIR_FIX_APPLIED'
