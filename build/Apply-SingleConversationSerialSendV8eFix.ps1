@@ -44,37 +44,39 @@ catch {
     Write-Host 'V8E: accepted only the known V8D tail-anchor mismatch; continuing from verified partial transformation.'
 }
 
-# The existing method already has an inner per-dispatch try/finally. Close the V8
-# provider-wide outer try immediately after that inner finally, then release the
-# shared send lane. This is the actual exact source shape after the V8c prefix patch.
-$oldTail = @'
+# Complete the provider-wide outer try/finally structurally rather than depending on
+# the exact whitespace between the existing per-dispatch finally and the class tail.
+$dispatch = Read-Normalized $dispatchPath
+$innerFinally = @'
         finally
         {
             dispatchGate.Release();
             if (dispatchGate.CurrentCount == 1) _dispatchGates.TryRemove(request.DispatchId, out _);
         }
-    }
-}
-
-public sealed class BrowserDispatchScheduler
 '@
-$newTail = @'
-        finally
-        {
-            dispatchGate.Release();
-            if (dispatchGate.CurrentCount == 1) _dispatchGates.TryRemove(request.DispatchId, out _);
-        }
+$innerCount = ([regex]::Matches($dispatch, [regex]::Escape($innerFinally))).Count
+if ($innerCount -ne 1) {
+    throw "PATCH_CONTRACT_MISMATCH: inner per-dispatch finally expected exactly one match in $dispatchPath, found $innerCount."
+}
+$innerIndex = $dispatch.IndexOf($innerFinally, [StringComparison]::Ordinal)
+$afterInner = $innerIndex + $innerFinally.Length
+$classAnchor = "`npublic sealed class BrowserDispatchScheduler"
+$classIndex = $dispatch.IndexOf($classAnchor, $afterInner, [StringComparison]::Ordinal)
+if ($classIndex -lt 0) { throw 'PATCH_CONTRACT_MISMATCH: BrowserDispatchScheduler class anchor missing after BrowserChatProvider.' }
+$between = $dispatch.Substring($afterInner, $classIndex - $afterInner)
+if ($between -notmatch '^\s*\}\s*\}\s*$') {
+    throw "PATCH_CONTRACT_MISMATCH: unexpected BrowserChatProvider method/class tail before BrowserDispatchScheduler: [$between]"
+}
+$outerFinally = @'
         }
         finally
         {
             _serializedSendGate.Release();
         }
-    }
-}
-
-public sealed class BrowserDispatchScheduler
 '@
-Replace-ExactlyOnce $dispatchPath $oldTail $newTail 'Complete provider-wide serialized physical-send try/finally using actual source tail'
+$dispatch = $dispatch.Insert($afterInner, "`n$outerFinally")
+Set-Content -Path $dispatchPath -Value $dispatch -Encoding utf8 -NoNewline
+Write-Host 'PATCHED: Complete provider-wide serialized physical-send try/finally structurally'
 
 # Production uses one shared BrowserChatProvider for Manager, repair/review, and all
 # Workers. Keep the lane at least 15 seconds apart so separate chats cannot burst.
