@@ -1,0 +1,2 @@
+Validate the exact PCC Executive user-test candidate after bounded Manager JSON envelope recovery.
+Source fix ancestor: 3ef8949ebce5fd09bb02897226c0b9acd6072b50

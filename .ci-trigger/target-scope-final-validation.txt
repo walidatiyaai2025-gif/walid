@@ -1,0 +1,4 @@
+Exact production fix under validation:
+20c76e2b8ab2101de9c6737b00e2c4644b24b617
+
+Purpose: trigger an exact-head Windows installer validation run for Manager TargetScope recovery and prompt hardening.

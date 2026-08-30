@@ -1,0 +1,4 @@
+Exact production fix under validation:
+3309beec62bbb2f886b1985236700f69430fed55
+
+Purpose: trigger an exact-head Windows installer validation run after GitHub Actions produced the fix commit.

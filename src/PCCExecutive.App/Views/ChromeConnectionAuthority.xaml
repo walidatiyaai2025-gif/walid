@@ -1,0 +1,175 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:vm="clr-namespace:PCCExecutive.App.ViewModels">
+    <!-- Canonical Screen 01 override. The Chrome/profile workflow belongs on the Chrome page,
+         not in the shared shell bar. This preserves the approved Browser-first hierarchy. -->
+    <DataTemplate DataType="{x:Type vm:ChromeConnectionViewModel}">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock Text="Chrome Connection" Style="{StaticResource TitleText}"/>
+                <TextBlock Text="Browser-first execution provider · ChatGPT Web / Chrome · no API key required"
+                           Style="{StaticResource MutedText}" Margin="0,0,0,18"/>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="2*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Style="{StaticResource HeroCard}">
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="48" Height="48" CornerRadius="12"
+                                        Background="{StaticResource Brush.PurpleGradient}" Margin="0,0,14,0">
+                                    <TextBlock Text="◉" FontSize="26" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="ChatGPT Web / Chrome" FontSize="20" FontWeight="SemiBold"/>
+                                    <TextBlock Text="PRIMARY EXECUTION PROVIDER" Style="{StaticResource SectionTitle}" Foreground="#BFA7FF"/>
+                                </StackPanel>
+                            </StackPanel>
+
+                            <Border Style="{StaticResource SeparatorLine}"/>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Runtime" Style="{StaticResource MutedText}"/>
+                                    <TextBlock Text="{Binding Shell.Snapshot.RuntimeStatus}" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,0"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="Health" Style="{StaticResource MutedText}"/>
+                                    <TextBlock Text="{Binding Shell.Snapshot.HealthText}" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,0"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Owned sessions" Style="{StaticResource MutedText}"/>
+                                    <TextBlock Text="{Binding Shell.PccOwnedSessionCountText}" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,0"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <Border Style="{StaticResource SeparatorLine}"/>
+
+                            <Grid Margin="0,2,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="CHROME PROFILE" Style="{StaticResource SectionTitle}" Foreground="#BFA7FF"/>
+                                    <TextBlock Text="Choose the local Chrome profile whose sign-in state PCC may copy into an isolated PCC-owned browser. Your personal Chrome process remains outside PCC control."
+                                               Style="{StaticResource MutedText}" Margin="0,6,18,0"/>
+                                </StackPanel>
+                                <Border Grid.Column="1" Style="{StaticResource PurpleChip}" VerticalAlignment="Top">
+                                    <TextBlock Text="PROFILE SOURCE" Foreground="#D8C7FF" FontSize="10" FontWeight="SemiBold"/>
+                                </Border>
+                            </Grid>
+
+                            <Border Margin="0,12,0,0" CornerRadius="8" Background="#07111E"
+                                    BorderBrush="{StaticResource Brush.BorderStrong}" BorderThickness="1" Padding="6">
+                                <ListBox ItemsSource="{Binding ChromeProfiles}"
+                                         SelectedItem="{Binding SelectedChromeProfile, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         DisplayMemberPath="DisplayLabel"
+                                         MaxHeight="150"
+                                         Background="#07111E"
+                                         Foreground="{StaticResource Brush.Text}"
+                                         BorderThickness="0"
+                                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                         ToolTip="Select the Chrome profile PCC should use as the source for its isolated managed browser.">
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem">
+                                            <Setter Property="Foreground" Value="{StaticResource Brush.Text}"/>
+                                            <Setter Property="Background" Value="Transparent"/>
+                                            <Setter Property="Padding" Value="10,8"/>
+                                            <Setter Property="Margin" Value="0,1"/>
+                                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                            <Style.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter Property="Background" Value="#111D30"/>
+                                                </Trigger>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter Property="Background" Value="#2A184A"/>
+                                                    <Setter Property="Foreground" Value="#F4EEFF"/>
+                                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                                </Trigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                </ListBox>
+                            </Border>
+
+                            <TextBlock Text="{Binding ChromeProfileStatusText}" Style="{StaticResource MutedText}"
+                                       Margin="0,8,0,0" Foreground="#B8C8D9"/>
+
+                            <WrapPanel Margin="0,18,0,0">
+                                <Button Content="Continue to Projects"
+                                        Style="{StaticResource PrimaryButton}"
+                                        Command="{Binding Shell.NavigateCommand}"
+                                        CommandParameter="ProjectSelection"
+                                        Margin="0,0,8,8"
+                                        ToolTip="Profile choice is saved now; project selection is the next numbered step."/>
+                                <Button Content="Connect / Recover Chrome"
+                                        Command="{Binding Shell.ConnectChromeCommand}"
+                                        Margin="0,0,8,8"
+                                        ToolTip="Manual recovery control. After Open Project, PCC normally connects/recover Chrome automatically."/>
+                                <Button Content="Open PCC Browser"
+                                        Command="{Binding Shell.OpenSessionCommand}"
+                                        CommandParameter="{Binding Shell.ManagerSession.RuntimeId}"
+                                        Margin="0,0,8,8"
+                                        ToolTip="Enabled only when the Manager runtime has positive PCC ownership proof."/>
+                                <Button Content="Bring to Front"
+                                        Command="{Binding Shell.BringSessionToFrontCommand}"
+                                        CommandParameter="{Binding Shell.ManagerSession.RuntimeId}"
+                                        Margin="0,0,8,8"
+                                        ToolTip="Enabled only for the proven PCC-owned Manager runtime."/>
+                                <Button Content="Refresh State" Command="{Binding Shell.RefreshCommand}" Margin="0,0,8,8"/>
+                            </WrapPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <StackPanel Grid.Column="1">
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="SAFETY CONTRACT" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock Text="PCC-owned sessions only" FontSize="17" FontWeight="SemiBold" Margin="0,6,0,4"/>
+                                <TextBlock Text="Personal Chrome is excluded from PCC process controls. Unknown ownership never becomes killable."
+                                           Style="{StaticResource MutedText}"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="FIRST-RUN FLOW — FOLLOW THE NUMBERS" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock Text="1  Select your signed-in Chrome profile" FontWeight="SemiBold" Margin="0,8,0,3"/>
+                                <TextBlock Text="GPTDeskTop is preferred automatically when its existing signed-in profile is available."
+                                           Style="{StaticResource MutedText}"/>
+                                <TextBlock Text="2  Press Continue to Projects → Open Project" FontWeight="SemiBold" Margin="0,12,0,3"/>
+                                <TextBlock Text="Choose the canonical PCC project. You do not need to return here to connect Chrome."
+                                           Style="{StaticResource MutedText}"/>
+                                <TextBlock Text="3  PCC connects / recovers Chrome automatically" FontWeight="SemiBold" Margin="0,12,0,3"/>
+                                <TextBlock Text="Stale DevTools ports and dead PCC browser sessions are recovered automatically when ownership is proven."
+                                           Style="{StaticResource MutedText}"/>
+                                <TextBlock Text="4  Open 04 Manager → Start / Continue Manager" FontWeight="SemiBold" Margin="0,12,0,3"/>
+                                <TextBlock Text="After Manager starts, planning, Worker dispatch, reconciliation, recovery and continuation are automatic unless 15 Attention says you are required."
+                                           Style="{StaticResource MutedText}"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Text="OPTIONAL PROVIDERS" Style="{StaticResource SectionTitle}"/>
+                                <TextBlock Text="OpenAI API" FontWeight="SemiBold" Margin="0,8,0,2"/>
+                                <TextBlock Text="Optional and disabled until explicitly configured." Style="{StaticResource MutedText}"/>
+                                <TextBlock Text="Hybrid" FontWeight="SemiBold" Margin="0,12,0,2"/>
+                                <TextBlock Text="Secondary mode; never required for Browser-first operation." Style="{StaticResource MutedText}"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Grid>
+            </StackPanel>
+        </ScrollViewer>
+    </DataTemplate>
+</ResourceDictionary>

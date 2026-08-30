@@ -30,4 +30,15 @@ See `docs/UI_AUTHORITY.md` for the implementation contract.
 
 ## Binary asset ingestion status
 
-The design package was supplied by the owner during initial planning. The repository plan treats it as the v1 UI authority. Binary PNG/ZIP ingestion into this directory remains a required Phase 0 repository task until the files are committed and exact SHAs are recorded. Do not mark UI asset onboarding complete based only on this README.
+**COMMITTED / AUTHORITATIVE.**
+
+The owner-approved design package is committed at:
+
+`assets/ui/PCC_Executive_Final_Premium_UI_Assets_1920x1080.zip`
+
+Initial committed provenance:
+
+- source commit: `5eae2613b63b6e85161fb6424775a52228c99140`
+- asset blob SHA: `d3b972b19a816a69981f8e88da2afecf5f82b1f6`
+
+`docs/UI_AUTHORITY.md` together with this committed package is the visual authority for PCC Executive v0.1.0 implementation and visual QA. Future asset changes must preserve exact source provenance and must not silently replace the approved product structure.

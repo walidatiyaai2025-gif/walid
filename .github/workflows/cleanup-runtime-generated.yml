@@ -1,0 +1,32 @@
+name: PCC Executive cleanup generated runtime outputs
+
+on:
+  push:
+    branches:
+      - worker/pcc-final-runtime-e2e-closure
+    paths:
+      - .github/workflows/cleanup-runtime-generated.yml
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Remove tracked generated outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "pcc-runtime-closure-bot"
+          git config user.email "actions@users.noreply.github.com"
+          mapfile -t generated < <(git ls-files | grep -E '(^|/)(bin|obj)/|\.(dll|pdb)$|^build/final-runtime-closure\.last\.log$|^build/runtime-closure\.request$' || true)
+          if (( ${#generated[@]} > 0 )); then
+            printf '%s\0' "${generated[@]}" | xargs -0 git rm -f --
+            git commit -m "chore: remove generated build outputs"
+            git push origin HEAD:worker/pcc-final-runtime-e2e-closure
+          fi
